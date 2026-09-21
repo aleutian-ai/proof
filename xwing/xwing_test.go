@@ -184,6 +184,13 @@ type xwingKATVector struct {
 }
 
 // TestXWINGKAT verifies Decapsulate against self-generated regression vectors.
+//
+// REGRESSION ONLY. These vectors were produced by this implementation, so they
+// detect change, not error: a deviation from the specification that predates
+// them is baked into them and passes here. Conformance is TestSpecVectors
+// (official vectors, checksum-authenticated) plus the differential test against
+// circl at the repository root. Do not cite this test as evidence of
+// conformance, and do not regenerate these vectors to make a failure go away.
 // For each vector, reconstructs the private key from the 32-byte seed, then
 // decapsulates the ciphertext and asserts the shared secret matches.
 //

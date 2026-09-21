@@ -1,0 +1,51 @@
+{
+  "_comment": "Anchor-of-anchors chain hash vectors. GENERATED FROM THE PRODUCER (internal/chainlinker/anchor_generator.go ComputeAnchorChainHash) so an independent implementation can be checked against it rather than against itself. Domain: aleutian.anchor.v2:",
+  "vectors": [
+    {
+      "name": "genesis",
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "company_id": "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+      "start_entry_id": "0192f3a1-1111-7000-8000-aaaaaaaaaaaa",
+      "end_entry_id": "0192f3a1-2222-7000-8000-bbbbbbbbbbbb",
+      "tip_chain_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expected_chain_hash": "c010ded1bedb44c0f8e63357548d410fbdcaab30e11841efe1bbc2d50ff4fcee3a9763779fbe676f3de08ab4980cb208b75ce4dcf180fcdc93ec1c55273c6a57"
+    },
+    {
+      "name": "subsequent",
+      "previous_anchor_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "company_id": "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+      "start_entry_id": "0192f3a1-1111-7000-8000-aaaaaaaaaaaa",
+      "end_entry_id": "0192f3a1-3333-7000-8000-cccccccccccc",
+      "tip_chain_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expected_chain_hash": "04e1802341edee44d15bd3deb98c92cc54540448f0082ffcc2c4566f8a7adcc21d6c1ed3044dfeec0355ff0bcad5e52e9f9065a6fb70aa329795021f2e0d6d3b"
+    },
+    {
+      "name": "tombstone_range_end",
+      "previous_anchor_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "company_id": "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+      "start_entry_id": "0192f3a1-1111-7000-8000-aaaaaaaaaaaa",
+      "end_entry_id": "tomb_0192f3a1-4444-7000-8000-dddddddddddd",
+      "tip_chain_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expected_chain_hash": "524dc2bbf5b03ff93d2ddb01c378643f0c8b5e4b2360469c5465f82a145a2b54cea2a821253d04f0ba9d3dd1e42c9851db7e7a0b5655a7e8e90d72aa797a4442"
+    },
+    {
+      "name": "different_company_same_range",
+      "previous_anchor_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "company_id": "comp_01HZX9K2M3N4P5Q6R7S8T9V0WB",
+      "start_entry_id": "0192f3a1-1111-7000-8000-aaaaaaaaaaaa",
+      "end_entry_id": "0192f3a1-3333-7000-8000-cccccccccccc",
+      "tip_chain_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expected_chain_hash": "e9ad45da80440458144c1b0e9aef22fd04e0b49342447e566690eaf6dc88848f695153493621cb7f953193968da6cc084e29c851d9d9e12d073b13a0904a8589"
+    },
+    {
+      "name": "empty_range_bounds",
+      "previous_anchor_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "company_id": "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+      "start_entry_id": "",
+      "end_entry_id": "",
+      "tip_chain_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expected_chain_hash": "cc9d0d2c67904391c824d5aa89a3d80f5cf76810264ec87371a23624567a7135d189f956ad63472e30977507de866678a80763d0b3338a3f14dd9171031e2bf0"
+    }
+  ],
+  "version": 1
+}

@@ -1,0 +1,62 @@
+{
+  "_comment": "ui_chainops_18 cross-language canonical-bytes fixture. Each SDK (Go, Python, JS) MUST produce the `canonical_bytes` value byte-for-byte when given the `anchor` input. Drift between any pair indicates an SDK bug — signatures will not verify cross-language. The pinned-bytes tests in each SDK exercise this fixture; see TestCanonicalize_V4StableByteForm (Go), test_v4_stable_byte_form (Python), 'v4 produces stable bytes' (JS).",
+  "version": 1,
+  "vectors": [
+    {
+      "name": "minimal_v4",
+      "anchor": {
+        "version": 4,
+        "anchor_id": "anc_01ABC",
+        "company_id": "comp_01XYZ",
+        "chain_hash": "abc123",
+        "range": {
+          "end_entry_id": "ent_z",
+          "start_entry_id": "ent_a"
+        },
+        "entry_count": 100,
+        "signing_key_id": "aleutian-anchor-2026-01-v2",
+        "created_at_ms": 1715789432000,
+        "previous_anchor_id": "anc_prev_01",
+        "verified_through": 100
+      },
+      "canonical_bytes": "{\"anchor_id\":\"anc_01ABC\",\"chain_hash\":\"abc123\",\"company_id\":\"comp_01XYZ\",\"created_at_ms\":1715789432000,\"entry_count\":100,\"previous_anchor_id\":\"anc_prev_01\",\"range\":{\"end_entry_id\":\"ent_z\",\"start_entry_id\":\"ent_a\"},\"signing_key_id\":\"aleutian-anchor-2026-01-v2\",\"verified_through\":100,\"version\":4}"
+    },
+    {
+      "name": "max_verified_through",
+      "anchor": {
+        "version": 4,
+        "anchor_id": "anc_max",
+        "company_id": "comp_max",
+        "chain_hash": "f",
+        "range": {
+          "end_entry_id": "z",
+          "start_entry_id": "a"
+        },
+        "entry_count": 9223372036854775807,
+        "signing_key_id": "k",
+        "created_at_ms": 9223372036854775807,
+        "previous_anchor_id": "p",
+        "verified_through": 9223372036854775807
+      },
+      "canonical_bytes": "{\"anchor_id\":\"anc_max\",\"chain_hash\":\"f\",\"company_id\":\"comp_max\",\"created_at_ms\":9223372036854775807,\"entry_count\":9223372036854775807,\"previous_anchor_id\":\"p\",\"range\":{\"end_entry_id\":\"z\",\"start_entry_id\":\"a\"},\"signing_key_id\":\"k\",\"verified_through\":9223372036854775807,\"version\":4}"
+    },
+    {
+      "name": "v3_no_verified_through",
+      "anchor": {
+        "version": 3,
+        "anchor_id": "anc_v3",
+        "company_id": "comp_v3",
+        "chain_hash": "h",
+        "range": {
+          "end_entry_id": "e",
+          "start_entry_id": "s"
+        },
+        "entry_count": 50,
+        "signing_key_id": "k",
+        "created_at_ms": 1234567890000,
+        "previous_anchor_id": ""
+      },
+      "canonical_bytes": "{\"anchor_id\":\"anc_v3\",\"chain_hash\":\"h\",\"company_id\":\"comp_v3\",\"created_at_ms\":1234567890000,\"entry_count\":50,\"previous_anchor_id\":\"\",\"range\":{\"end_entry_id\":\"e\",\"start_entry_id\":\"s\"},\"signing_key_id\":\"k\",\"version\":3}"
+    }
+  ]
+}

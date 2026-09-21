@@ -1,0 +1,85 @@
+{
+  "$schema_comment": "Cross-language v3 golden vectors for capture.request.v3 (chainlinker_modernization_01b; pii_digest_key_version added by pii_hmac_key_rotation_R3). Each vector's input uses language-neutral snake_case fields; expected_canonical_bytes_hex is the length-prefixed TLV (4-field header + 15-field alphabetical body) and expected_content_hash_sha512_hex is SHA-512 of 'aleutian.chain.entry.v3:' || canonical_bytes. Go SDK (01c), Python (01d), JS (01e) read this file and assert byte+hash equality on re-encode. Baked from the Go producer encoder.",
+  "domain_prefix_v3": "aleutian.chain.entry.v3:",
+  "entry_type": "capture.request.v3",
+  "vectors": [
+    {
+      "$comment": "aleutian-managed custody + pii_inspection + full verdict; every field non-empty incl hyphenated trust_level.",
+      "name": "full_pii_inspection",
+      "input": {
+        "company_id": "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+        "signing_key_id": "capture-leaf-signer-2026-v1",
+        "timestamp_ms": 1751068800000,
+        "capture_method": "fetch_intercept",
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "dlp": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "encryption_mode": "aleutian-managed",
+        "model": "gpt-4o-2024-08-06",
+        "pii_action": "flagged",
+        "pii_categories": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "pii_detected": true,
+        "pii_digest_key_version": "sm:v1",
+        "processing_mode": "pii_inspection",
+        "provider": "openai",
+        "region": "us",
+        "source_type": "extension",
+        "trust_level": "self-reported",
+        "user_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "expected_canonical_bytes_hex": "0000001f636f6d705f3031485a58394b324d334e34503551365237533854395630574100000012636170747572652e726571756573742e76330000001b636170747572652d6c6561662d7369676e65722d323032362d763100000197b3d574000000000f66657463685f696e7465726365707400000080616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616100000080626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626200000010616c65757469616e2d6d616e61676564000000116770742d346f2d323032342d30382d303600000007666c6167676564000000806363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363000000000000000100000005736d3a76310000000e7069695f696e7370656374696f6e000000066f70656e616900000002757300000009657874656e73696f6e0000000d73656c662d7265706f72746564000000806464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464",
+      "expected_content_hash_sha512_hex": "444491ecb9705c9dc27bbaf21aaad3f0fb1ec25398a2e1086bb7f557919b8e0aa12ac6c95d051cccd1263e00f7728d15a35f2bacb2de0f8896bab73e77951c94"
+    },
+    {
+      "$comment": "zero-knowledge custody + zk processing; compliance surface empty (the enforced zk invariant) + all optional fields 0-length.",
+      "name": "minimal_zk",
+      "input": {
+        "company_id": "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+        "signing_key_id": "capture-leaf-signer-2026-v1",
+        "timestamp_ms": 1751068800000,
+        "capture_method": "",
+        "content_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "dlp": "",
+        "encryption_mode": "zero-knowledge",
+        "model": "",
+        "pii_action": "none",
+        "pii_categories": "",
+        "pii_detected": false,
+        "pii_digest_key_version": "",
+        "processing_mode": "zk",
+        "provider": "",
+        "region": "",
+        "source_type": "",
+        "trust_level": "",
+        "user_id": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "expected_canonical_bytes_hex": "0000001f636f6d705f3031485a58394b324d334e34503551365237533854395630574100000012636170747572652e726571756573742e76330000001b636170747572652d6c6561662d7369676e65722d323032362d763100000197b3d5740000000000000000806565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565000000000000000e7a65726f2d6b6e6f776c6564676500000000000000046e6f6e6500000000000000000000000000000000000000027a6b00000000000000000000000000000000000000806666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
+      "expected_content_hash_sha512_hex": "1a276c3a214a746c889c1c8e898186d578ba0399529420240e57005c456686375068ac04d1edc441b66faecc7f3bd0634a08a4a1303f2e319f125af9461d9c18"
+    },
+    {
+      "$comment": "inspection authorized but scanner found nothing — empty verdict with processing_mode=pii_inspection (disambiguated from zk by the sealed mode).",
+      "name": "inspected_clean",
+      "input": {
+        "company_id": "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+        "signing_key_id": "capture-leaf-signer-2026-v1",
+        "timestamp_ms": 1751068800000,
+        "capture_method": "fetch_intercept",
+        "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "dlp": "",
+        "encryption_mode": "aleutian-managed",
+        "model": "gpt-4o-2024-08-06",
+        "pii_action": "none",
+        "pii_categories": "",
+        "pii_detected": false,
+        "pii_digest_key_version": "",
+        "processing_mode": "pii_inspection",
+        "provider": "openai",
+        "region": "us",
+        "source_type": "extension",
+        "trust_level": "self-reported",
+        "user_id": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "expected_canonical_bytes_hex": "0000001f636f6d705f3031485a58394b324d334e34503551365237533854395630574100000012636170747572652e726571756573742e76330000001b636170747572652d6c6561662d7369676e65722d323032362d763100000197b3d574000000000f66657463685f696e746572636570740000008061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161610000000000000010616c65757469616e2d6d616e61676564000000116770742d346f2d323032342d30382d3036000000046e6f6e65000000000000000000000000000000000000000e7069695f696e7370656374696f6e000000066f70656e616900000002757300000009657874656e73696f6e0000000d73656c662d7265706f72746564000000806464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464",
+      "expected_content_hash_sha512_hex": "40e5c4ce227cf66429f3527aa82d0c0d767e03e767b9cd5c9cb5bc780c41c05043ec6d98bf0a8adc87482261fdedd05770e40a5c1b4dd19a1017e3e8a041e805"
+    }
+  ]
+}

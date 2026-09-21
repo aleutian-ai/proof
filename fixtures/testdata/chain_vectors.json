@@ -1,0 +1,29 @@
+[
+  {
+    "name": "first_entry_empty_previous",
+    "previous_hash": "",
+    "run_id": "run_550e8400-e29b-41d4-a716-446655440000",
+    "sequence_num": 0,
+    "timestamp": "2026-01-20T12:00:00.000000Z",
+    "content_hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+    "expected_hash": "e6e26e4cb95916bafcee9e328bf70e04ba43a8b4cfa028aae2d8b418b9407cab973cdc97424e233e988fdbb58f33ec7b6a5d4cabd404bc13d3fe59495a0a8413"
+  },
+  {
+    "name": "subsequent_entry",
+    "previous_hash": "e6e26e4cb95916bafcee9e328bf70e04ba43a8b4cfa028aae2d8b418b9407cab973cdc97424e233e988fdbb58f33ec7b6a5d4cabd404bc13d3fe59495a0a8413",
+    "run_id": "run_550e8400-e29b-41d4-a716-446655440000",
+    "sequence_num": 1,
+    "timestamp": "2026-01-20T12:00:01.123456Z",
+    "content_hash": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+    "expected_hash": "362780d0fbbe1ccd57c1705ffb6d2c9caeaf144a9b50e089ded06161347e5c12f0d49f00e1af79b0f5d1d50fc249d4560cbc31968664b05a4a2141d30f3ed99c"
+  },
+  {
+    "name": "tombstone_content_hash",
+    "previous_hash": "362780d0fbbe1ccd57c1705ffb6d2c9caeaf144a9b50e089ded06161347e5c12f0d49f00e1af79b0f5d1d50fc249d4560cbc31968664b05a4a2141d30f3ed99c",
+    "run_id": "run_550e8400-e29b-41d4-a716-446655440000",
+    "sequence_num": 2,
+    "timestamp": "2026-01-20T12:00:02.000000Z",
+    "content_hash": "TOMBSTONE:c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+    "expected_hash": "effff14c81ec514fa33adad0c51934ea9d3c1b35f6ef3a9e5e97cb634acbaec986e181a3e66619f96bde02d522d51fdecddbdf3b9e23f76b3cf807b75e62626c"
+  }
+]

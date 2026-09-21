@@ -1,3 +1,5 @@
+github.com/aleutian-ai/proof v0.1.0 h1:HW75AoFs7W9qfLJZF261KomuMpSCTSswOZ0pfviH0nE=
+github.com/aleutian-ai/proof v0.1.0/go.mod h1:BG+NgcYZiAZdAU7J3L56kaVI94eGlWooiKzDfmvhq/o=
 github.com/cloudflare/circl v1.6.3 h1:9GPOhQGF9MCYUeXyMYlqTR6a5gTrgR/fBLXvUgtVcg8=
 github.com/cloudflare/circl v1.6.3/go.mod h1:2eXP6Qfat4O/Yhh8BznvKnJ+uzEoTQ6jVKJRn81BiS4=
 github.com/golang-jwt/jwt/v5 v5.3.1 h1:kYf81DTWFe7t+1VvL7eS+jKFVWaUnK9cB1qbwn63YCY=

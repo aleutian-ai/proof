@@ -10,15 +10,18 @@ module github.com/aleutian-ai/proof/cmd/proof-mcp
 
 go 1.25.0
 
-replace github.com/aleutian-ai/proof => ../..
+// No replace directive: `go install .../cmd/proof-mcp@latest` refuses any module
+// that has one. Depend on a PUBLISHED version of the library. To develop the
+// server against unreleased library changes, use a go.work at the repo root
+// (gitignored) rather than reintroducing a replace here.
 
 require (
-	github.com/aleutian-ai/proof v0.0.0-00010101000000-000000000000
+	github.com/aleutian-ai/proof v0.1.0
+	github.com/cloudflare/circl v1.6.3
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 )
 
 require (
-	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect

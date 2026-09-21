@@ -700,3 +700,36 @@ func TestExplainTrustModel_CoversEveryCheck(t *testing.T) {
 		t.Error("the provenance caveat must be stated; a signature check does not say where the anchor came from")
 	}
 }
+
+// TestModuleIsInstallable guards the README's install line.
+//
+// `go install github.com/aleutian-ai/proof/cmd/proof-mcp@latest` REFUSES any
+// module whose go.mod contains a replace directive. This module carried
+// `replace github.com/aleutian-ai/proof => ../..` until the library was first
+// published, and the install command in the README failed for every user as a
+// result — while every test here stayed green, because tests run the module as
+// the main module, where replace is honoured.
+//
+// That asymmetry is why this has to be a test: nothing else in the suite can see
+// the failure. Develop against unreleased library changes with a go.work at the
+// repository root (gitignored) instead.
+func TestModuleIsInstallable(t *testing.T) {
+	data, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatalf("read go.mod: %v", err)
+	}
+	for i, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "//") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "replace ") || trimmed == "replace (" {
+			t.Errorf("go.mod:%d has a replace directive — `go install ...@latest` will refuse "+
+				"this module. Use a go.work for local development instead.", i+1)
+		}
+		if strings.Contains(trimmed, "github.com/aleutian-ai/proof v0.0.0-00010101000000") {
+			t.Errorf("go.mod:%d requires the zero pseudo-version of the library, which only "+
+				"resolves through a replace. Require a published tag.", i+1)
+		}
+	}
+}

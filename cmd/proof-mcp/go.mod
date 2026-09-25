@@ -16,7 +16,7 @@ go 1.25.0
 // (gitignored) rather than reintroducing a replace here.
 
 require (
-	github.com/aleutian-ai/proof v0.1.0
+	github.com/aleutian-ai/proof v0.2.0
 	github.com/cloudflare/circl v1.6.3
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 )

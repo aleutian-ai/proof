@@ -1,73 +1,72 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Package captureentry is the producer-side canonical encoder for the
-// main audit-CAPTURE chain's V3 typed-TLV leaf (the AI-request entries from
-// ChatGPT/Claude/Gemini). It is the byte-for-byte sibling of
-// internal/consent/canonical_v3.go (which encodes the SAR/consent sub-chain)
-// and shares the SAME locked domain prefix "aleutian.chain.entry.v3:".
-// Domain separation between the two chains is provided by the header
-// `entry_type` field ("capture.request.v3" here vs the SAR types there) — see
-// chainlinker_modernization_01a §C4.
+package chainformat
+
+// This file is the producer-side canonical encoder for the V3 typed-TLV capture
+// leaf — the entry describing one AI request. It is NOT the package
+// documentation; see doc.go for that.
 //
-// # Why a new package (not a method on the consent encoder)
+// # The locked domain prefix
 //
-// The capture chain and the consent chain are independent event families with
-// independent body schemas, validators, and signing-key families
-// (FamilyCaptureLeaf vs FamilyChainAnchor). Mirroring the consent encoder's
-// STRUCTURE in a separate package keeps the two byte contracts from
-// accidentally coupling: a change to the SAR body must not perturb a capture
-// leaf's bytes and vice-versa. The shared, load-bearing constants (the domain
-// prefix, the 256-byte cap, the u32/u64 BE TLV rules) are intentionally
-// re-stated here rather than imported, matching the consent file's own
-// local-regex / import-cycle-avoidance discipline.
+// Leaves are encoded under "aleutian.chain.entry.v3:". A sibling encoder in
+// Aleutian's private tree encodes a consent/SAR sub-chain under the SAME
+// prefix; the two are separated by the header `entry_type` field
+// ("capture.request.v3" here), not by the prefix. An adopter defining their own
+// entry types must keep them distinct from that value for the same reason.
 //
-// # The 15-field body (chainlinker_modernization_01b; pii_digest_key_version
-// added by pii_hmac_key_rotation_R3)
+// # Field order is frozen, and does not follow the field NAMES
 //
-// Header (alphabetical): company_id, entry_type, signing_key_id, timestamp_ms.
-// `timestamp_ms` IS the server-stamped ingested_at anchor clock (A5) and is NOT
-// repeated in the body. Body (alphabetical, every field emitted unconditionally
-// with a 0-length prefix / 0 for empties so the layout is path-independent):
+// Header, in the order the format was defined with:
+//
+//	company_id, entry_type, signing_key_id, timestamp_ms
+//
+// The first field is now called `subject`. The ORDER did not follow the rename,
+// and must not: these are positional VALUES and the encoder never writes a key
+// name, so moving one would change every content hash ever computed. See
+// encodeCanonicalV3.
+//
+// `timestamp_ms` is the server-stamped arrival clock and is NOT repeated in the
+// body. Body fields follow, every one emitted unconditionally with a 0-length
+// prefix (or 0) when empty, so the layout is independent of which fields a
+// particular entry happens to populate:
 //
 //	capture_method, content_hash, dlp, encryption_mode, model, pii_action,
 //	pii_categories, pii_detected, pii_digest_key_version, processing_mode,
 //	provider, region, source_type, trust_level, user_id
 //
-// encryption_mode {zero-knowledge|aleutian-managed|cmek} is KEY CUSTODY;
-// processing_mode {zk|pii_inspection} is INSPECTION AUTHORIZATION — orthogonal.
-// processing_mode=="zk" requires an empty compliance surface (enforced).
+// `encryption_mode` {zero-knowledge|aleutian-managed|cmek} is KEY CUSTODY;
+// `processing_mode` {zk|pii_inspection} is INSPECTION AUTHORIZATION. They are
+// orthogonal, and conflating them is the mistake this note exists to prevent.
+// processing_mode=="zk" requires an empty compliance surface, which is enforced.
 //
-// `user_id`, `pii_categories`, and `dlp` are per-tenant HMAC-SHA512 digests
-// (128 lowercase hex, or empty) MINTED UPSTREAM at ingest (01k). This encoder
-// validates their SHAPE only — it never sees cleartext, matching the consent
-// chain_b2 producer-responsibility contract for server-side producers.
+// # SECURITY DELEGATION — this encoder validates SHAPE, not keying
 //
-// # SECURITY DELEGATION — shape-only is NOT a keying guarantee (4-agent F2)
+// `user_id`, `pii_categories` and `dlp` are expected to be keyed digests (128
+// lowercase hex, or empty), minted UPSTREAM by whoever produces the entry. This
+// encoder never sees cleartext and checks only the shape.
 //
-// A 128-hex string is byte-indistinguishable between a correctly per-tenant-
-// HMAC'd digest and a plain unkeyed SHA-512 (or a digest minted for the WRONG
-// tenant). This encoder CANNOT detect either from the value alone, and it
-// deliberately does NOT carry the consent chain's typed `TenantHMACDigest`
-// (whose CompanyID() binding catches a wrong-tenant digest) — capture digests
-// are bare strings minted at 01k. Therefore the following are HARD REQUIREMENTS
-// on 01k, NOT on this package, and MUST be enforced there as a release gate:
+// **A 128-hex string is byte-indistinguishable between a correctly keyed HMAC
+// and a plain unkeyed SHA-512** — or a digest minted under the wrong key. This
+// encoder cannot tell them apart from the value alone, and it does not try.
 //
-//   - the per-tenant HMAC key is non-empty/valid (an empty key would silently
-//     degrade to a plain hash → an immutable, signed, cross-tenant correlation
-//     oracle that cannot be remediated after sealing);
-//   - the digest's minting tenant == the leaf's CompanyID (no cross-tenant splice);
-//   - a known-answer tripwire test pins that two distinct tenant keys produce
-//     distinct digests for the same input.
+// Because the bytes it produces become immutable and signed, a keying regression
+// upstream is UNRECOVERABLE after the fact. The producer therefore owns these,
+// and they belong in that producer's release gate, not here:
 //
-// Because the bytes this encoder produces become immutable and signed, a keying
-// regression upstream is unrecoverable — 01k owns that gate.
+//   - the digest key is non-empty and valid. An empty key silently degrades to
+//     a plain hash, which turns the chain into an immutable, signed,
+//     cross-namespace correlation oracle that cannot be remediated after
+//     sealing;
+//   - the digest was minted for the same subject the leaf names, so two
+//     namespaces cannot be spliced;
+//   - a known-answer test pins that two distinct keys produce distinct digests
+//     for the same input.
 //
 // # Concurrency
 //
-// Every exported function is a pure function over its inputs and is safe for
-// concurrent use.
-package chainformat
+// Every exported function here is a pure function over its inputs and is safe
+// for concurrent use.
 
 import (
 	"crypto/sha512"
@@ -170,9 +169,6 @@ var ErrInvalidEntryV3 = errors.New("invalid v3 chain entry")
 // Shape validators. These mirror the consent encoder's local-regex discipline
 // (avoid an import cycle, keep the byte contract self-contained).
 var (
-	// v3CompanyIDRe matches the canonical comp_<26-char Crockford-base32 ULID>
-	// form (ADR-019), identical to the consent encoder's local copy.
-	v3CompanyIDRe = regexp.MustCompile(`^comp_[0-9A-HJKMNP-TV-Z]{26}$`)
 
 	// v3SigningKeyIDRe constrains signing_key_id to a registry-issued opaque
 	// shape: 1-128 chars from [A-Za-z0-9_./-]. Identical to the consent
@@ -260,7 +256,7 @@ var (
 // upstream at ingest); this type carries no cleartext.
 //
 // Field provenance maps to storage.RawEntry as established by the 01b
-// field-timing trace: CompanyID/UserID/Provider/Model/Region/EncryptionMode/
+// field-timing trace: Subject/UserID/Provider/Model/Region/EncryptionMode/
 // ContentHash and the server-stamped ingested_at are known synchronously at
 // ingest; PIIDetected/PIIAction/PIICategories/DLP/TrustLevel/CaptureMethod/
 // SourceType are computed inline before the first write. Dedup + linkage fields
@@ -268,8 +264,19 @@ var (
 type CaptureRequestV3 struct {
 	// --- Header (4 fields) ---
 
-	// CompanyID is the canonical comp_<26-char-ULID> tenant key (ADR-019).
-	CompanyID string `json:"company_id"`
+	// Subject is the namespace this entry belongs to: whatever the chain is
+	// ABOUT. Any non-empty string within the field limits — a hostname, a
+	// project name, an account identifier, an opaque id.
+	//
+	// It is hashed into the leaf so an entry cannot be replayed into a chain
+	// with a different subject. It is NOT an identity claim and nothing here
+	// authenticates it; it separates namespaces, it does not prove one.
+	//
+	// Until 2026-09-23 this was CompanyID and had to match
+	// `^comp_<26-char Crockford-base32 ULID>$`, a private platform's tenant
+	// scheme. The JSON key "company_id" is still accepted on read, and
+	// `comp_<ULID>` is still a perfectly good subject.
+	Subject string `json:"subject"`
 
 	// SigningKeyID is the trust-manifest alias of the per-tenant
 	// FamilyCaptureLeaf ML-DSA-65 key that will sign this leaf (01k). Opaque
@@ -579,8 +586,12 @@ func (e *v3Encoder) appendBool(v bool) {
 // encodeCanonical writes the capture-leaf canonical bytes: the 4-field header
 // then the 15-field body, both alphabetical.
 func (e CaptureRequestV3) encodeCanonicalV3(enc *v3Encoder) {
-	// Header (alphabetical): company_id, entry_type, signing_key_id, timestamp_ms.
-	enc.appendStr(e.CompanyID)
+	// Header (alphabetical BY THE NAMES THIS FORMAT WAS DEFINED WITH):
+	// company_id, entry_type, signing_key_id, timestamp_ms. The first field is
+	// now called `subject`; the ORDER cannot follow the rename, because these
+	// are positional VALUES and moving one would change every content hash
+	// ever computed.
+	enc.appendStr(e.Subject)
 	enc.appendStr(EntryTypeCaptureRequestV3)
 	enc.appendStr(e.SigningKeyID)
 	enc.appendU64(e.TimestampMs)
@@ -612,14 +623,12 @@ func (e CaptureRequestV3) encodeCanonicalV3(enc *v3Encoder) {
 // ErrInvalidEntryV3.
 func (e CaptureRequestV3) validateV3() error {
 	// --- Header ---
-	if e.CompanyID == "" {
-		return fmt.Errorf("chainformat: %w: company_id empty", ErrInvalidEntryV3)
+	// A subject has no required shape. An entry that commits to no namespace at
+	// all can be replayed into another chain, so empty is still refused.
+	if e.Subject == "" {
+		return fmt.Errorf("chainformat: %w: subject empty", ErrInvalidEntryV3)
 	}
-	if !v3CompanyIDRe.MatchString(e.CompanyID) {
-		return fmt.Errorf("chainformat: %w: company_id must match comp_<26-char Crockford-base32 ULID>",
-			ErrInvalidEntryV3)
-	}
-	if err := validateStringField("company_id", e.CompanyID); err != nil {
+	if err := validateStringField("subject", e.Subject); err != nil {
 		return err
 	}
 	if e.SigningKeyID == "" {

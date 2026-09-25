@@ -37,6 +37,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
@@ -64,6 +65,10 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdExport(args[1:], stdout, stderr)
 	case "init":
 		return cmdInit(args[1:], stdout, stderr)
+	case "keygen":
+		return cmdKeygen(args[1:], stdout, stderr)
+	case "anchor":
+		return cmdAnchor(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return exitOK
@@ -81,10 +86,25 @@ usage:
   proof verify <entries.json> [--json] [--max-breaks N]
   proof export --db <path> --chain <id> [--out <path>] [--jsonl]
   proof init   --db <path>
+  proof keygen [--alg x-wing] [--out-dir .] [--slot primary|backup|dual]
+               [--name LABEL] [--op-vault VAULT] [--force]
+  proof anchor --db <path> --chain <id> --subject <s> --key <private.pem>
+               [--previous <anchor.json>] [--out <path>]
 
 exit: 0 ok · 1 chain broken · 2 usage · 3 io error
 
 verify reads only the file you name. No network, no credentials.
+
+keygen writes a private key (0600) and a public key, in the standard PKCS#8 and
+SubjectPublicKeyInfo formats other tools can read. It self-tests every key
+before writing it, prints the SHA-512 fingerprint for reading aloud, and can
+store the pair in 1Password with --op-vault. The private key is never printed.
+
+anchor signs a statement that a chain had a particular head. It VERIFIES the
+chain first and refuses to anchor a broken one, so the claim it makes is one it
+established. Pass --previous for any anchor after the first; without it the
+anchor is the first in its chain. Like keygen, this verb takes a key and is
+therefore never exposed over MCP.
 `)
 }
 
@@ -262,16 +282,24 @@ func cmdExport(args []string, stdout, stderr *os.File) int {
 // fractional digits. Anything else and a verifier re-parsing this file computes
 // a different hash and reports a break on an intact chain.
 func toExported(r store.Entry) verify.Entry {
-	return verify.Entry{
+	e := verify.Entry{
 		EntryID:     r.EntryID,
 		EntryType:   r.EntryType,
 		Timestamp:   r.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-		RunID:       r.RunID,
-		SequenceNum: r.SequenceNum,
 		GlobalSeq:   r.GlobalSeq,
 		ContentHash: r.ContentHash,
 		ChainHash:   r.ChainHash,
 	}
+	// v2 is written without a format_version field, exactly as before v3
+	// existed, so an export of a v2 chain is byte-identical to what the
+	// previous release produced. Only v2 carries a run id and a batch sequence.
+	if chainformat.NormalizeFormatVersion(r.FormatVersion) == chainformat.FormatV2 {
+		e.RunID = r.RunID
+		e.SequenceNum = r.SequenceNum
+	} else {
+		e.FormatVersion = r.FormatVersion
+	}
+	return e
 }
 
 func writeEntries(w *os.File, entries []verify.Entry, jsonl bool) error {

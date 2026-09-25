@@ -48,17 +48,43 @@ type EntryRange struct {
 //     Verifiers dispatch on it and never infer the version from which fields
 //     happen to be populated.
 type Anchor struct {
-	// Version is the declared canonical-form version. 3, 4 and 5 are defined.
+	// Version is the declared canonical-form version. 3, 4, 5 and 6 are
+	// defined. v6 is the one to produce; v5 canonicalizes but is refused by
+	// VerifySignature, and v3/v4 spell the subject "company_id" on the wire.
 	Version int `json:"version"`
 
 	// AnchorID uniquely identifies this anchor.
 	AnchorID string `json:"anchor_id"`
 
-	// CompanyID is the tenant this anchor belongs to.
+	// Subject is the namespace this anchor belongs to: whatever the chain is
+	// ABOUT. Any non-empty string — a hostname, a project, an opaque id.
 	//
-	// Business-identifying. Present in the signed bytes by design — an anchor
-	// that did not commit to its tenant could be replayed against another.
-	CompanyID string `json:"company_id"`
+	// It is in the signed bytes by design: an anchor that did not commit to its
+	// subject could be replayed onto another chain. Nothing here authenticates
+	// it, so it separates namespaces rather than proving one.
+	//
+	// NOT ERASABLE. MUST NOT CARRY PERSONAL DATA. Being inside the signed bytes
+	// means this value cannot be removed, redacted or corrected afterwards:
+	// changing it invalidates the signature, and via ChainHash and
+	// PreviousAnchorID it invalidates every anchor that follows. Anchors are
+	// meant to be handed to third parties and escrowed. A name, an email
+	// address, a username or a device hostname placed here is therefore a
+	// permanent, published, undeletable record of a person — which is a
+	// straightforward conflict with a right to erasure, inherited by anyone who
+	// adopts this library without thinking about it.
+	//
+	// Use a stable pseudonym or an opaque identifier. If the natural subject is
+	// personal, hash it with a secret salt you keep separately, so the anchor
+	// commits to the pseudonym and the mapping stays erasable.
+	//
+	// WIRE KEY BY VERSION. v3–v5 spell it "company_id"; v6 spells it "subject".
+	// The key is INSIDE the signed bytes, which is why the rename needed a
+	// version (see SubjectVersion) rather than being a refactor. Marshalling
+	// emits the key that matches Version; unmarshalling accepts either.
+	//
+	// Until 2026-09-23 this was CompanyID, named for a private platform's
+	// tenant. A tenant id is still a perfectly good subject.
+	Subject string `json:"-"`
 
 	// ChainHash binds this anchor to its covered segment AND to the previous
 	// anchor. It is NOT the tip entry's chain hash — it is the output of

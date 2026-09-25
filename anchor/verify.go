@@ -7,8 +7,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-
-	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 )
 
 // ML-DSA-65 parameter sizes, fixed by FIPS 204.
@@ -252,7 +250,11 @@ func VerifySignature(a Anchor, src KeySource) (Trust, error) {
 	}
 
 	// 2. v5 canonicalizes but must not be verified.
-	if a.Version >= MerkleVersion {
+	//
+	// An EXACT test, not ">= MerkleVersion". The open-ended form was written to
+	// exclude v5 and silently excluded every version after it too — v6 would
+	// have verified nowhere. Merkle is one version, not a floor.
+	if a.Version == MerkleVersion {
 		return "", fmt.Errorf("%w: v%d has no cross-language test vectors; "+
 			"canonicalization is implemented but verification would assert agreement "+
 			"with implementations that do not exist",
@@ -284,15 +286,11 @@ func VerifySignature(a Anchor, src KeySource) (Trust, error) {
 		return "", fmt.Errorf("anchor: canonicalize: %w", err)
 	}
 
-	// 5. Verify.
-	scheme := mldsa65.Scheme()
-	pub, err := scheme.UnmarshalBinaryPublicKey(pubKey)
-	if err != nil {
-		return "", fmt.Errorf("%w: public key could not be parsed", ErrInvalidSignature)
-	}
-	// nil opts = empty context string = FIPS 204 §5.3 pure ML-DSA.Verify.
-	if !scheme.Verify(pub, canonical, sig, nil) {
-		return "", ErrInvalidSignature
+	// 5. Verify, through the same primitive SignCanonical self-checks with, so
+	// "the signer just produced this" and "this package accepts this" cannot
+	// drift apart.
+	if err := verifyMLDSA65(pubKey, canonical, sig); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidSignature, err)
 	}
 	return trust, nil
 }

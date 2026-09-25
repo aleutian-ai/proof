@@ -129,6 +129,13 @@ func TestNoKeyMaterialTools(t *testing.T) {
 	forbidden := []string{
 		"keygen", "key_gen", "generate_key", "private_key", "seed",
 		"decrypt", "unwrap", "decapsulate", "unseal", "plaintext",
+		// SIGNING is a key operation too. Added 2026-09-24 with `proof anchor`
+		// (_35c): the anchor signer would have been named something like
+		// "sign_anchor", which matched none of the terms above — this test would
+		// have passed while a private key crossed the MCP boundary. Only
+		// TestToolsAreTheExpectedSet would have caught it, and that one is about
+		// surface stability rather than key safety.
+		"sign", "signer", "signature_over",
 	}
 
 	cs := connect(t)
@@ -305,7 +312,7 @@ func TestComputeChainHash_RejectsMalformedPreviousHash(t *testing.T) {
 
 func TestCanonicalizeLeaf(t *testing.T) {
 	entry := chainformat.CaptureRequestV3{
-		CompanyID: "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA", SigningKeyID: "signer-1",
+		Subject: "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA", SigningKeyID: "signer-1",
 		TimestampMs: 1751068800000, CaptureMethod: "fetch_intercept",
 		ContentHash: strings.Repeat("a", 128), EncryptionMode: "zero-knowledge",
 		Model: "gpt-4o", PIIAction: "none", ProcessingMode: "zk",
@@ -434,14 +441,14 @@ func anchoredFixture(t *testing.T, n int, truncateBy int) (entriesPath, anchorPa
 	a := anchor.Anchor{
 		Version:          3,
 		AnchorID:         "anchor_01234567-8901-2345-6789-012345678901",
-		CompanyID:        "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+		Subject:          "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
 		Range:            anchor.EntryRange{StartEntryID: rows[0].id, EndEntryID: rows[n-1].id},
 		EntryCount:       int64(n),
 		SigningKeyID:     "test-key-v1",
 		CreatedAtMs:      base.UnixMilli(),
 		PreviousAnchorID: anchor.SeedAnchorID,
 	}
-	ah, err := anchor.ChainHash(anchor.SeedAnchorHash, a.CompanyID,
+	ah, err := anchor.ChainHash(anchor.SeedAnchorHash, a.Subject,
 		a.Range.StartEntryID, a.Range.EndEntryID, rows[n-1].chainHash)
 	if err != nil {
 		t.Fatal(err)

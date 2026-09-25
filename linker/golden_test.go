@@ -38,7 +38,12 @@ func TestGoldenVector(t *testing.T) {
 	base := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
 
 	s := memory.New()
-	l, err := linker.New(s, linker.WithRunIDFunc(func() (string, error) { return goldenRunID, nil }))
+	// v2 deliberately: these values pin agreement with the hosted platform's
+	// own linking loop, which writes v2. A v3 linker here would replace the
+	// cross-implementation evidence with a self-consistency check.
+	l, err := linker.New(s,
+		linker.WithFormatV2(),
+		linker.WithRunIDFunc(func() (string, error) { return goldenRunID, nil }))
 	if err != nil {
 		t.Fatalf("new linker: %v", err)
 	}

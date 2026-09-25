@@ -405,11 +405,23 @@ type verifyAnchorIn struct {
 	AnchorPath    string `json:"anchor_path" jsonschema:"path to an anchor JSON file"`
 	PublicKeyPath string `json:"public_key_path,omitempty" jsonschema:"optional path to a raw ML-DSA-65 public key (1952 bytes). Without it the anchor's signature is NOT checked."`
 	KeyTrust      string `json:"key_trust,omitempty" jsonschema:"where the key came from: platform, provided, or self. Defaults to provided. This decides what a successful verification actually claims."`
+
+	// An anchor commits to its predecessor's chain hash, and names its
+	// predecessor only by id — so the hash cannot be recovered from the anchor
+	// being checked. Without it, only the FIRST anchor in a chain can be
+	// verified, and every later one comes back looking like tamper evidence.
+	PreviousAnchorHash string `json:"previous_anchor_hash,omitempty" jsonschema:"the previous anchor's chain_hash (128 lowercase hex). Required for any anchor that is not the first in its chain: the predecessor's hash is inside this anchor's own hash. Omit ONLY for a genesis anchor; omitting it for a later one reports a head mismatch, which looks like tampering but is not."`
 }
 
 type verifyAnchorOut struct {
-	Outcome           string `json:"outcome"`
-	Bound             bool   `json:"bound"`
+	Outcome string `json:"outcome"`
+	Bound   bool   `json:"bound"`
+
+	// AssumedGenesis records that no previous_anchor_hash was supplied, so the
+	// anchor was checked as if it were the first in its chain. A reader seeing
+	// a head mismatch alongside this knows to suspect the missing input before
+	// suspecting an attacker.
+	AssumedGenesis    bool   `json:"assumed_genesis,omitempty"`
 	Detail            string `json:"detail,omitempty"`
 	EntriesCovered    int64  `json:"entries_covered"`
 	SignatureVerified bool   `json:"signature_verified"`
@@ -432,16 +444,25 @@ func verifyAnchorTool(ctx context.Context, req *mcp.CallToolRequest, in verifyAn
 		return nil, verifyAnchorOut{}, err
 	}
 
+	// Default to the genesis sentinel, because that is the only predecessor a
+	// caller who supplied none could have meant. The tool reports which
+	// assumption it made, so a head mismatch on a chained anchor is traceable to
+	// the missing input rather than read as evidence of tampering.
+	previousAnchorHash := in.PreviousAnchorHash
+	if previousAnchorHash == "" {
+		previousAnchorHash = anchor.SeedAnchorHash
+	}
+
 	var res verify.BindResult
 	if in.PublicKeyPath == "" {
-		res, err = verify.BindAnchor(a, entries)
+		res, err = verify.BindAnchor(a, entries, previousAnchorHash)
 	} else {
 		var ring *anchor.KeyRing
 		ring, err = loadKeyRing(in.PublicKeyPath, in.KeyTrust, a.SigningKeyID)
 		if err != nil {
 			return nil, verifyAnchorOut{}, err
 		}
-		res, err = verify.VerifyAnchor(a, entries, ring)
+		res, err = verify.VerifyAnchor(a, entries, previousAnchorHash, ring)
 	}
 	if err != nil {
 		return nil, verifyAnchorOut{}, err
@@ -450,6 +471,7 @@ func verifyAnchorTool(ctx context.Context, req *mcp.CallToolRequest, in verifyAn
 	out := verifyAnchorOut{
 		Outcome:           string(res.Outcome),
 		Bound:             res.Bound,
+		AssumedGenesis:    in.PreviousAnchorHash == "",
 		Detail:            res.Detail,
 		EntriesCovered:    res.EntriesCovered,
 		SignatureVerified: res.SignatureVerified,

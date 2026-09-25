@@ -21,7 +21,7 @@ import (
 // every field set, used as the base for happy-path + mutation tests.
 func validFullEntry() CaptureRequestV3 {
 	return CaptureRequestV3{
-		CompanyID:           "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+		Subject:             "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
 		SigningKeyID:        "capture-leaf-signer-2026-v1",
 		TimestampMs:         1751068800000, // 2025-06-28T00:00:00Z-ish; fixed for determinism
 		CaptureMethod:       "fetch_intercept",
@@ -46,7 +46,7 @@ func validFullEntry() CaptureRequestV3 {
 // fields at their empty form — exercises the 0-length-prefix path.
 func validMinimalZKEntry() CaptureRequestV3 {
 	return CaptureRequestV3{
-		CompanyID:           "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+		Subject:             "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
 		SigningKeyID:        "capture-leaf-signer-2026-v1",
 		TimestampMs:         1751068800000,
 		CaptureMethod:       "",
@@ -97,6 +97,11 @@ type captureGoldenVector struct {
 // captureFixtureInput is the language-neutral input projection of CaptureRequestV3.
 // The SDK ports declare a structurally-identical type with the SAME json tags so
 // every language consumes one fixture file.
+//
+// Its first key stays "company_id" ON PURPOSE: the shared fixture file is not
+// being rewritten, and the Go field it feeds is now Subject. That the fixture's
+// expected hashes still match after the rename is the evidence that the rename
+// touched no hashed byte.
 type captureFixtureInput struct {
 	CompanyID           string `json:"company_id"`
 	SigningKeyID        string `json:"signing_key_id"`
@@ -120,7 +125,7 @@ type captureFixtureInput struct {
 
 func (in captureFixtureInput) toEntry() CaptureRequestV3 {
 	return CaptureRequestV3{
-		CompanyID:           in.CompanyID,
+		Subject:             in.CompanyID,
 		SigningKeyID:        in.SigningKeyID,
 		TimestampMs:         in.TimestampMs,
 		CaptureMethod:       in.CaptureMethod,
@@ -143,7 +148,7 @@ func (in captureFixtureInput) toEntry() CaptureRequestV3 {
 
 func entryToFixtureInput(e CaptureRequestV3) captureFixtureInput {
 	return captureFixtureInput{
-		CompanyID:           e.CompanyID,
+		CompanyID:           e.Subject,
 		SigningKeyID:        e.SigningKeyID,
 		TimestampMs:         e.TimestampMs,
 		CaptureMethod:       e.CaptureMethod,
@@ -164,7 +169,7 @@ func entryToFixtureInput(e CaptureRequestV3) captureFixtureInput {
 	}
 }
 
-const captureGoldenSchemaComment = "Cross-language v3 golden vectors for capture.request.v3 (chainlinker_modernization_01b; pii_digest_key_version added by pii_hmac_key_rotation_R3). Each vector's input uses language-neutral snake_case fields; expected_canonical_bytes_hex is the length-prefixed TLV (4-field header + 15-field alphabetical body) and expected_content_hash_sha512_hex is SHA-512 of 'aleutian.chain.entry.v3:' || canonical_bytes. Go SDK (01c), Python (01d), JS (01e) read this file and assert byte+hash equality on re-encode. Baked from the Go producer encoder."
+const captureGoldenSchemaComment = "Cross-language golden vectors for the capture.request.v3 leaf. Each vector's input uses language-neutral snake_case field names; expected_canonical_bytes_hex is the length-prefixed TLV encoding (a 4-field header followed by a 15-field alphabetical body) and expected_content_hash_sha512_hex is SHA-512 of domain_prefix_v3 || canonical_bytes. An implementation in any language should re-encode each input and assert byte-for-byte equality with both. NOTE: the header's first field is serialized in the position it was defined in, under its original name 'company_id'; it is now called 'subject' and the ORDER deliberately did not follow the rename, because these are positional values and moving one would change every content hash ever computed."
 
 // captureGoldenSeeds returns the canonical input vectors (without baked hexes).
 func captureGoldenSeeds() []captureGoldenVector {
@@ -344,13 +349,14 @@ func TestCanonicalV3_TLVStructure(t *testing.T) {
 		t.Fatalf("encode: %v", err)
 	}
 	fields := parseTLV(t, canonical)
-	// 4 header fields (company_id, entry_type, signing_key_id, timestamp_ms[u64])
+	// 4 header fields, in the order the format was defined with:
+	// subject (was company_id), entry_type, signing_key_id, timestamp_ms[u64]
 	// + 15 body fields (pii_detected is the only u64 body field).
 	if len(fields) != 19 {
 		t.Fatalf("expected 19 TLV fields (4 header + 15 body), got %d", len(fields))
 	}
 	// Header order.
-	assertStrField(t, fields[0], "company_id", e.CompanyID)
+	assertStrField(t, fields[0], "subject", e.Subject)
 	assertStrField(t, fields[1], "entry_type", EntryTypeCaptureRequestV3)
 	assertStrField(t, fields[2], "signing_key_id", e.SigningKeyID)
 	assertU64Field(t, fields[3], "timestamp_ms", uint64(e.TimestampMs))
@@ -445,8 +451,7 @@ func TestCanonicalV3_Rejections(t *testing.T) {
 		name   string
 		mutate func(*CaptureRequestV3)
 	}{
-		{"empty_company_id", func(e *CaptureRequestV3) { e.CompanyID = "" }},
-		{"bad_company_id", func(e *CaptureRequestV3) { e.CompanyID = "comp_lowercase" }},
+		{"empty_subject", func(e *CaptureRequestV3) { e.Subject = "" }},
 		{"empty_signing_key_id", func(e *CaptureRequestV3) { e.SigningKeyID = "" }},
 		{"bad_signing_key_id", func(e *CaptureRequestV3) { e.SigningKeyID = "has space" }},
 		{"zero_timestamp", func(e *CaptureRequestV3) { e.TimestampMs = 0 }},
@@ -568,7 +573,7 @@ func TestEntryType_DisjointFromConsent(t *testing.T) {
 
 // TestCanonicalV3_HandDerivedHeaderPrefix is an INDEPENDENT oracle (4-agent
 // review M3): rather than trusting the encoder to agree with itself, it hand-
-// computes the first canonical record (company_id) and asserts the encoder
+// computes the first canonical record (the subject) and asserts the encoder
 // emits exactly those bytes — catching a systematic endianness/framing bug that
 // a self-referential golden regen would bake in.
 func TestCanonicalV3_HandDerivedHeaderPrefix(t *testing.T) {
@@ -577,14 +582,14 @@ func TestCanonicalV3_HandDerivedHeaderPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	cid := []byte(e.CompanyID)
+	cid := []byte(e.Subject)
 	var want []byte
 	var lp [4]byte
 	binary.BigEndian.PutUint32(lp[:], uint32(len(cid))) // u32-BE length prefix
 	want = append(want, lp[:]...)
 	want = append(want, cid...)
 	if !bytes.HasPrefix(canonical, want) {
-		t.Fatalf("hand-derived company_id record mismatch:\n want prefix %x\n got        %x", want, canonical[:len(want)])
+		t.Fatalf("hand-derived subject record mismatch:\n want prefix %x\n got        %x", want, canonical[:len(want)])
 	}
 }
 

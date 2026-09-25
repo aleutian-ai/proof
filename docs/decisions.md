@@ -19,8 +19,13 @@ library. Enforced by `deps_test.go`, per package.
 is something a reviewer must vendor, pin and diff. "There is nothing to review"
 is the strongest version of that claim.
 
-It also puts the KEM inside Go's native FIPS 140-3 module boundary, which
-`x/crypto` is outside of.
+It also means the KEM's primitives are implemented by Go's native FIPS 140-3
+module. **Corrected 2026-09-21:** this was first written as a contrast with
+`x/crypto`, but recent `x/crypto` releases (verified at v0.49.0) wrap the same
+`crypto/ecdh` and `crypto/sha3`, so the benefit is one fewer dependency, not
+different code. X-Wing also cannot run under `GODEBUG=fips140=only` — the
+standard library refuses X25519 there — so no FIPS approval claim attaches to
+X-Wing itself.
 
 **Cost:** two Go stdlib version floors. `crypto/mlkem` and `crypto/sha3` arrived
 in Go 1.24, so 1.24 is a hard minimum.
@@ -320,3 +325,126 @@ assertion.
 **Left open:** a thin `proof/trust` adapter offering one-line convenience for
 Aleutian customers. Additive — `KeySource` means adding it later changes nothing
 built here. Not built until someone asks.
+
+## D15 · Chain hash v3 drops the batch fields
+
+**Decided (owner, 2026-09-22):** define `aleutian.chain.v3:` as
+
+    SHA-512( "aleutian.chain.v3:" ‖ previous_hash ‖ "|" ‖ global_seq ‖ "|"
+             ‖ timestamp ‖ "|" ‖ content_hash )
+
+`run_id` and the batch-local `sequence_num` are gone; `global_seq` — which v2
+did not hash at all — takes their place.
+
+**Why:** in v2 the hash depends on how entries were GROUPED into append calls,
+so `append(A,B)` and `append(A); append(B)` produce different hashes for the
+same entries in the same order. That forces an append/import split, means a
+chain cannot be reconstructed from its entries, and surprises every
+implementer. It exists because the preimage was built around how the platform
+batches writes, not around what a verifier needs.
+
+**Cost of fixing it now: nothing.** `proof` has zero known importers. The same
+change after adoption would be a migration for everyone.
+
+**v2 is not going away.** It stays verifiable forever — the platform has live v2
+chains. v3 is a separate domain-separated format, chosen at write time, never a
+reinterpretation of existing bytes.
+
+**Not decided here:** algorithm identifiers in anchors and wrapped keys (see
+`aleutianchain_32b`/`_33b`) and C2SP checkpoint compatibility. Both were
+deliberately deferred rather than bundled in.
+
+**Naming:** the `aleutian.` prefix stays. A domain separator has to be globally
+unique, and a rename buys nothing while costing a second format version.
+
+**Implemented 2026-09-23** (`aleutianchain_40`). Shape of the change:
+
+- `chainformat.ComputeChainHashV3` sits BESIDE the v2 function; the v2
+  preimage is a stored-data contract and was not edited.
+- Entries record `FormatVersion`. **Zero means v2**, because every entry
+  written before the field existed decodes as zero — that is what keeps those
+  chains verifiable without rewriting them.
+- The linker writes **v3 by default**; `linker.WithFormatV2()` keeps the old
+  path for anything that must produce bytes an older verifier accepts.
+- `verify` selects the preimage per entry, so a chain of v2 entries followed by
+  v3 entries verifies. It REJECTS a v3 entry carrying `run_id` or
+  `sequence_num`: neither is bound into a v3 hash, and carrying them would let
+  a reader believe they were attested. It reports an unknown version rather
+  than guessing a preimage.
+- A v2 export is byte-identical to what the previous release produced —
+  including `"sequence_num": 0`, which an `omitempty` tag would have silently
+  dropped from the first entry of every chain.
+
+
+---
+
+## D16 · The signer interface is not `crypto.Signer`, but the signer is
+
+Go's standard signing interface is `crypto.Signer`, and every KMS adapter in the
+ecosystem implements it. `proof` speaks it at both boundaries and deliberately
+does **not** use it as its own interface.
+
+**Outbound, free:** `*anchor.MLDSA65Signer` IS a `crypto.Signer`, enforced by a
+compile-time assertion, so it drops into x509 signing, go-tuf, sigstore or any
+other consumer with no adapter.
+
+**Inbound, explicit:** `anchor.FromCryptoSigner` accepts anyone's
+`crypto.Signer`. It is a visible call rather than a hidden type assertion
+because the wrapper cannot honour a context, and silently losing cancellation on
+a KMS round trip is a miserable thing to diagnose.
+
+**The interface itself is narrower:**
+
+```go
+type ContextSigner interface {
+    Public() crypto.PublicKey
+    SignContext(ctx context.Context, msg []byte) ([]byte, error)
+}
+```
+
+Nothing in this package ever calls a `crypto.Signer`'s `Sign`. Embedding it
+would oblige every Cloud KMS, PKCS#11 or HSM implementer to write a
+`Sign(rand io.Reader, msg []byte, opts crypto.SignerOpts)` method whose `rand`
+and `opts` are meaningless for ML-DSA and which would never be invoked —
+ceremony charged to exactly the people the interface exists to serve. A test
+asserts that a signer which is *not* a `crypto.Signer` works.
+
+`crypto.Signer` was also a poor fit on the merits, and the reasons are not
+stylistic:
+
+| | |
+|---|---|
+| no `context` | a KMS needs one; storing it in a struct is forbidden here |
+| `digest` is ambiguous | it means a digest for RSA/ECDSA and the whole message for ML-DSA, and the interface cannot distinguish them |
+| `rand` is meaningless | signing is deterministic (hedged variant disabled) |
+| `Public()` has no type | Go 1.25 has `crypto/mlkem` but no `crypto/mldsa`; returning circl's type would put circl in the public API |
+| no key id | anchors need `signing_key_id` |
+
+The ambiguity in row two is not theoretical. A signer written with RSA habits
+hashes its input and then signs, returning a structurally perfect 3309-byte
+ML-DSA-65 signature over the wrong bytes. `SignAnchor` therefore verifies every
+signature before returning it — unconditionally, with no flag to disable it.
+
+## D17 · Producing an anchor is one call, because the alternative has failed twice
+
+`signing_key_id` is inside the signed canonical form. Populating it after
+canonicalizing signs one set of bytes and publishes another, producing an anchor
+that fails verification permanently with a diagnostic indistinguishable from
+forgery.
+
+This project shipped exactly that bug in the platform, where anchors produced
+over a period of months were unverifiable. It was then re-introduced in the
+documentation of the open-source signer — an example teaching the broken order,
+while every test used the correct one, so the suite manufactured confidence in a
+doc that was wrong. Review caught it before release.
+
+Two independent occurrences of one mistake is a statement about the API, not
+about the people using it. `anchor.SignAnchor` therefore owns the whole
+sequence — stamp, validate, canonicalize, sign, verify — and returns a finished
+anchor. Nothing can be assembled out of order because nothing is handed over in
+pieces.
+
+The cost is real and accepted: the signer is no longer a general byte-signing
+seam, and callers who genuinely need to control canonicalization drop to
+`SignCanonical`, which refuses an empty `signing_key_id` outright. See
+`docs/anchor-model.md` §6a.

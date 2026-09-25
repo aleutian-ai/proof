@@ -1,19 +1,14 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Package merkle implements the RFC 9162 (Certificate Transparency 2.0) binary
-// Merkle Tree Hash, adapted to SHA-512 per ADR 003
-// (docs/designs/adrs/003_merkle_tree_commitment.md).
-//
-// The tree is built over ordered leaf data (the v3 leaf content_hash of each entry,
-// in global_seq order). Domain-separation bytes — 0x00 for leaves, 0x01 for interior
-// nodes — are the RFC's second-preimage defense (a leaf hash can never be reinterpreted
-// as an interior node) and are retained despite the SHA-512 substitution.
-//
-// This file is the pure whole-tree reference (RootFromLeaves is O(n)); inclusion
-// proofs (02c), consistency proofs (02d), and the incremental frontier (02e) build on
-// LeafHash/NodeHash and are cross-checked against RootFromLeaves.
 package merkle
+
+// This file is the pure whole-tree reference: RootFromLeaves builds every node
+// and is O(n). Inclusion proofs, consistency proofs and the incremental frontier
+// all build on LeafHash/NodeHash and are cross-checked against RootFromLeaves,
+// which is what keeps the optimized paths honest.
+//
+// See doc.go for the package documentation.
 
 import "crypto/sha512"
 

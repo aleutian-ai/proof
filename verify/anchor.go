@@ -79,32 +79,43 @@ type BindResult struct {
 //
 // # Description
 //
-// Recomputes the chain, then checks that the anchor's committed range, height
-// and head still describe it. Needs no key, no trust store and no network —
-// which is exactly why it is useful, and exactly why it proves less than it
-// appears to.
+// Recomputes the chain's head from the entries, then recomputes the anchor's own
+// chain hash from what it committed to, and compares. It answers "is the chain
+// in front of me the one this anchor described", and deliberately not "is this
+// anchor genuine" — that needs a key, and is [VerifyAnchor].
 //
-// **What this catches that linkage alone cannot:** truncation. A chain with
-// entries removed from the front and the remainder re-linked walks perfectly
-// clean; only the anchor's committed range start reveals it.
+// # previousAnchorHash is not optional, on purpose
 //
-// **What this does NOT establish:** that the anchor is genuine. An adversary who
-// can rewrite the chain can also mint a matching unsigned anchor. Use
-// VerifyAnchor when you have a key, and read the result's Trust field.
+// The predecessor's hash is INSIDE the anchor's own chain hash, so a verifier
+// that assumes it cannot check any anchor but the first:
+//
+//	first anchor      previousAnchorHash = anchor.SeedAnchorHash
+//	every one after   previousAnchorHash = the previous anchor's ChainHash
+//
+// An anchor names its predecessor by id (PreviousAnchorID), never by hash, so
+// the hash cannot be recovered from the anchor alone — the caller must hold the
+// previous anchor or a record of its chain hash. That is inherent to the format.
+//
+// This argument was once defaulted to the seed sentinel, which made the function
+// silently genesis-only: a correct chained anchor came back as BindHeadMismatch,
+// reading as tamper evidence. Passing it explicitly costs a caller one named
+// constant and removes a default that was wrong for every anchor but the first.
 //
 // # Inputs
 //
 //   - a: the anchor to bind against
 //   - entries: the chain, in ascending sequence order
+//   - previousAnchorHash: the predecessor's ChainHash, or [anchor.SeedAnchorHash]
+//     for a genesis anchor. Validated, not trusted.
 //
 // # Outputs
 //
 //   - BindResult: outcome plus the explicit proven / not-proven claim
-//   - error: ErrNoEntries, or a malformed anchor
+//   - error: ErrNoEntries, a malformed anchor, or a malformed previousAnchorHash
 //
 // # Example
 //
-//	res, err := verify.BindAnchor(a, entries)
+//	res, err := verify.BindAnchor(a, entries, prev.ChainHash)
 //	if err != nil {
 //	    return err
 //	}
@@ -116,13 +127,23 @@ type BindResult struct {
 //
 //   - Keyless by design. res.SignatureVerified is always false.
 //   - Covers only the anchored range; entries after the anchor are unprotected.
+//   - Checks that the anchor commits to THIS predecessor hash. It does not check
+//     that the predecessor is genuine, or that PreviousAnchorID names it — walk
+//     the anchor chain to its genesis for that.
 //
 // # Assumptions
 //
 //   - entries are ordered ascending by sequence, as exported
-func BindAnchor(a anchor.Anchor, entries []Entry) (BindResult, error) {
+func BindAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string) (BindResult, error) {
 	if len(entries) == 0 {
 		return BindResult{}, ErrNoEntries
+	}
+	// Validated up front, and as an ERROR rather than a mismatch. A malformed
+	// previous hash would otherwise recompute to something that simply does not
+	// match, and get reported as BindHeadMismatch — telling the caller their
+	// chain was tampered with when in fact their argument was wrong.
+	if err := validatePreviousAnchorHash(previousAnchorHash); err != nil {
+		return BindResult{}, err
 	}
 	if err := anchor.ValidateVersionInvariants(a); err != nil {
 		return BindResult{}, fmt.Errorf("verify: malformed anchor: %w", err)
@@ -168,7 +189,7 @@ func BindAnchor(a anchor.Anchor, entries []Entry) (BindResult, error) {
 	// anchors signed long ago, and tightening it would flip historical anchors
 	// from passing to broken.
 	recomputed, err := anchor.ChainHash(
-		anchor.SeedAnchorHash, a.CompanyID, a.Range.StartEntryID, a.Range.EndEntryID, head)
+		previousAnchorHash, a.Subject, a.Range.StartEntryID, a.Range.EndEntryID, head)
 	if err != nil {
 		return BindResult{}, fmt.Errorf("verify: %w", err)
 	}
@@ -225,8 +246,8 @@ func BindAnchor(a anchor.Anchor, entries []Entry) (BindResult, error) {
 // # Assumptions
 //
 //   - src is safe for concurrent use
-func VerifyAnchor(a anchor.Anchor, entries []Entry, src anchor.KeySource) (BindResult, error) {
-	res, err := BindAnchor(a, entries)
+func VerifyAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string, src anchor.KeySource) (BindResult, error) {
+	res, err := BindAnchor(a, entries, previousAnchorHash)
 	if err != nil {
 		return res, err
 	}
@@ -268,12 +289,121 @@ func walkForHead(entries []Entry) (head string, firstBreak int, err error) {
 			// Do not echo the value; report the position and the expected shape.
 			return "", i, fmt.Errorf("verify: entry %d: timestamp is not RFC3339", i)
 		}
-		want := chainformat.ComputeChainHashUnchecked(
-			previousHash, e.RunID, e.SequenceNum, ts, e.ContentHash)
+		want, herr := expectedChainHash(e, previousHash, ts)
+		if herr != nil {
+			// An entry this build cannot recompute is not evidence of tampering,
+			// and must not be reported as a break. Say what it actually is.
+			return "", i, fmt.Errorf("verify: entry %d: %w", i, herr)
+		}
 		if want != e.ChainHash {
 			return "", i, nil
 		}
 		previousHash = want
 	}
 	return previousHash, -1, nil
+}
+
+// validatePreviousAnchorHash checks the shape of a caller-supplied predecessor hash.
+//
+// # Description
+//
+// Shape only: 128 lowercase hex characters, which [anchor.SeedAnchorHash] also
+// satisfies. It exists so that a wrong ARGUMENT is reported as a wrong argument
+// rather than as a broken chain — the two call for completely different
+// responses and the distinction is invisible once it reaches BindHeadMismatch.
+//
+// # Inputs
+//
+//   - previousAnchorHash: the value to check
+//
+// # Outputs
+//
+//   - error: nil, or a description of what is wrong with it
+//
+// # Example
+//
+//	if err := validatePreviousAnchorHash(prev); err != nil {
+//	    return err
+//	}
+//
+// # Limitations
+//
+//   - Shape only. It cannot know whether this is the RIGHT predecessor.
+//
+// # Assumptions
+//
+//   - Anchor chain hashes are SHA-512, rendered lowercase hex.
+func validatePreviousAnchorHash(previousAnchorHash string) error {
+	if previousAnchorHash == "" {
+		return fmt.Errorf("verify: previousAnchorHash is required; pass "+
+			"anchor.SeedAnchorHash (%s…) for a genesis anchor", anchor.SeedAnchorHash[:16])
+	}
+	if len(previousAnchorHash) != 128 {
+		return fmt.Errorf("verify: previousAnchorHash must be 128 lowercase hex chars "+
+			"(SHA-512), got %d", len(previousAnchorHash))
+	}
+	for i := 0; i < len(previousAnchorHash); i++ {
+		c := previousAnchorHash[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return fmt.Errorf("verify: previousAnchorHash contains non-lowercase-hex characters")
+		}
+	}
+	return nil
+}
+
+// expectedChainHash recomputes an entry's chain hash under the format it declares.
+//
+// # Description
+//
+// The single dispatch shared by [Chain] and [walkForHead]. It exists because
+// those two paths once disagreed: `_40` taught Chain about v3 and left the
+// anchor binder recomputing every entry as v2, so from the moment v3 became the
+// default, binding a new chain to its anchor reported "linkage breaks at entry
+// 0" — a correct chain accused of tampering.
+//
+// Two verifiers in one package that answer differently is not a bug to fix once;
+// it is a bug to make impossible.
+//
+// # Inputs
+//
+//   - e: the entry to recompute
+//   - previousHash: the preceding entry's chain hash, empty for the first
+//   - ts: e.Timestamp already parsed
+//
+// # Outputs
+//
+//   - string: the hash this entry should carry
+//   - error: if the entry declares a format this build does not implement, or
+//     misuses a field its format does not bind
+//
+// # Example
+//
+//	want, err := expectedChainHash(e, previousHash, ts)
+//
+// # Limitations
+//
+//   - Recomputes. It does not compare; callers decide what a mismatch means.
+//
+// # Assumptions
+//
+//   - Tombstones are handled by the caller: their chain hash is retained from
+//     the original entry and cannot be recomputed from their own fields.
+func expectedChainHash(e Entry, previousHash string, ts time.Time) (string, error) {
+	switch chainformat.NormalizeFormatVersion(e.FormatVersion) {
+	case chainformat.FormatV2:
+		return chainformat.ComputeChainHashUnchecked(
+			previousHash, e.RunID, e.SequenceNum, ts, e.ContentHash), nil
+	case chainformat.FormatV3:
+		if e.RunID != "" || e.SequenceNum != 0 {
+			// v3 binds neither field. Carrying them anyway invites a reader to
+			// treat them as attested when they are free to change.
+			return "", fmt.Errorf("a v3 entry must not carry run_id or sequence_num; " +
+				"neither is bound into its hash")
+		}
+		return chainformat.ComputeChainHashV3Unchecked(
+			previousHash, e.GlobalSeq, ts, e.ContentHash), nil
+	default:
+		return "", fmt.Errorf("chain hash format version %d is not implemented by this build",
+			e.FormatVersion)
+	}
 }

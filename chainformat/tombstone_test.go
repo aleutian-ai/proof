@@ -259,7 +259,7 @@ func TestIsValidTombstoneFormat_Valid(t *testing.T) {
 		name        string
 		entryID     string
 		entryType   string
-		companyID   string
+		subject     string
 		contentHash string
 		timestamp   time.Time
 	}{
@@ -267,7 +267,7 @@ func TestIsValidTombstoneFormat_Valid(t *testing.T) {
 			name:        "standard tombstone",
 			entryID:     "tomb_550e8400-e29b-41d4-a716-446655440000",
 			entryType:   "tombstone",
-			companyID:   "company-123",
+			subject:     "my-project",
 			contentHash: "TOMBSTONE:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
 			timestamp:   time.Date(2026, 1, 19, 12, 0, 0, 0, time.UTC),
 		},
@@ -275,7 +275,7 @@ func TestIsValidTombstoneFormat_Valid(t *testing.T) {
 			name:        "uppercase UUID",
 			entryID:     "tomb_550E8400-E29B-41D4-A716-446655440000",
 			entryType:   "tombstone",
-			companyID:   "comp_abc",
+			subject:     "acct-7f3a",
 			contentHash: "TOMBSTONE:0000000000000000000000000000000000000000000000000000000000000000",
 			timestamp:   time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC),
 		},
@@ -283,7 +283,7 @@ func TestIsValidTombstoneFormat_Valid(t *testing.T) {
 			name:        "mixed case UUID",
 			entryID:     "tomb_6ba7b810-9dad-11d1-80b4-00c04fd430c8",
 			entryType:   "tombstone",
-			companyID:   "x",
+			subject:     "x",
 			contentHash: "TOMBSTONE:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
 			timestamp:   time.Date(2026, 1, 1, 0, 0, 0, 1, time.UTC),
 		},
@@ -292,7 +292,7 @@ func TestIsValidTombstoneFormat_Valid(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := IsValidTombstoneFormat(tt.entryID, tt.entryType, tt.companyID, tt.contentHash, tt.timestamp)
+			err := IsValidTombstoneFormat(tt.entryID, tt.entryType, tt.subject, tt.contentHash, tt.timestamp)
 			if err != nil {
 				t.Errorf("IsValidTombstoneFormat() unexpected error: %v", err)
 			}
@@ -304,7 +304,7 @@ func TestIsValidTombstoneFormat_InvalidEntryID(t *testing.T) {
 	t.Parallel()
 
 	validType := "tombstone"
-	validCompany := "company-123"
+	validSubject := "my-project"
 	validHash := "TOMBSTONE:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 	validTime := time.Date(2026, 1, 19, 12, 0, 0, 0, time.UTC)
 
@@ -326,7 +326,7 @@ func TestIsValidTombstoneFormat_InvalidEntryID(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := IsValidTombstoneFormat(tt.entryID, validType, validCompany, validHash, validTime)
+			err := IsValidTombstoneFormat(tt.entryID, validType, validSubject, validHash, validTime)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -341,7 +341,7 @@ func TestIsValidTombstoneFormat_InvalidEntryType(t *testing.T) {
 	t.Parallel()
 
 	validID := "tomb_550e8400-e29b-41d4-a716-446655440000"
-	validCompany := "company-123"
+	validSubject := "my-project"
 	validHash := "TOMBSTONE:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 	validTime := time.Date(2026, 1, 19, 12, 0, 0, 0, time.UTC)
 
@@ -360,7 +360,7 @@ func TestIsValidTombstoneFormat_InvalidEntryType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := IsValidTombstoneFormat(validID, tt.entryType, validCompany, validHash, validTime)
+			err := IsValidTombstoneFormat(validID, tt.entryType, validSubject, validHash, validTime)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -371,7 +371,7 @@ func TestIsValidTombstoneFormat_InvalidEntryType(t *testing.T) {
 	}
 }
 
-func TestIsValidTombstoneFormat_InvalidCompanyID(t *testing.T) {
+func TestIsValidTombstoneFormat_InvalidSubject(t *testing.T) {
 	t.Parallel()
 
 	validID := "tomb_550e8400-e29b-41d4-a716-446655440000"
@@ -381,10 +381,10 @@ func TestIsValidTombstoneFormat_InvalidCompanyID(t *testing.T) {
 
 	err := IsValidTombstoneFormat(validID, validType, "", validHash, validTime)
 	if err == nil {
-		t.Fatal("expected error for empty companyID, got nil")
+		t.Fatal("expected error for an empty subject, got nil")
 	}
-	if !strings.Contains(err.Error(), "companyID") {
-		t.Errorf("error %q should mention companyID", err.Error())
+	if !strings.Contains(err.Error(), "subject") {
+		t.Errorf("error %q should mention subject", err.Error())
 	}
 }
 
@@ -393,7 +393,7 @@ func TestIsValidTombstoneFormat_InvalidContentHash(t *testing.T) {
 
 	validID := "tomb_550e8400-e29b-41d4-a716-446655440000"
 	validType := "tombstone"
-	validCompany := "company-123"
+	validSubject := "my-project"
 	validTime := time.Date(2026, 1, 19, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -409,7 +409,7 @@ func TestIsValidTombstoneFormat_InvalidContentHash(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := IsValidTombstoneFormat(validID, validType, validCompany, tt.hash, validTime)
+			err := IsValidTombstoneFormat(validID, validType, validSubject, tt.hash, validTime)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -425,10 +425,10 @@ func TestIsValidTombstoneFormat_ZeroTimestamp(t *testing.T) {
 
 	validID := "tomb_550e8400-e29b-41d4-a716-446655440000"
 	validType := "tombstone"
-	validCompany := "company-123"
+	validSubject := "my-project"
 	validHash := "TOMBSTONE:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 
-	err := IsValidTombstoneFormat(validID, validType, validCompany, validHash, time.Time{})
+	err := IsValidTombstoneFormat(validID, validType, validSubject, validHash, time.Time{})
 	if err == nil {
 		t.Fatal("expected error for zero timestamp, got nil")
 	}

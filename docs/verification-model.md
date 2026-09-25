@@ -110,12 +110,21 @@ not the same chain. The `range` and `entry_count` are what make truncation
 detectable — a chain starting at entry 50 contradicts an anchor that says
 entries 0–500.
 
+> **Producing anchors** is `anchor.SignAnchor`; see
+> [anchor-model.md §6a](anchor-model.md#6a-producing-an-anchor-why-signing-is-one-call).
+> It verifies every signature before returning it, which establishes
+> CONSISTENCY — the signature matches the key the signer advertises — and not
+> authenticity. The distinction below is the one that matters.
+
 **An anchor is exactly as trustworthy as the key that signed it.** A locally
 generated key proves the holder's own assertion and nothing more — real, but
 strictly weaker than a third party's attestation, and callers must surface the
 difference rather than reporting a uniform "verified".
 
-Anchor verification is not yet implemented in this repository.
+Anchor signature verification is implemented: `anchor.VerifySignature`, reached
+through `verify.VerifyAnchor`. Producing anchors is `anchor.SignAnchor`. What
+remains outside this repository is the part no code settles — key custody and a
+delivery path the anchor's subject cannot rewrite.
 
 ---
 

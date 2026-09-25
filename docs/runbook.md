@@ -185,5 +185,8 @@ deps_test.go              the dependency guard
 docs/                     this set
 ```
 
-`anchor/`, `kdf/`, `cmd/proof/` are `doc.go` stubs, not yet implemented. `kdf/`
-has no consumer and should probably be deleted rather than shipped empty.
+`kdf/` was an empty `doc.go` with no consumer and was deleted on 2026-09-24: a
+package whose documentation describes behaviour it does not have is a trap on
+pkg.go.dev. `anchor/` and `cmd/proof/` were also on this list and are now
+implemented — `anchor` verifies AND signs, and the CLI has verify, export, init
+and keygen.

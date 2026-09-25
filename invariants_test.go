@@ -39,7 +39,7 @@ var mutators = []struct {
 	mutate func(chainformat.CaptureRequestV3) chainformat.CaptureRequestV3
 }{
 	{"company_id", func(e chainformat.CaptureRequestV3) chainformat.CaptureRequestV3 {
-		e.CompanyID = "comp_01HZX9K2M3N4P5Q6R7S8T9V0WB" // last char differs
+		e.Subject = "comp_01HZX9K2M3N4P5Q6R7S8T9V0WB" // last char differs
 		return e
 	}},
 	{"signing_key_id", func(e chainformat.CaptureRequestV3) chainformat.CaptureRequestV3 {
@@ -352,15 +352,15 @@ func TestInvariant_MerkleRejectsRewrittenHistory(t *testing.T) {
 func FuzzCanonicalV3(f *testing.F) {
 	base := loadVectorsForFuzz(f)
 	for _, v := range base {
-		f.Add(v.CompanyID, v.SigningKeyID, v.TimestampMs, v.Model, v.Provider,
+		f.Add(v.Subject, v.SigningKeyID, v.TimestampMs, v.Model, v.Provider,
 			v.Region, v.ContentHash, v.UserID, v.ProcessingMode, v.PIIAction)
 	}
 
-	f.Fuzz(func(t *testing.T, companyID, signingKeyID string, timestampMs int64,
+	f.Fuzz(func(t *testing.T, subject, signingKeyID string, timestampMs int64,
 		model, provider, region, contentHash, userID, processingMode, piiAction string) {
 
 		e := chainformat.CaptureRequestV3{
-			CompanyID: companyID, SigningKeyID: signingKeyID, TimestampMs: timestampMs,
+			Subject: subject, SigningKeyID: signingKeyID, TimestampMs: timestampMs,
 			Model: model, Provider: provider, Region: region, ContentHash: contentHash,
 			UserID: userID, ProcessingMode: processingMode, PIIAction: piiAction,
 			EncryptionMode: "zero-knowledge", CaptureMethod: "fetch_intercept",

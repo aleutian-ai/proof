@@ -13,27 +13,37 @@
 //
 // # It originates; it does not import
 //
-// The linker ASSIGNS positions. It never accepts them. An entry arriving with a
-// run_id, sequence number, or chain hash already set is rejected rather than
-// honoured — a linker that takes its output as input is not a linker.
+// The linker ASSIGNS positions. It never accepts them. [Input] carries no
+// position fields at all, so this is enforced by the type rather than by a
+// check — a linker that takes its output as input is not a linker.
 //
 // Loading an already-linked chain into a store (replication, migration, restoring
 // an export) is a different operation: verify the hashes that are there, then
 // write them unchanged. That path does not go through this package.
 //
-// # Batching is part of the artefact
+// # Format v3 is the default, and batching no longer changes the hashes
 //
-// The chain hash binds run_id and the batch-local sequence number, so the same
-// entries in the same order produce DIFFERENT hashes depending on how they were
-// grouped into Append calls:
+// v3 binds the entry's CHAIN-WIDE position (global_seq). The same entries in the
+// same order produce the same chain, however they were grouped:
 //
-//	Append(A, B)        →  A: run1/seq0    B: run1/seq1
+//	Append(A, B)   ≡   Append(A); Append(B)
+//
+// That is what makes a v3 chain reconstructible from its own entries.
+//
+// **v2 was not like this**, and a linker built with [WithFormatV2] still is not.
+// v2 binds run_id and a BATCH-LOCAL sequence number, where one Append call is one
+// run:
+//
+//	Append(A, B)         →  A: run1/seq0    B: run1/seq1
 //	Append(A); Append(B) →  A: run1/seq0    B: run2/seq0   ← B's hash differs
 //
-// One Append call is one run. This is not an implementation detail that could be
-// changed later: it means a chain cannot be reconstructed from its entries alone,
-// and re-linking an exported chain will not reproduce it. Preserve exports, not
-// the inputs that produced them.
+// Under v2 the batch boundaries are part of the artefact and are recorded
+// nowhere, so a chain cannot be rebuilt from its entries and re-linking an export
+// will not reproduce it. Preserve v2 exports, not the inputs that produced them.
+//
+// Use [WithFormatV2] only to produce bytes a verifier released before v3 will
+// accept. Existing v2 chains are never rewritten and verify as v2 forever. See
+// the module's docs/decisions.md D15.
 //
 // # Ordering authority
 //
@@ -51,4 +61,21 @@
 // returns [ErrChainBusy] rather than blocking.
 //
 // A Linker is safe for concurrent use by multiple goroutines.
+//
+// # Limitations
+//
+//   - Originates only. It cannot ingest an already-linked chain; see above.
+//   - Orders a batch by IngestedAt, which is REQUIRED on every input and is not
+//     persisted — it decides position and is then discarded, so a caller that
+//     needs it afterwards must keep it themselves.
+//   - Appends to one chain at a time, by design. The lease is what stops two
+//     appenders linking from the same tail.
+//
+// # Assumptions
+//
+//   - The store writes a batch atomically. A partially written batch leaves a
+//     head that no stored entry produced, and the next append links from a hash
+//     that does not exist.
+//   - Content hashes arrive already computed and validated; this package links
+//     entries and does not inspect what they contain.
 package linker

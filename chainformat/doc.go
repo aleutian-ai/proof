@@ -16,6 +16,31 @@
 //	│ content_hash │              │ content_hash │            │ content_hash │
 //	└──────────────┘              └──────────────┘            └──────────────┘
 //
+// # Two chain hash formats, and why zero means v2
+//
+// An entry records WHICH preimage produced its hash, because two formats cannot
+// be told apart by looking at a digest — a verifier that guesses is a verifier
+// that reports false breaks.
+//
+//	v3  SHA-512("aleutian.chain.v3:" ‖ prev|global_seq|ts|content)   ← default
+//	v2  SHA-512("aleutian.chain.v2:" ‖ prev|run_id|sequence_num|ts|content)
+//
+// v2 bound run_id and a BATCH-LOCAL sequence_num, so the same entries in the
+// same order hashed differently depending on how they were grouped into append
+// calls. The batch boundaries were part of the artefact and recorded nowhere,
+// which made a chain impossible to rebuild from its own entries. v3 binds
+// global_seq — the entry's chain-wide position, which v2 never hashed at all —
+// and is batch-independent.
+//
+// **FormatVersion zero means v2**, deliberately. Every entry written before v3
+// existed has no version field, and an absent field decodes as zero; treating
+// zero as "the format that was current when versions were not recorded" is what
+// keeps those entries verifiable without rewriting them. See
+// [NormalizeFormatVersion], and the module's docs/decisions.md D15.
+//
+// v2 is NOT deprecated and NOT rewritten. Existing v2 chains verify as v2
+// forever.
+//
 // # What this proves, precisely
 //
 // Because each hash covers the one before it, altering an entry changes its
@@ -76,15 +101,32 @@
 //
 // The chain's sequence numbers and previous-hash pointers are the authoritative
 // LOGICAL clock. Wall-clock timestamps are hash INPUT, never an ordering or
-// validity decision. Note also that the hash binds sequenceNum — position within
-// a run — and not the chain-wide global sequence, which is checked separately.
+// validity decision.
+//
+// WHICH sequence the hash binds depends on the format, and the difference is the
+// whole reason v3 exists: v3 binds global_seq, the chain-wide position. v2 binds
+// sequence_num, the position within a run, and does not hash the global sequence
+// at all — under v2 the chain-wide position is checked separately and is
+// protected only by the previous-hash linkage.
+//
+// # The subject is free text
+//
+// A leaf's subject names whatever the chain is ABOUT — a hostname, a project, an
+// opaque id. Any non-empty string that passes the shared field rules.
+//
+// It was called company_id until 2026-09-23 and had to match a private
+// platform's tenant scheme, which meant an adopter had to mint one of someone
+// else's identifiers to describe their own data. The JSON key "company_id" is
+// still accepted on read. **No content hash changed in the rename**: the leaf
+// canonical form encodes values positionally and never writes a key name.
 //
 // # Limitations
 //
 //   - Detects that a chain was altered; cannot identify who altered it.
 //   - Proves internal consistency only, not existence at a time.
 //   - The preimage is '|'-delimited and not self-delimiting; safety depends on
-//     input validation. See [ComputeChainHash].
+//     input validation. See [ComputeChainHash] and [ComputeChainHashV3].
+//   - Neither format carries an algorithm identifier. SHA-512 is fixed.
 //
 // # Assumptions
 //

@@ -16,7 +16,7 @@ func validV3() Anchor {
 	return Anchor{
 		Version:          3,
 		AnchorID:         "anchor_01234567-8901-2345-6789-012345678901",
-		CompanyID:        "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
+		Subject:          "comp_01HZX9K2M3N4P5Q6R7S8T9V0WA",
 		ChainHash:        strings.Repeat("a", 128),
 		Range:            EntryRange{StartEntryID: "ent_a", EndEntryID: "ent_z"},
 		EntryCount:       100,
@@ -188,7 +188,9 @@ func TestCanonicalize_V5FieldOrder(t *testing.T) {
 
 // TestCanonicalize_UnsupportedVersionIsAnError pins that we never guess.
 func TestCanonicalize_UnsupportedVersionIsAnError(t *testing.T) {
-	for _, v := range []int{0, -1, 6, 99} {
+	// 6 became supported on 2026-09-23 (SubjectVersion); 7 is the first
+	// unimplemented version above the range.
+	for _, v := range []int{0, -1, 7, 99} {
 		a := validV3()
 		a.Version = v
 		if _, err := Canonicalize(a); err == nil {
@@ -238,7 +240,7 @@ func TestCanonicalize_IsStable(t *testing.T) {
 // stop verifying.
 func TestCanonicalize_HTMLEscapingMatchesTheProducer(t *testing.T) {
 	a := validV3()
-	a.CompanyID = "comp_<&>"
+	a.Subject = "comp_<&>"
 
 	got, err := Canonicalize(a)
 	if err != nil {

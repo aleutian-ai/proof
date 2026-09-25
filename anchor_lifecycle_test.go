@@ -128,7 +128,7 @@ func anchorOver(t *testing.T, entries []anchoredEntry, previousAnchorHash string
 	return anchor.Anchor{
 		Version:          3,
 		AnchorID:         "anchor_01234567-8901-2345-6789-012345678901",
-		CompanyID:        anchorTestCompanyID,
+		Subject:          anchorTestCompanyID,
 		ChainHash:        chainHash,
 		Range:            anchor.EntryRange{StartEntryID: first.EntryID, EndEntryID: last.EntryID},
 		EntryCount:       int64(len(entries)),
@@ -160,7 +160,7 @@ func bindAnchor(t *testing.T, a anchor.Anchor, entries []anchoredEntry) error {
 			ChainHash:   e.ChainHash,
 		})
 	}
-	res, err := verify.BindAnchor(a, rows)
+	res, err := verify.BindAnchor(a, rows, anchor.SeedAnchorHash)
 	if err != nil {
 		return err
 	}
@@ -209,7 +209,7 @@ func TestAnchor_TruncationIsDetected(t *testing.T) {
 	// mutation that deleted the range-start check survive: truncation also trips
 	// the height check, so the test passed while the guard it names was gone.
 	rows := toVerifyEntries(truncated)
-	res, err := verify.BindAnchor(a, rows)
+	res, err := verify.BindAnchor(a, rows, anchor.SeedAnchorHash)
 	if err != nil {
 		t.Fatalf("BindAnchor: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestAnchor_CanonicalBytesAreSignable(t *testing.T) {
 		t.Error("canonical bytes must exclude the signature")
 	}
 	for _, field := range []string{
-		a.ChainHash, a.Range.StartEntryID, a.Range.EndEntryID, a.CompanyID, a.SigningKeyID,
+		a.ChainHash, a.Range.StartEntryID, a.Range.EndEntryID, a.Subject, a.SigningKeyID,
 	} {
 		if !strings.Contains(string(canonical), field) {
 			t.Errorf("canonical bytes omit a field the binding depends on: %q", field)
@@ -509,7 +509,7 @@ func TestAnchor_SignedVerificationEndToEnd(t *testing.T) {
 
 	rows := toVerifyEntries(entries)
 
-	res, err := verify.VerifyAnchor(a, rows, ring)
+	res, err := verify.VerifyAnchor(a, rows, anchor.SeedAnchorHash, ring)
 	if err != nil {
 		t.Fatalf("VerifyAnchor: %v", err)
 	}
@@ -532,7 +532,7 @@ func TestAnchor_SignedVerificationEndToEnd(t *testing.T) {
 			truncated[i].Timestamp, truncated[i].ContentHash)
 		previousHash = truncated[i].ChainHash
 	}
-	bad, err := verify.VerifyAnchor(a, toVerifyEntries(truncated), ring)
+	bad, err := verify.VerifyAnchor(a, toVerifyEntries(truncated), anchor.SeedAnchorHash, ring)
 	if err != nil {
 		t.Fatalf("VerifyAnchor on a truncated chain should return a result, not an error: %v", err)
 	}
@@ -570,11 +570,11 @@ func TestAnchor_KeylessAndKeyedClaimsDiffer(t *testing.T) {
 
 	rows := toVerifyEntries(entries)
 
-	keyless, err := verify.BindAnchor(a, rows)
+	keyless, err := verify.BindAnchor(a, rows, anchor.SeedAnchorHash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyed, err := verify.VerifyAnchor(a, rows, ring)
+	keyed, err := verify.VerifyAnchor(a, rows, anchor.SeedAnchorHash, ring)
 	if err != nil {
 		t.Fatal(err)
 	}

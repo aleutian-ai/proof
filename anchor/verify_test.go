@@ -70,7 +70,7 @@ func TestVerifySignature_TamperedFieldFails(t *testing.T) {
 	mutations := map[string]func(*Anchor){
 		"anchor_id":          func(a *Anchor) { a.AnchorID = "anchor_other" },
 		"chain_hash":         func(a *Anchor) { a.ChainHash = strings.Repeat("c", 128) },
-		"company_id":         func(a *Anchor) { a.CompanyID = "comp_01HZX9K2M3N4P5Q6R7S8T9V0WB" },
+		"company_id":         func(a *Anchor) { a.Subject = "comp_01HZX9K2M3N4P5Q6R7S8T9V0WB" },
 		"created_at_ms":      func(a *Anchor) { a.CreatedAtMs++ },
 		"entry_count":        func(a *Anchor) { a.EntryCount++ },
 		"previous_anchor_id": func(a *Anchor) { a.PreviousAnchorID = "anchor_other" },

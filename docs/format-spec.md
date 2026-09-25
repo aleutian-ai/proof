@@ -1,7 +1,19 @@
 # AleutianChain format specification
 
-**Status:** normative · **Version:** chain hash v2, capture leaf v3
-**Audience:** anyone implementing a verifier in any language
+**Status:** normative for what it covers · **Audience:** anyone implementing a
+verifier in any language
+
+**Covered here:** chain hash **v2**, capture leaf v3.
+**NOT yet covered here:** chain hash **v3** (`aleutian.chain.v3:`), which is the
+current default for new chains, and anchor **v6**. Both are implemented and
+tested in this repository, and both are specified only by the Go source and
+`docs/decisions.md` (D15, D16, D17) until this document catches up.
+
+That gap is the honest state of things and it is the blocker for a second
+implementation: a verifier written from this document alone will read existing
+v2 chains correctly and will not understand a v3 one. Do not treat the absence
+of v3 here as meaning v3 is provisional — it is the default; this specification
+simply has not been extended yet.
 
 This document exists because of a specific failure. The rule about tombstones in
 §5 previously lived in exactly one implementation's source comments. Three
@@ -233,7 +245,10 @@ not UTF-16 units. Cap: 256 bytes per field, post-NFC.
 Exactly 19 records — 4 header, then 15 body — each alphabetical:
 
 ```
-HEADER   company_id · entry_type · signing_key_id · timestamp_ms(u64)
+HEADER   subject · entry_type · signing_key_id · timestamp_ms(u64)
+         └── was `company_id` until 2026-09-23. The canonical form encodes
+             VALUES positionally and never writes a key name, so the rename
+             changed no byte and the ORDER still follows the old names.
 
 BODY     capture_method · content_hash · dlp · encryption_mode · model ·
          pii_action · pii_categories · pii_detected(bool) ·
@@ -246,11 +261,18 @@ sum, so this is a separate check — enforce it on both encode and verify.
 
 ### 6.3 Validation
 
-All fields are ASCII-restricted by regex, so NFC normalisation is a no-op for
-this entry type in practice — but perform it anyway; a future entry type may
-carry free text.
+All fields EXCEPT `subject` are ASCII-restricted by regex. NFC normalisation is
+therefore not a no-op: a subject may carry free text, and a producer and a
+verifier that normalise differently would disagree about every hash.
 
-- `company_id` — `^comp_[0-9A-HJKMNP-TV-Z]{26}$`
+- `subject` — any non-empty string within the shared field rules (≤256 bytes,
+  no control bytes, no `|`). It names the namespace the entry belongs to: a
+  hostname, a project, an account, an opaque id. It is hashed in, so an entry
+  cannot be replayed into a chain with a different subject — but nothing
+  authenticates it, so it separates namespaces rather than proving one.
+  Until 2026-09-23 this was `company_id` and had to match
+  `^comp_[0-9A-HJKMNP-TV-Z]{26}$`, a private platform's tenant scheme; that
+  value is still a valid subject, and the old JSON key is still read.
 - `signing_key_id` — `^[A-Za-z0-9_./-]{1,128}$`
 - `content_hash`, `user_id` — `^[0-9a-f]{128}$`
 - `encryption_mode` ∈ {`zero-knowledge`, `aleutian-managed`, `cmek`}

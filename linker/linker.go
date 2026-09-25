@@ -56,9 +56,11 @@ type Input struct {
 
 // Result reports what one Append did.
 type Result struct {
-	// RunID is the batch identifier the linker minted for this call. It is bound
-	// into every hash in the batch, so it is part of the artefact: an export that
-	// loses it cannot be re-linked into the same chain.
+	// RunID is the batch identifier the linker minted for this call.
+	//
+	// EMPTY for v3, which is the default: v3 does not have run ids. In v2 it is
+	// bound into every hash in the batch and is therefore part of the artefact,
+	// since an export that loses it cannot be re-linked into the same chain.
 	RunID string
 
 	// Appended is the number of entries written.
@@ -78,9 +80,10 @@ type Result struct {
 //
 // Construct one with [New]. A Linker is safe for concurrent use.
 type Linker struct {
-	store store.Store
-	now   func() time.Time
-	runID func() (string, error)
+	store  store.Store
+	now    func() time.Time
+	runID  func() (string, error)
+	format int
 }
 
 // Option configures a Linker.
@@ -97,10 +100,31 @@ func WithClock(now func() time.Time) Option {
 // WithRunIDFunc replaces run id generation.
 //
 // Intended for tests that need reproducible hashes. Production code must not use
-// this to make run ids predictable: a run id is a hash input, and a predictable
-// one lets an attacker who controls content precompute a target hash.
+// this to make run ids predictable: a run id is a hash input IN V2, and a
+// predictable one lets an attacker who controls content precompute a target
+// hash. It has no effect on a v3 linker, which mints no run ids.
 func WithRunIDFunc(fn func() (string, error)) Option {
 	return func(l *Linker) { l.runID = fn }
+}
+
+// WithFormatV2 makes the linker write v2 entries.
+//
+// # Description
+//
+// v3 is the default and the format to use. v2 exists for one reason: something
+// that must keep producing bytes an older verifier accepts. It binds a run id
+// and a batch-local sequence number into every hash, which makes a chain depend
+// on how its entries were grouped into calls — appending A and B together does
+// not produce the same chain as appending A then B.
+//
+// This does not affect READING. A verifier handles both formats whatever the
+// linker was configured to write, because a store can hold entries of both.
+//
+// # Example
+//
+//	l, err := linker.New(st, linker.WithFormatV2())
+func WithFormatV2() Option {
+	return func(l *Linker) { l.format = chainformat.FormatV2 }
 }
 
 // New returns a Linker that appends to s.
@@ -132,7 +156,12 @@ func New(s store.Store, opts ...Option) (*Linker, error) {
 	if s == nil {
 		return nil, errors.New("linker: store must not be nil")
 	}
-	l := &Linker{store: s, now: func() time.Time { return time.Now().UTC() }, runID: newRunID}
+	l := &Linker{
+		store:  s,
+		now:    func() time.Time { return time.Now().UTC() },
+		runID:  newRunID,
+		format: chainformat.FormatV3,
+	}
 	for _, opt := range opts {
 		opt(l)
 	}
@@ -216,9 +245,14 @@ func (l *Linker) Append(ctx context.Context, chainID string, inputs []Input) (Re
 	copy(batch, inputs)
 	sortInputs(batch)
 
-	runID, err := l.runID()
-	if err != nil {
-		return Result{}, fmt.Errorf("linker: generate run id: %w", err)
+	// v3 has no run id. Minting one anyway would put an unused value on every
+	// entry, which invites a reader to believe it means something.
+	var runID string
+	if l.format == chainformat.FormatV2 {
+		var err error
+		if runID, err = l.runID(); err != nil {
+			return Result{}, fmt.Errorf("linker: generate run id: %w", err)
+		}
 	}
 
 	token, acquired, err := l.store.Acquire(ctx, chainID)
@@ -243,23 +277,37 @@ func (l *Linker) Append(ctx context.Context, chainID string, inputs []Input) (Re
 	entries := make([]store.Entry, len(batch))
 	for i := range batch {
 		seqNum := int64(i)
-		chainHash, hashErr := chainformat.ComputeChainHash(
-			previousHash, runID, seqNum, batch[i].Timestamp, batch[i].ContentHash)
+		globalSeq := nextGlobalSeq + seqNum
+
+		var chainHash string
+		var hashErr error
+		if l.format == chainformat.FormatV2 {
+			chainHash, hashErr = chainformat.ComputeChainHash(
+				previousHash, runID, seqNum, batch[i].Timestamp, batch[i].ContentHash)
+		} else {
+			chainHash, hashErr = chainformat.ComputeChainHashV3(
+				previousHash, globalSeq, batch[i].Timestamp, batch[i].ContentHash)
+		}
 		if hashErr != nil {
 			return Result{}, fmt.Errorf(
 				"linker: entry %q at batch index %d: %w", batch[i].EntryID, i, hashErr)
 		}
+
 		entries[i] = store.Entry{
-			ChainID:      chainID,
-			EntryID:      batch[i].EntryID,
-			EntryType:    batch[i].EntryType,
-			GlobalSeq:    nextGlobalSeq + seqNum,
-			RunID:        runID,
-			SequenceNum:  seqNum,
-			Timestamp:    batch[i].Timestamp,
-			ContentHash:  batch[i].ContentHash,
-			PreviousHash: previousHash,
-			ChainHash:    chainHash,
+			ChainID:       chainID,
+			EntryID:       batch[i].EntryID,
+			EntryType:     batch[i].EntryType,
+			FormatVersion: l.format,
+			GlobalSeq:     globalSeq,
+			Timestamp:     batch[i].Timestamp,
+			ContentHash:   batch[i].ContentHash,
+			PreviousHash:  previousHash,
+			ChainHash:     chainHash,
+		}
+		// v2 only: these are hash inputs there and meaningless noise in v3.
+		if l.format == chainformat.FormatV2 {
+			entries[i].RunID = runID
+			entries[i].SequenceNum = seqNum
 		}
 		previousHash = chainHash
 	}

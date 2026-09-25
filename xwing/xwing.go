@@ -8,9 +8,9 @@ import (
 	"crypto/mlkem"
 	"crypto/rand"
 	"crypto/sha3"
-	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/aleutian-ai/proof/internal/mem"
 )
@@ -21,15 +21,38 @@ import (
 // This value is fixed by the specification — do not modify.
 var label = []byte{0x5c, 0x2e, 0x2f, 0x2f, 0x5e, 0x5c}
 
+// sentinelError is the type of this package's sentinel errors.
+//
+// It exists so the sentinels can be CONSTANTS. A sentinel declared as
+// `var ErrX = errors.New(...)` can be reassigned by any package in the process,
+// including to nil — and every function here returns a sentinel on invalid
+// input, so a nil sentinel would turn "invalid key" into a success: Encapsulate
+// would return a zero ciphertext, an all-zero shared secret, and a nil error.
+// A constant cannot be reassigned and cannot be nil, so these functions fail
+// closed unconditionally.
+//
+// The type is unexported, which keeps it out of the API surface; it does NOT
+// stop a caller building an equal value from a string of that type. What the
+// constants guarantee is narrower and is the one that matters: the sentinels
+// themselves cannot be reassigned or set to nil. It is a comparable string type,
+// so errors.Is matches both a bare sentinel and one wrapped with %w.
+type sentinelError string
+
+// Error implements the error interface.
+func (e sentinelError) Error() string { return string(e) }
+
 // Sentinel errors returned by XWING functions on invalid input.
 //
 // ErrInvalidPublicKey is returned when an PublicKey has wrong field lengths.
 // ErrInvalidPrivateKey is returned when a private key seed has wrong length.
 // ErrInvalidCiphertext is returned when an Ciphertext has wrong field lengths.
-var (
-	ErrInvalidPublicKey  = errors.New("xwing: invalid public key")
-	ErrInvalidPrivateKey = errors.New("xwing: invalid private key")
-	ErrInvalidCiphertext = errors.New("xwing: invalid ciphertext")
+//
+// These are constants, not variables — see sentinelError. Compare with
+// errors.Is, or with == against an unwrapped error.
+const (
+	ErrInvalidPublicKey  sentinelError = "xwing: invalid public key"
+	ErrInvalidPrivateKey sentinelError = "xwing: invalid private key"
+	ErrInvalidCiphertext sentinelError = "xwing: invalid ciphertext"
 )
 
 func init() {
@@ -123,7 +146,7 @@ type PublicKey struct {
 // expandDecapsulationKey (SHAKE256 expansion to 96 bytes) at use time, per
 // IETF draft-connolly-cfrg-xwing-kem §5.2.
 //
-// Callers MUST defer mem.Zeroize() immediately after obtaining this value.
+// Callers MUST defer priv.Zeroize() immediately after obtaining this value.
 type PrivateKey struct {
 	Seed [32]byte // 32-byte master seed — SHAKE256-expanded to derive ML-KEM seed + X25519 scalar
 }
@@ -585,6 +608,46 @@ func (priv PrivateKey) String() string { return "[REDACTED PrivateKey]" }
 // GoString returns a redacted placeholder to prevent accidental logging of key material.
 func (priv PrivateKey) GoString() string { return "[REDACTED PrivateKey]" }
 
+// errSerializeSecret is returned by every serialization method on a secret type.
+const errSerializeSecret sentinelError = "xwing: refusing to serialize secret key material"
+
+// Format implements fmt.Formatter so that every verb EXCEPT %p redacts.
+//
+// String and GoString alone cover %v, %+v, %#v, and %s, but not %d, %x, %X, or
+// %q, which print the underlying bytes: %d on a PrivateKey printed the seed.
+// Format intercepts those verbs before fmt looks at the value's representation.
+//
+// Limitation: %p. fmt handles %p before consulting a Formatter, treats it as a
+// bad verb for a non-pointer value, and prints that value with method calls
+// disabled — so `%p` on a PrivateKey prints the seed, and no method can stop
+// it. go vet does not flag it. Never use %p on key material.
+//
+// Limitation: fmt prints an UNEXPORTED struct field by reflection without
+// calling any of its methods, so `struct{ k PrivateKey }` printed with %v still
+// shows raw bytes. No method on this type can prevent that; do not store key
+// material in unexported fields of values that get logged.
+func (priv PrivateKey) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, "[REDACTED PrivateKey]") }
+
+// MarshalJSON refuses: a private key must never be serialized by accident.
+//
+// An error rather than a redacted placeholder, deliberately. A struct that
+// embeds a private key and reaches json.Marshal is a bug; a placeholder would let
+// it ship with silent data loss, an error makes it fail at the first test.
+func (priv PrivateKey) MarshalJSON() ([]byte, error) { return nil, errSerializeSecret }
+
+// MarshalText refuses, closing the encoding.TextMarshaler path (used by
+// encoding/json for map keys, encoding/xml, and many config encoders).
+func (priv PrivateKey) MarshalText() ([]byte, error) { return nil, errSerializeSecret }
+
+// GobEncode refuses, closing encoding/gob — which would otherwise serialize the
+// exported Seed field by reflection.
+func (priv PrivateKey) GobEncode() ([]byte, error) { return nil, errSerializeSecret }
+
+// LogValue implements slog.LogValuer. Without it, slog's handlers fall through
+// to MarshalText, which refuses, and log the refusal as an error string; with
+// it, slog logs the same placeholder as fmt.
+func (priv PrivateKey) LogValue() slog.Value { return slog.StringValue("[REDACTED PrivateKey]") }
+
 // Zeroize overwrites the shared secret with zeros.
 //
 // # Description
@@ -627,6 +690,26 @@ func (ss SharedSecret) String() string { return "[REDACTED SharedSecret]" }
 
 // GoString returns a redacted placeholder to prevent accidental logging of key material.
 func (ss SharedSecret) GoString() string { return "[REDACTED SharedSecret]" }
+
+// Format implements fmt.Formatter so that every verb except %p redacts,
+// including %d and %x, which would otherwise print the secret. See
+// PrivateKey.Format for the %p and unexported-field limitations, which apply
+// here too.
+func (ss SharedSecret) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, "[REDACTED SharedSecret]")
+}
+
+// MarshalJSON refuses; see PrivateKey.MarshalJSON for why this is an error.
+func (ss SharedSecret) MarshalJSON() ([]byte, error) { return nil, errSerializeSecret }
+
+// MarshalText refuses, closing the encoding.TextMarshaler path.
+func (ss SharedSecret) MarshalText() ([]byte, error) { return nil, errSerializeSecret }
+
+// GobEncode refuses, closing encoding/gob.
+func (ss SharedSecret) GobEncode() ([]byte, error) { return nil, errSerializeSecret }
+
+// LogValue implements slog.LogValuer; see PrivateKey.LogValue.
+func (ss SharedSecret) LogValue() slog.Value { return slog.StringValue("[REDACTED SharedSecret]") }
 
 // combine computes the XWING shared secret via the combiner hash.
 //

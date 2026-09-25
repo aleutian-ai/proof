@@ -202,7 +202,7 @@ func ValidateTombstoneContentHash(contentHash string) bool {
 // Performs comprehensive validation of tombstone entry fields:
 //   - EntryID: Must start with "tomb_" followed by a valid UUID (36 chars, 8-4-4-4-12 hex with hyphens)
 //   - EntryType: Must be exactly "tombstone"
-//   - CompanyID: Must be non-empty
+//   - Subject: Must be non-empty
 //   - ContentHash: Must match tombstone format ("TOMBSTONE:" + 64 hex chars)
 //   - Timestamp: Must not be the zero value
 //
@@ -213,7 +213,9 @@ func ValidateTombstoneContentHash(contentHash string) bool {
 //
 //   - entryID: The tombstone's entry_id
 //   - entryType: The tombstone's entry_type
-//   - companyID: The tombstone's company_id
+//   - subject: The tombstone's subject (the namespace the chain is about).
+//     Named company_id before 2026-09-23; the rename is a parameter name only
+//     and changes no bytes, since this function validates rather than encodes.
 //   - contentHash: The tombstone's content_hash
 //   - timestamp: The tombstone's timestamp (should match original entry)
 //
@@ -250,7 +252,7 @@ func ValidateTombstoneContentHash(contentHash string) bool {
 //
 //   - Caller has all required fields available
 //   - UUID format is standard: 8-4-4-4-12 hex characters with hyphens
-func IsValidTombstoneFormat(entryID, entryType, companyID, contentHash string, timestamp time.Time) error {
+func IsValidTombstoneFormat(entryID, entryType, subject, contentHash string, timestamp time.Time) error {
 	// Validate entryID: "tomb_" + UUID (36 chars)
 	if !strings.HasPrefix(entryID, TombstoneEntryIDPrefix) {
 		return fmt.Errorf("chainformat: entryID must start with %q prefix, got %q", TombstoneEntryIDPrefix, truncateForError(entryID, 20))
@@ -265,9 +267,9 @@ func IsValidTombstoneFormat(entryID, entryType, companyID, contentHash string, t
 		return fmt.Errorf("chainformat: entryType must be %q, got %q", TombstoneEntryType, entryType)
 	}
 
-	// Validate companyID
-	if companyID == "" {
-		return fmt.Errorf("chainformat: companyID must be non-empty")
+	// Validate subject
+	if subject == "" {
+		return fmt.Errorf("chainformat: subject must be non-empty")
 	}
 
 	// Validate contentHash

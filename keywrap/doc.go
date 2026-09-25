@@ -13,6 +13,15 @@
 // parseable by code shipped years later. Parsers reject unknown versions rather
 // than guessing.
 //
+// # Limitations
+//
+//   - Wraps a key. It does not manage, rotate, escrow or store one.
+//   - Version 0x01 (a legacy RSA wrapping) is refused with its OWN error,
+//     [ErrLegacyRSAVersion], not the generic unsupported-version error. The
+//     distinction is deliberate: "this is an old record needing migration" and
+//     "this is not a record I recognise" call for different responses, and
+//     collapsing them sends an operator looking for corruption that is not there.
+//
 // # Assumptions
 //
 //   - The MAC covers every byte that a parser will act on, so a truncated or

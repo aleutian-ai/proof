@@ -14,8 +14,12 @@ import (
 const modulePath = "github.com/aleutian-ai/proof"
 
 // allowedDeps declares, per package, the external modules that package may
-// depend on. A package absent from this table is not checked; a package present
-// with an empty list must have NO external dependencies at all.
+// depend on. A package present with an empty list must have NO external
+// dependencies at all.
+//
+// Every package in the module MUST appear here — enforced by
+// TestEveryPackageIsCoveredByTheAllowlist, because a package absent from this
+// table is not checked at all rather than held to zero.
 //
 // # Why this exists
 //
@@ -36,7 +40,18 @@ var allowedDeps = map[string][]string{
 	// post-quantum KEM: crypto/mlkem, crypto/sha3, and crypto/ecdh are all in
 	// the standard library as of Go 1.24, which also places these packages
 	// inside Go's native FIPS 140-3 module boundary.
-	"/xwing":        {},
+	"/xwing": {},
+	// keyfile is pure encoding — ASN.1, PEM, and the SHA3 used by the ML-KEM
+	// consistency check. Reading an X-Wing key must never compile in an ML-DSA
+	// implementation, which is why the algorithms live elsewhere.
+	"/keyfile": {},
+	// mldsa needs circl: ML-DSA is not in the Go standard library. Kept out of
+	// xwing/keywrap/keyfile so importing the KEM or a key file never compiles in
+	// a signature implementation.
+	"/mldsa": {"github.com/cloudflare/circl", "golang.org/x/sys"},
+	// mlkem is pure ML-KEM from crypto/mlkem — stdlib only, like xwing. The
+	// CNSA 2.0 profile must not drag in a third-party implementation.
+	"/mlkem":        {},
 	"/keywrap":      {},
 	"/merkle":       {},
 	"/fixtures":     {},
@@ -77,6 +92,41 @@ var allowedDeps = map[string][]string{
 	// the FORMAT AND KEM PRIMITIVES stay clean, which the entries above enforce.
 	// x/text arrives via chainformat → canonical.
 	"/verify": {
+		"github.com/cloudflare/circl",
+		"golang.org/x/sys",
+		"golang.org/x/text",
+	},
+
+	// The append path. x/text arrives via chainformat → canonical (Unicode NFC).
+	// Notably NOT bbolt: the linker talks to the store PORT, so a caller can
+	// link entries without inheriting a storage engine.
+	"/linker": {"golang.org/x/text"},
+
+	// The persistence PORT is interfaces and two structs. It must stay clean, or
+	// depending on the contract would mean depending on an implementation.
+	"/store": {},
+
+	// The in-memory adapter, used by tests and by callers who want no files.
+	"/store/memory": {},
+
+	// The conformance suite an adapter runs against itself. x/text via chainformat.
+	"/store/storetest": {"golang.org/x/text"},
+
+	// The CLI is the one place allowed to assemble everything: it verifies
+	// (circl, x/text), opens a bbolt database, and generates keys. A library
+	// consumer inherits none of this.
+	"/cmd/proof": {
+		"github.com/cloudflare/circl",
+		"go.etcd.io/bbolt",
+		"golang.org/x/sys",
+		"golang.org/x/text",
+	},
+
+	// The anchor producer. It imports anchor AND verify — that is what a
+	// producer is — so it inherits the union of their dependencies and adds
+	// none of its own. Listed explicitly so that a new dependency reaching it
+	// still has to be justified here.
+	"/anchor/build": {
 		"github.com/cloudflare/circl",
 		"golang.org/x/sys",
 		"golang.org/x/text",
@@ -200,4 +250,37 @@ func isAllowed(dep string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// TestEveryPackageIsCoveredByTheAllowlist closes a hole in the guard above.
+//
+// # Why this exists
+//
+// TestDependencyIsolation iterates over allowedDeps, so it only ever checks
+// packages that someone remembered to list. A NEW package is therefore not
+// "allowed nothing" — it is not checked at all, and could import a cloud SDK
+// without that test noticing. (TestNoCloudDependenciesAnywhere would still
+// catch a cloud SDK specifically; nothing would catch anything else.)
+//
+// Found on 2026-09-24 while adding anchor/build, which was silently unguarded.
+//
+// A guard whose coverage depends on remembering to extend it is a guard that
+// decays. This makes forgetting fail.
+func TestEveryPackageIsCoveredByTheAllowlist(t *testing.T) {
+	out, err := exec.Command("go", "list", "./...").Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	for _, pkg := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		pkg = strings.TrimSpace(pkg)
+		if pkg == "" || pkg == modulePath {
+			continue // the root package holds only tests and doc.go
+		}
+		suffix := strings.TrimPrefix(pkg, modulePath)
+		if _, ok := allowedDeps[suffix]; !ok {
+			t.Errorf("package %s has no entry in allowedDeps, so TestDependencyIsolation "+
+				"never checks it. Add one — an empty list means \"no external "+
+				"dependencies\", which is the right answer for most packages here.", pkg)
+		}
+	}
 }

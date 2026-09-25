@@ -13,8 +13,14 @@ order to check the work. It is deliberately not the service.
 ```go
 import "github.com/aleutian-ai/proof/chainformat"
 
-hash, err := chainformat.ComputeChainHash(previousHash, runID, seq, ts, contentHash)
+hash, err := chainformat.ComputeChainHashV3(previousHash, globalSeq, ts, contentHash)
 ```
+
+v3 is the current format and the one to build against. v2 exists, is still
+verified, and is never rewritten — it bound the *batch* an entry was written in,
+so a chain depended on the API calls that produced it rather than on its own
+contents. v3 binds the entry's position in the chain instead. See
+[D15](docs/decisions.md).
 
 ---
 
@@ -83,6 +89,115 @@ Exit codes are distinct on purpose: `0` ok · `1` chain broken · `2` usage ·
 `3` I/O error. A script that cannot tell "the chain is broken" from "I could not
 open the file" will take the wrong action on one of them.
 
+Or without installing anything:
+
+```console
+$ podman build -t proof .                          # published tag lands with v0.2.0
+$ podman run --rm --network=none -v "$PWD:/data:ro" \
+      proof verify /data/entries.json
+```
+
+A container is the lowest-trust way to run someone else's verifier, which is
+why it is a first-class path here and not an afterthought. The image is 3.5 MB:
+a static binary on `scratch`, with no shell, no package manager and no libc, so
+there is nothing in it to audit but the binary. `--network=none` is not a
+precaution you are taking against this tool — verification is arithmetic over a
+file you already have — it is a way to *check* the claim rather than believe it.
+
+The build pins its own base image by digest, and `--target proof-mcp` builds
+the MCP server the same way. A published image records the commit it was built
+from in `org.opencontainers.image.revision` — passed as `--label` by
+`scripts/publish-image.sh`, never as a build argument, because an `ARG`
+interpolated into a `LABEL` is not part of podman's cache key and would happily
+carry a previous build's commit. A plain `podman build` sets no revision label
+rather than an untrue one.
+
+Nothing has been pushed to a registry yet — `scripts/publish-image.sh` does
+that, by hand, and refuses to run against a dirty working tree so an image's
+revision label is never a lie.
+
+### Anchoring a chain
+
+```console
+$ proof anchor --db chain.db --chain demo \
+      --subject acct-pseudonym-7f3a \
+      --key ml-dsa-65-private.pem --out anchor.json
+
+anchored 4 entries
+
+  anchor id   anchor_d7b286b6-6b36-45a1-83be-dbef73b2e4e9
+  subject     acct-pseudonym-7f3a
+  range       ent_000 … ent_003
+  key id      e38207ddb2d82ffe9ff0ffda06085a36
+  previous    (none — this is the first anchor in the chain)
+
+  Proven:     these entries link, and nothing was edited under you.
+  NOT proven: that this anchor is an independent witness. It becomes
+              one only when it reaches a reader by a path you cannot
+              rewrite. Kept beside the chain it describes, it proves
+              consistency and nothing more.
+```
+
+**It verifies the chain before it will describe it**, and refuses a broken one
+with exit code `1` — the same code `proof verify` uses, so a script treats "this
+chain is broken" identically whichever verb found it. `verified_through` is
+therefore a claim this tool established rather than one it repeated.
+
+`--subject` is required and has no default. It is inside the signed bytes, so it
+can never be erased or corrected: use a stable pseudonym or an opaque id, never
+a name, an email address or a device hostname.
+
+Pass `--previous <anchor.json>` for every anchor after the first. The output then
+prints the predecessor's chain hash, because a verifier needs it and **cannot
+recover it from the new anchor alone** — an anchor names its predecessor by id,
+not by hash.
+
+Without `--out` the anchor goes to stdout and the summary to stderr, so
+`proof anchor … > anchor.json` gives a clean file.
+
+Like `keygen`, this verb takes a private key and is therefore never exposed over
+MCP.
+
+> **Two things are still missing from the terminal loop.** There is no `append`
+> verb yet, so entries reach a database through the library rather than the CLI
+> (`_22a`); and `proof verify` checks chain linkage only — it cannot yet check
+> an anchor, so the artefact this verb produces must be verified through the
+> library or the MCP server. Neither is a limitation of the format.
+
+### Generating keys
+
+```console
+$ proof keygen --alg x-wing --slot dual --out-dir ./keys
+
+X-Wing (primary)
+  private  keys/x-wing-primary-private.pem   (0600 — this is the secret)
+  public   keys/x-wing-primary-public.pem
+  key id   4f2c…
+  SHA-512  4f2c 9a11 …
+  self-test passed: this key encrypted a secret to itself and recovered it
+```
+
+`--alg` takes `x-wing`, `ml-kem-768`, `ml-kem-1024`, `ml-dsa-44`, `ml-dsa-65`,
+or `ml-dsa-87` — only algorithms this module can also **operate** with, because
+a key nothing can use is a trap, not a key. Files are written in the standard
+PKCS#8 seed form (RFC 9881 / RFC 9935), so other implementations can read them.
+
+Three things are deliberate:
+
+- **The key is proved before it is stored.** Generate → pairwise consistency
+  test → write. A key that fails its own round trip never reaches disk, so a
+  faulty generation cannot be discovered later, after data is encrypted to it.
+- **`--slot dual`** mints an independent hot primary and cold backup, and
+  refuses both if their fingerprints match — identical keys minted seconds
+  apart mean the random source is broken.
+- **The private key is never printed.** Not on stdout, not on stderr, not with
+  a flag. It exists in one place: the `0600` file you asked for.
+
+`--op-vault <vault>` additionally stores the pair in 1Password through the `op`
+CLI, passing the files by reference so the secret never appears in the process
+list, then reads the fingerprint back to confirm what actually landed. If that
+fails, the command says so and leaves you the valid files on disk.
+
 As a library:
 
 ```console
@@ -100,7 +215,7 @@ Seven tools: `verify_chain`, `verify_anchor`, `verify_bundle`,
 `compute_chain_hash`, `canonicalize_leaf`, `verify_inclusion`,
 `explain_trust_model`.
 
-### There is no keygen or decrypt tool, and there will not be one
+### No MCP tool touches key material, and none ever will
 
 MCP tool results are transmitted to a model provider, where they may be logged
 and retained. A seed or a plaintext returned from a tool would cross that
@@ -109,7 +224,8 @@ operator never holds the customer's key.
 
 `TestNoKeyMaterialTools` fails the build if a tool whose name suggests key
 handling is ever registered. The check is on *names*: coarse, occasionally
-annoying, and it fails closed. Key operations belong in the human-driven CLI.
+annoying, and it fails closed. Key operations belong in the human-driven CLI,
+where `proof keygen` lives and no result crosses a provider boundary.
 
 ---
 
@@ -122,9 +238,17 @@ it came from:
 ring, _ := anchor.NewKeyRing(anchor.TrustProvided, map[string][]byte{
     "aleutian-ml-dsa-65-2026-v1": publicKey,
 })
-res, _ := verify.VerifyAnchor(a, entries, ring)
+res, _ := verify.VerifyAnchor(a, entries, anchor.SeedAnchorHash, ring)
 fmt.Println(res.Trust.Establishes())
 ```
+
+The third argument is the **previous anchor's chain hash**. An anchor commits to
+its predecessor's hash but names that predecessor only by id, so the hash cannot
+be recovered from the anchor in front of you — you need the previous anchor, or
+a record of its hash. Pass `anchor.SeedAnchorHash` for the first anchor in a
+chain and `prev.ChainHash` for every one after it. It is a required argument
+rather than a default because defaulting it made the verifier silently
+genesis-only, and a correct chained anchor came back looking like tampering.
 
 | Level | Establishes |
 |---|---|
@@ -136,6 +260,61 @@ Embedding a vendor's roots would decide, at build time, whose attestations count
 — and the premise of an offline verifier is that whoever runs it need not take
 anyone's word for that. It would also tie key rotation to a software release.
 See [D14](docs/decisions.md).
+
+---
+
+## Signing an anchor
+
+`proof` verifies anchors, and now produces them. One call:
+
+```go
+s, err := anchor.NewMLDSA65Signer(seed)   // seed from `proof keygen`
+if err != nil {
+    return err
+}
+defer s.Close()
+
+signed, err := anchor.SignAnchor(ctx, s, a)
+```
+
+`SignAnchor` stamps the key id, validates, canonicalizes, signs, **and verifies
+the signature before returning it**. It is one call rather than four because
+`signing_key_id` lives *inside* the signed bytes: populate it after
+canonicalizing and you sign one set of bytes and publish another. The anchor
+then fails verification forever, with a generic "invalid signature" and nothing
+pointing at the cause. That is not hypothetical — it is a bug this project
+already shipped once, and the API is now shaped so it cannot recur.
+
+The self-verification also catches something no length check can. `crypto.Signer`
+passes a `[]byte` that means a **digest** for RSA and ECDSA but the **whole
+message** for Ed25519 and ML-DSA, and the interface cannot tell them apart. A
+signer written with RSA habits hashes first and returns a structurally perfect
+3309-byte signature over the wrong bytes.
+
+### Your key never has to touch this module
+
+```go
+type ContextSigner interface {
+    Public() crypto.PublicKey
+    SignContext(ctx context.Context, msg []byte) ([]byte, error)
+}
+```
+
+Cloud KMS, an HSM, a PKCS#11 token, a keychain — implement that, or wrap an
+existing `crypto.Signer` with `anchor.FromCryptoSigner`. `proof` holds no
+credentials and opens no connections.
+
+`crypto.Signer` is deliberately **not** embedded in that interface: nothing here
+calls it, so requiring it would oblige every KMS implementer to write a `Sign`
+method whose `rand` and `opts` are meaningless for ML-DSA. The compatibility
+lives where it is free instead — `*anchor.MLDSA65Signer` **is** a `crypto.Signer`
+(enforced by a compile-time assertion), so it drops into x509 signing, go-tuf,
+sigstore or your own code unchanged.
+
+> **What a verified signature proves.** That it matches the key the signer
+> advertises — consistency, not authenticity. A substituted signer passes. Only
+> a key you obtained independently (`TrustPlatform` / `TrustProvided`) closes
+> that, never a `TrustSelf` ring built from the anchor's own key.
 
 ---
 
@@ -157,12 +336,20 @@ build if any package gains an import outside its allowlist.
 | `merkle` | **none** |
 | `bundle` | **none** |
 | `canonical`, `chainformat` | `golang.org/x/text` — Unicode NFC validation needs the Unicode tables |
-| `anchor`, `verify` | `github.com/cloudflare/circl` — ML-DSA-65 is not in the standard library |
+| `mldsa` | `github.com/cloudflare/circl` — ML-DSA-65 is not in the standard library |
+| `anchor`, `verify` | **none directly** — ML-DSA-65 reaches circl through `mldsa`, so signing and verification share one primitive |
 | `store/bolt` | `go.etcd.io/bbolt` |
 | **anywhere** | never a cloud SDK |
 
-Being stdlib-only also places the KEM inside Go's native FIPS 140-3 module
-boundary (`GODEBUG=fips140=on`), which `x/crypto` is outside of.
+Being stdlib-only means the KEM's primitives — ML-KEM, X25519, SHA-3 — are
+implemented by Go's native FIPS 140-3 module (`crypto/internal/fips140`) and
+run under `GODEBUG=fips140=on`. Two precisions, so this is not over-read:
+recent `x/crypto` releases wrap these same standard-library primitives, so the
+gain over `x/crypto` is one fewer dependency, not different cryptography; and
+X-Wing **cannot** run under `GODEBUG=fips140=only`, because the standard
+library refuses X25519 in that mode. X25519 is not an approved
+key-establishment scheme under SP 800-56A, so X-Wing as a whole makes no FIPS
+approval claim.
 
 The `go` directive is held at **1.24.0** by hand. `bbolt` and `x/sys` are pinned
 below their latest releases to keep it there — someone importing only `xwing`
@@ -173,18 +360,24 @@ should not need a newer toolchain because of a storage engine they never use.
 ## Packages
 
 ```
-xwing           X-Wing hybrid KEM — ML-KEM-768 + X25519
-keywrap         versioned wrapped-key wire format
-canonical       deterministic JSON encoding
 chainformat     leaf encoding, chain hash linkage, tombstones   ← the core
-merkle          roots, inclusion proofs, consistency proofs
-anchor          anchor canonical form, anchor-of-anchors hash, ML-DSA-65 verify
-bundle          export-bundle manifest root + directory verification
+canonical       deterministic JSON encoding
+linker          sequence assignment + hash linkage — the append path
 verify          the verdicts: Chain, BindAnchor, VerifyAnchor
+anchor          anchor canonical form, anchor-of-anchors hash, ML-DSA-65 sign + verify
+anchor/build    produce an anchor — verifies the chain before describing it
+merkle          roots, inclusion proofs, consistency proofs
+bundle          export-bundle manifest root + directory verification
 store           persistence port + bolt / memory adapters
 fixtures        cross-language golden vectors, embedded
 
-cmd/proof       CLI — verify · export · init
+mldsa           ML-DSA-44/65/87 sign + verify (FIPS 204)
+mlkem           ML-KEM-768/1024 encapsulate + decapsulate (FIPS 203)
+xwing           X-Wing hybrid KEM — ML-KEM-768 + X25519
+keywrap         versioned wrapped-key wire format
+keyfile         PKCS#8 / SPKI key files + key ids, for all seven algorithms
+
+cmd/proof       CLI — verify · export · init · keygen · anchor
 cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
 ```
 
@@ -226,10 +419,10 @@ deduplication that motivated the project.
 
 | | |
 |---|---|
-| ✅ built | format core · `anchor` · `bundle` · `verify` · `linker` · CLI · MCP server (7 tools) |
+| ✅ built | format core · `anchor` (verify, sign **and build**) · `bundle` · `verify` · `linker` · CLI · MCP server (7 tools) |
 | ⏳ not yet | published tag · the monorepo and SDKs consuming this instead of their own copies |
 
-**276 tests** across the library and MCP module. Every guard here has been
+**415 tests** across the library and MCP module. Every guard here has been
 **mutation-tested** — the protection is deliberately broken and the test
 confirmed to fail — because a guard that has never failed is not a guard. That
 discipline has repeatedly caught tests which passed for the wrong reason.
@@ -254,6 +447,26 @@ service to make a chain worth verifying, which is not a guarantee a third party
 can exercise on their own. Sequence assignment and hash linkage are checkable
 arithmetic and belong here. Watermark reconciliation, per-tenant batching, and
 heartbeats stayed behind, which is the same dividing line applied more carefully.
+
+**Anchor *signing* crossed the same line on 2026-09-24.** Until then this module
+could verify an anchor but not produce one, which capped a standalone user at the
+weakest of the three claims in the table above — they could check someone else's
+evidence but never generate their own. Signing is arithmetic over bytes, so it
+belongs here.
+
+What stayed behind is the part that actually makes an anchor worth anything:
+
+| Here | Not here |
+|---|---|
+| computing the canonical bytes | deciding **when** to anchor |
+| producing and checking the signature | **key custody** and ceremony |
+| refusing to sign what cannot be verified | **delivery** to somewhere the subject cannot rewrite |
+
+That last row is the whole game, and no amount of cryptography settles it. An
+anchor read back from the same store as the chain proves consistency, not
+external commitment. `proof` gives you a signed anchor; whether it reaches a
+reader by a path you could not tamper with is an operational question this
+module cannot answer and does not pretend to.
 
 ---
 

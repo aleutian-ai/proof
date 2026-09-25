@@ -16,10 +16,21 @@ const (
 
 	// MaxVersion is the newest canonical form implemented. See Canonicalize for
 	// why v5 is implemented but not yet cross-language validated.
-	MaxVersion = 5
+	MaxVersion = 6
 
 	// MerkleVersion is the version at which an anchor commits to a Merkle root.
+	//
+	// It is a SINGLE version, not a floor. v6 is built on v4's layout and does
+	// not commit to a Merkle root; any check written as ">= MerkleVersion"
+	// would wrongly capture it and every version after it.
 	MerkleVersion = 5
+
+	// SubjectVersion is the version at which company_id became subject.
+	//
+	// The rename changed a KEY inside the signed bytes — unlike the leaf, where
+	// the canonical form carries values only — so it needed a version of its
+	// own rather than being a refactor.
+	SubjectVersion = 6
 )
 
 // canonicalRange is the range sub-object in canonical key order.
@@ -77,6 +88,28 @@ type canonicalV5 struct {
 	Version          int            `json:"version"`
 }
 
+// canonicalV6 is v4's layout with company_id renamed to subject.
+//
+// Alphabetical, as every version is: "signing_key_id" < "subject" (i < u at
+// index 1) < "verified_through" < "version" (i < s at index 3). The renamed
+// field MOVES as a result — it sorted third as company_id and sorts eighth as
+// subject — which is precisely why this is a new version and not an edit.
+//
+// Built on v4, NOT v5: v5 commits to a Merkle root and cannot be verified
+// (no cross-language vectors exist), so building on it would inherit that.
+type canonicalV6 struct {
+	AnchorID         string         `json:"anchor_id"`
+	ChainHash        string         `json:"chain_hash"`
+	CreatedAtMs      int64          `json:"created_at_ms"`
+	EntryCount       int64          `json:"entry_count"`
+	PreviousAnchorID string         `json:"previous_anchor_id"`
+	Range            canonicalRange `json:"range"`
+	SigningKeyID     string         `json:"signing_key_id"`
+	Subject          string         `json:"subject"`
+	VerifiedThrough  int64          `json:"verified_through"`
+	Version          int            `json:"version"`
+}
+
 // Canonicalize returns the exact bytes an anchor's signature is computed over.
 //
 // # Description
@@ -98,6 +131,7 @@ type canonicalV5 struct {
 //	1, 2, 3  →  9-field layout (no verified_through)
 //	4        →  10 fields, adds verified_through
 //	5        →  12 fields, adds root_hash and tree_size
+//	6        →  10 fields, v4's layout with company_id renamed to subject
 //
 // v5 is implemented from the producer's layout but has NO cross-language
 // fixture, because no SDK implements v5 and no producer emits it. Its bytes are
@@ -142,7 +176,7 @@ func Canonicalize(a Anchor) ([]byte, error) {
 		return json.Marshal(canonicalV3{
 			AnchorID:         a.AnchorID,
 			ChainHash:        a.ChainHash,
-			CompanyID:        a.CompanyID,
+			CompanyID:        a.Subject,
 			CreatedAtMs:      a.CreatedAtMs,
 			EntryCount:       a.EntryCount,
 			PreviousAnchorID: a.PreviousAnchorID,
@@ -155,7 +189,7 @@ func Canonicalize(a Anchor) ([]byte, error) {
 		return json.Marshal(canonicalV4{
 			AnchorID:         a.AnchorID,
 			ChainHash:        a.ChainHash,
-			CompanyID:        a.CompanyID,
+			CompanyID:        a.Subject,
 			CreatedAtMs:      a.CreatedAtMs,
 			EntryCount:       a.EntryCount,
 			PreviousAnchorID: a.PreviousAnchorID,
@@ -169,7 +203,7 @@ func Canonicalize(a Anchor) ([]byte, error) {
 		return json.Marshal(canonicalV5{
 			AnchorID:         a.AnchorID,
 			ChainHash:        a.ChainHash,
-			CompanyID:        a.CompanyID,
+			CompanyID:        a.Subject,
 			CreatedAtMs:      a.CreatedAtMs,
 			EntryCount:       a.EntryCount,
 			PreviousAnchorID: a.PreviousAnchorID,
@@ -177,6 +211,20 @@ func Canonicalize(a Anchor) ([]byte, error) {
 			RootHash:         a.RootHash,
 			SigningKeyID:     a.SigningKeyID,
 			TreeSize:         a.TreeSize,
+			VerifiedThrough:  a.VerifiedThrough,
+			Version:          a.Version,
+		})
+
+	case a.Version == SubjectVersion:
+		return json.Marshal(canonicalV6{
+			AnchorID:         a.AnchorID,
+			ChainHash:        a.ChainHash,
+			CreatedAtMs:      a.CreatedAtMs,
+			EntryCount:       a.EntryCount,
+			PreviousAnchorID: a.PreviousAnchorID,
+			Range:            r,
+			SigningKeyID:     a.SigningKeyID,
+			Subject:          a.Subject,
 			VerifiedThrough:  a.VerifiedThrough,
 			Version:          a.Version,
 		})
@@ -247,6 +295,20 @@ func ValidateVersionInvariants(a Anchor) error {
 		}
 		if a.TreeSize <= 0 {
 			return fmt.Errorf("anchor: v%d must declare a positive tree_size", MerkleVersion)
+		}
+	case a.Version == SubjectVersion:
+		if a.VerifiedThrough <= 0 {
+			return fmt.Errorf("anchor: v%d must declare a positive verified_through", SubjectVersion)
+		}
+		// The subject is in the signed bytes so an anchor cannot be replayed
+		// onto another chain. An empty one removes that protection, so v6 makes
+		// non-empty an invariant — which v3..v5 never did for company_id.
+		if a.Subject == "" {
+			return fmt.Errorf("anchor: v%d must declare a non-empty subject", SubjectVersion)
+		}
+		if a.RootHash != "" || a.TreeSize != 0 {
+			return fmt.Errorf("anchor: v%d is built on the v4 layout and commits to no Merkle root, "+
+				"but declares root_hash/tree_size", SubjectVersion)
 		}
 	default:
 		return fmt.Errorf("anchor: unsupported version %d (implemented: %d..%d)",

@@ -1,0 +1,22 @@
+# Copyright 2026 Aleutian AI
+# SPDX-License-Identifier: Apache-2.0
+#
+# Keep the build context to what actually compiles. Everything else is either
+# noise in the layer cache or, in the case of keys, something that must never
+# be near an image build.
+
+.git
+.idea
+*.pem
+*.key
+go.work
+go.work.sum
+docs
+fixtures
+scripts
+CHANGELOG.md
+README.md
+
+# LICENSE is deliberately NOT excluded: it is copied into the final images,
+# because an image is a distribution and Apache-2.0 §4(a) asks that recipients
+# get the licence text, not merely a label naming it.

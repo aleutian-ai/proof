@@ -19,6 +19,39 @@
 //
 // Only the first is provable from entries alone. Callers reporting results to a
 // human MUST keep them apart — see docs/verification-model.md.
+//
+// # Two chain formats, and why the version is never guessed
+//
+// An entry names the preimage that produced its hash. v3 binds the chain-wide
+// global_seq; v2 binds a run id and a batch-local sequence number. The two
+// cannot be distinguished by looking at a digest, so this package dispatches on
+// the DECLARED version and refuses what it does not recognise
+// ([BreakUnknownFormat]) rather than trying the other one. Guessing would turn
+// an unreadable entry into a reported forgery.
+//
+// An absent format_version decodes as zero and means v2 — every entry written
+// before v3 existed has no such field. A v3 entry carrying v2's run_id or
+// sequence_num is itself a break ([BreakFormatFieldMisuse]): those fields are
+// not in its preimage, so their presence means the entry was assembled by
+// something that did not understand the format it claimed.
+//
+// # Limitations
+//
+//   - Checks linkage. It cannot see truncation from the front, which needs an
+//     anchor — see [BindAnchor].
+//   - Reports THAT a chain was altered, never who altered it.
+//   - One altered entry breaks every entry after it, so a break count is a blast
+//     radius. [Result.FirstBreak] is the signal.
+//   - Skips hash recomputation for tombstones and validates their format only.
+//     A tombstone keeps the original entry's chain hash, which is not
+//     reproducible from its remaining fields.
+//
+// # Assumptions
+//
+//   - Entries arrive in ascending global_seq order, as every exporter in this
+//     module produces them. Out-of-order input reports breaks on an intact chain.
+//   - Timestamps are in the exact form they were hashed in. A re-derived,
+//     lower-precision timestamp breaks verification for sub-millisecond entries.
 package verify
 
 import (
@@ -61,6 +94,17 @@ const (
 	// hash is malformed.
 	BreakInvalidTombstone BreakType = "invalid_tombstone"
 
+	// BreakUnknownFormat: the entry names a chain hash format this build does
+	// not implement, so its hash cannot be recomputed. Reported rather than
+	// guessed at: picking a preimage at random would produce a confident, wrong
+	// answer about whether the chain is intact.
+	BreakUnknownFormat BreakType = "unknown_format"
+
+	// BreakFormatFieldMisuse: the entry carries fields its format does not bind
+	// into the hash — a v3 entry with a run id or a batch sequence number.
+	// Those values would look protected while being free to change.
+	BreakFormatFieldMisuse BreakType = "format_field_misuse"
+
 	// BreakInvalidTimestamp: the stored timestamp could not be parsed, so the
 	// hash cannot be recomputed.
 	BreakInvalidTimestamp BreakType = "invalid_timestamp"
@@ -74,11 +118,25 @@ const (
 // (RFC3339 microseconds) — re-deriving it from a lower-precision value would
 // change the hash.
 type Entry struct {
-	EntryID     string `json:"entry_id"`
-	EntryType   string `json:"entry_type"`
-	Timestamp   string `json:"timestamp"`
+	EntryID   string `json:"entry_id"`
+	EntryType string `json:"entry_type"`
+	Timestamp string `json:"timestamp"`
+
+	// FormatVersion selects the preimage: 3 for v3, 2 or ABSENT for v2. It is
+	// omitted from v2 output so that exports written before the field existed
+	// remain byte-identical.
+	FormatVersion int `json:"format_version,omitempty"`
+
+	// RunID and SequenceNum are v2 hash inputs. A v3 entry must leave both at
+	// their zero values; see the format check in [Chain].
+	//
+	// Deliberately NOT omitempty: the published verification SDK reads these
+	// field names, and a v2 entry whose sequence_num happens to be 0 must still
+	// emit "sequence_num": 0. Dropping it would change the bytes of every v2
+	// export whose first entry is included.
 	RunID       string `json:"run_id"`
 	SequenceNum int64  `json:"sequence_num"`
+
 	GlobalSeq   int64  `json:"global_seq"`
 	ContentHash string `json:"content_hash"`
 	ChainHash   string `json:"chain_hash"`
@@ -233,8 +291,36 @@ func Chain(entries []Entry, opts Options) (Result, error) {
 			continue
 		}
 
-		expected := chainformat.ComputeChainHashUnchecked(
-			previousHash, e.RunID, e.SequenceNum, ts, e.ContentHash)
+		// The two formats cannot be told apart by looking at a digest, so the
+		// entry has to say which preimage produced it. Absent means v2, which is
+		// what every entry written before the field existed carries.
+		var expected string
+		switch chainformat.NormalizeFormatVersion(e.FormatVersion) {
+		case chainformat.FormatV2:
+			expected = chainformat.ComputeChainHashUnchecked(
+				previousHash, e.RunID, e.SequenceNum, ts, e.ContentHash)
+		case chainformat.FormatV3:
+			if e.RunID != "" || e.SequenceNum != 0 {
+				// v3 binds neither field. Carrying them anyway invites a reader
+				// to treat them as attested when they are free to change.
+				addBreak(Break{
+					Position: i, EntryID: e.EntryID, Type: BreakFormatFieldMisuse,
+					Detail: "a v3 entry must not carry run_id or sequence_num; neither is bound into its hash",
+				})
+				previousHash = e.ChainHash
+				continue
+			}
+			expected = chainformat.ComputeChainHashV3Unchecked(
+				previousHash, e.GlobalSeq, ts, e.ContentHash)
+		default:
+			addBreak(Break{
+				Position: i, EntryID: e.EntryID, Type: BreakUnknownFormat,
+				Detail: fmt.Sprintf("chain hash format version %d is not implemented by this build", e.FormatVersion),
+			})
+			previousHash = e.ChainHash
+			continue
+		}
+
 		if expected != e.ChainHash {
 			addBreak(Break{
 				Position: i, EntryID: e.EntryID, Type: BreakHashMismatch,

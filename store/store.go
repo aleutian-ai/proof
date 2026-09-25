@@ -60,18 +60,34 @@ type Entry struct {
 	// chainformat.IsTombstone.
 	EntryType string
 
+	// FormatVersion says which preimage produced ChainHash: chainformat.FormatV2
+	// or chainformat.FormatV3. Zero means v2 — entries written before the field
+	// existed have no value for it, and an absent field decodes as zero, so
+	// treating zero as v2 is what keeps those entries verifiable.
+	//
+	// The two formats cannot be told apart by looking at a digest, so a verifier
+	// that guesses is a verifier that reports false breaks.
+	FormatVersion int
+
 	// GlobalSeq is the entry's chain-wide position, assigned at append.
 	//
-	// NOT bound into the chain hash — ordering is protected by the previous-hash
-	// linkage. GlobalSeq exists so gaps are detectable and so a range can be
-	// requested without walking the chain.
+	// In v3 this IS bound into the chain hash, which is what makes v3
+	// batch-independent. In v2 it is not: ordering there is protected only by
+	// the previous-hash linkage. GlobalSeq exists in both so gaps are detectable
+	// and a range can be requested without walking the chain.
 	GlobalSeq int64
 
-	// RunID identifies the batch that linked this entry. Bound into the hash.
+	// RunID identifies the batch that linked this entry.
+	//
+	// v2 ONLY, where it is bound into the hash. A v3 entry has no run id and
+	// this field is empty: binding the batch made a chain depend on the API
+	// calls that produced it rather than on its own contents.
 	RunID string
 
-	// SequenceNum is the entry's position WITHIN its run, not chain-wide. Bound
-	// into the hash. Distinct from GlobalSeq; conflating them changes the hash.
+	// SequenceNum is the entry's position WITHIN its run, not chain-wide.
+	//
+	// v2 ONLY, where it is bound into the hash. Distinct from GlobalSeq;
+	// conflating them changes a v2 hash. A v3 entry leaves this zero.
 	SequenceNum int64
 
 	// Timestamp is hash input. See the precision requirement above.

@@ -63,14 +63,18 @@ func exported(t *testing.T, s store.Store) []verify.Entry {
 	out := make([]verify.Entry, len(rows))
 	for i, r := range rows {
 		out[i] = verify.Entry{
-			EntryID:     r.EntryID,
-			EntryType:   r.EntryType,
-			Timestamp:   r.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-			RunID:       r.RunID,
-			SequenceNum: r.SequenceNum,
-			GlobalSeq:   r.GlobalSeq,
-			ContentHash: r.ContentHash,
-			ChainHash:   r.ChainHash,
+			EntryID:       r.EntryID,
+			EntryType:     r.EntryType,
+			Timestamp:     r.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
+			FormatVersion: r.FormatVersion,
+			GlobalSeq:     r.GlobalSeq,
+			ContentHash:   r.ContentHash,
+			ChainHash:     r.ChainHash,
+		}
+		// v2 binds these; v3 does not, and a v3 entry carrying them is rejected.
+		if chainformat.NormalizeFormatVersion(r.FormatVersion) == chainformat.FormatV2 {
+			out[i].RunID = r.RunID
+			out[i].SequenceNum = r.SequenceNum
 		}
 	}
 	return out
@@ -137,8 +141,10 @@ func TestAppendAssignsContiguousSequenceAndLinkage(t *testing.T) {
 			if r.GlobalSeq != int64(i) {
 				t.Errorf("row %d: GlobalSeq = %d, want %d", i, r.GlobalSeq, i)
 			}
-			if r.SequenceNum != int64(i) {
-				t.Errorf("row %d: SequenceNum = %d, want %d", i, r.SequenceNum, i)
+			// v3 does not have a batch-local sequence number; GlobalSeq above is
+			// the position, and it IS bound into the hash.
+			if r.SequenceNum != 0 {
+				t.Errorf("row %d: SequenceNum = %d, want 0 under v3", i, r.SequenceNum)
 			}
 			if i == 0 {
 				if r.PreviousHash != "" {
@@ -221,8 +227,10 @@ func TestRestartContinuesLinkage(t *testing.T) {
 	if res2.FirstSeq != res1.LastSeq+1 {
 		t.Errorf("post-restart FirstSeq = %d, want %d", res2.FirstSeq, res1.LastSeq+1)
 	}
-	if res2.RunID == res1.RunID {
-		t.Error("two Append calls produced the same run id")
+	// v3 mints no run ids, so there is nothing here to be unique. The v2
+	// uniqueness property is asserted by TestV2RunIDsAreUnique.
+	if res1.RunID != "" || res2.RunID != "" {
+		t.Errorf("a v3 append reported run ids %q and %q", res1.RunID, res2.RunID)
 	}
 
 	rows, err := s2.Range(context.Background(), chainID, 0, 1<<40, 0)
@@ -249,17 +257,17 @@ func TestRestartContinuesLinkage(t *testing.T) {
 // comment. This is not a bug being tolerated — it is a format property, and if it
 // ever stops being true the format has changed and every published verifier is
 // affected. Asserting it makes that change loud.
-func TestBatchingChangesHashes(t *testing.T) {
+func TestBatchingChangesHashes_V2(t *testing.T) {
 	a, b := input("e00", 0), input("e01", time.Second)
 
 	one := memory.New()
-	lOne, _ := linker.New(one)
+	lOne, _ := linker.New(one, linker.WithFormatV2())
 	if _, err := lOne.Append(context.Background(), chainID, []linker.Input{a, b}); err != nil {
 		t.Fatalf("single batch append: %v", err)
 	}
 
 	two := memory.New()
-	lTwo, _ := linker.New(two)
+	lTwo, _ := linker.New(two, linker.WithFormatV2())
 	if _, err := lTwo.Append(context.Background(), chainID, []linker.Input{a}); err != nil {
 		t.Fatalf("first append: %v", err)
 	}
@@ -285,6 +293,184 @@ func TestBatchingChangesHashes(t *testing.T) {
 		if got.Verdict != verify.VerdictIntact {
 			t.Errorf("%s: verdict = %q, breaks %+v", name, got.Verdict, got.Breaks)
 		}
+	}
+}
+
+// TestBatchingDoesNotChangeHashes_V3 is the property v3 exists for, and the
+// exact opposite of the v2 behaviour asserted above.
+//
+// In v2 a chain depends on how its entries were grouped into Append calls,
+// because run_id and a batch-local sequence number are hash inputs. That makes
+// a chain impossible to reconstruct from its entries: the batch boundaries are
+// part of the artefact and are recorded nowhere. v3 binds global_seq instead,
+// so the hashes depend only on WHAT was appended and in WHAT order.
+func TestBatchingDoesNotChangeHashes_V3(t *testing.T) {
+	a, b := input("e00", 0), input("e01", time.Second)
+
+	one := memory.New()
+	lOne, _ := linker.New(one) // v3 is the default
+	if _, err := lOne.Append(context.Background(), chainID, []linker.Input{a, b}); err != nil {
+		t.Fatalf("single batch append: %v", err)
+	}
+
+	two := memory.New()
+	lTwo, _ := linker.New(two)
+	if _, err := lTwo.Append(context.Background(), chainID, []linker.Input{a}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	if _, err := lTwo.Append(context.Background(), chainID, []linker.Input{b}); err != nil {
+		t.Fatalf("second append: %v", err)
+	}
+
+	rowsOne, rowsTwo := exported(t, one), exported(t, two)
+	if len(rowsOne) != 2 || len(rowsTwo) != 2 {
+		t.Fatalf("row counts %d and %d, want 2 and 2", len(rowsOne), len(rowsTwo))
+	}
+	for i := range rowsOne {
+		if rowsOne[i].ChainHash != rowsTwo[i].ChainHash {
+			t.Errorf("entry %d: [A,B] in one batch hashed differently from A then B\n one %s\n two %s",
+				i, rowsOne[i].ChainHash, rowsTwo[i].ChainHash)
+		}
+	}
+
+	for name, rows := range map[string][]verify.Entry{"one-batch": rowsOne, "two-batch": rowsTwo} {
+		got, err := verify.Chain(rows, verify.Options{})
+		if err != nil {
+			t.Fatalf("%s: verify: %v", name, err)
+		}
+		if got.Verdict != verify.VerdictIntact {
+			t.Errorf("%s: verdict = %q, breaks %+v", name, got.Verdict, got.Breaks)
+		}
+	}
+}
+
+// TestV3EntriesCarryNoRunID: v3 does not have run ids, and an entry that
+// carries one anyway would look as though the value were attested.
+func TestV3EntriesCarryNoRunID(t *testing.T) {
+	s := memory.New()
+	l, _ := linker.New(s)
+	res, err := l.Append(context.Background(), chainID, []linker.Input{input("e00", 0), input("e01", time.Second)})
+	if err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if res.RunID != "" {
+		t.Errorf("a v3 append reported run id %q", res.RunID)
+	}
+
+	rows, err := s.Range(context.Background(), chainID, 0, 1<<40, 0)
+	if err != nil {
+		t.Fatalf("range: %v", err)
+	}
+	for i, r := range rows {
+		if r.FormatVersion != chainformat.FormatV3 {
+			t.Errorf("entry %d: format version %d, want %d", i, r.FormatVersion, chainformat.FormatV3)
+		}
+		if r.RunID != "" {
+			t.Errorf("entry %d carries run id %q", i, r.RunID)
+		}
+		if r.SequenceNum != 0 {
+			t.Errorf("entry %d carries sequence_num %d", i, r.SequenceNum)
+		}
+		if r.GlobalSeq != int64(i) {
+			t.Errorf("entry %d has global_seq %d", i, r.GlobalSeq)
+		}
+	}
+}
+
+// TestV3EntryWithRunIDIsRejected: the fields are not bound into a v3 hash, so a
+// verifier must not let one pass as though they were.
+func TestV3EntryWithRunIDIsRejected(t *testing.T) {
+	s := memory.New()
+	l, _ := linker.New(s)
+	if _, err := l.Append(context.Background(), chainID, []linker.Input{input("e00", 0)}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	rows := exported(t, s)
+
+	for _, tc := range []struct {
+		name  string
+		mutar func(*verify.Entry)
+	}{
+		{"run id", func(e *verify.Entry) { e.RunID = "smuggled" }},
+		{"sequence num", func(e *verify.Entry) { e.SequenceNum = 7 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tampered := append([]verify.Entry(nil), rows...)
+			tc.mutar(&tampered[0])
+
+			got, err := verify.Chain(tampered, verify.Options{})
+			if err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+			if got.Verdict != verify.VerdictBroken {
+				t.Fatalf("verdict = %q, want BROKEN", got.Verdict)
+			}
+			if got.Breaks[0].Type != verify.BreakFormatFieldMisuse {
+				t.Errorf("break type = %q, want %q", got.Breaks[0].Type, verify.BreakFormatFieldMisuse)
+			}
+		})
+	}
+}
+
+// TestMixedFormatChainVerifies: a store can hold v2 entries followed by v3
+// ones, because a chain that was being written before the format changed does
+// not stop and restart. Each entry is checked against ITS OWN preimage.
+func TestMixedFormatChainVerifies(t *testing.T) {
+	s := memory.New()
+
+	lV2, _ := linker.New(s, linker.WithFormatV2())
+	if _, err := lV2.Append(context.Background(), chainID, []linker.Input{input("e00", 0), input("e01", time.Second)}); err != nil {
+		t.Fatalf("v2 append: %v", err)
+	}
+	lV3, _ := linker.New(s)
+	if _, err := lV3.Append(context.Background(), chainID, []linker.Input{input("e02", 2*time.Second)}); err != nil {
+		t.Fatalf("v3 append: %v", err)
+	}
+
+	rows := exported(t, s)
+	if len(rows) != 3 {
+		t.Fatalf("got %d entries, want 3", len(rows))
+	}
+	if rows[0].RunID == "" {
+		t.Error("the v2 entries lost their run id")
+	}
+	if rows[2].FormatVersion != chainformat.FormatV3 {
+		t.Errorf("the third entry is format %d, want v3", rows[2].FormatVersion)
+	}
+
+	got, err := verify.Chain(rows, verify.Options{})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if got.Verdict != verify.VerdictIntact {
+		t.Errorf("a v2-then-v3 chain did not verify: %q, breaks %+v", got.Verdict, got.Breaks)
+	}
+	if got.EntriesVerified != 3 {
+		t.Errorf("verified %d entries, want 3", got.EntriesVerified)
+	}
+}
+
+// TestUnknownFormatIsReportedNotGuessed: a build that meets a format it does
+// not implement must say so. Guessing a preimage would produce a confident
+// wrong answer about whether the chain is intact.
+func TestUnknownFormatIsReportedNotGuessed(t *testing.T) {
+	s := memory.New()
+	l, _ := linker.New(s)
+	if _, err := l.Append(context.Background(), chainID, []linker.Input{input("e00", 0)}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	rows := exported(t, s)
+	rows[0].FormatVersion = 99
+
+	got, err := verify.Chain(rows, verify.Options{})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if got.Verdict != verify.VerdictBroken {
+		t.Fatalf("verdict = %q, want BROKEN", got.Verdict)
+	}
+	if got.Breaks[0].Type != verify.BreakUnknownFormat {
+		t.Errorf("break type = %q, want %q", got.Breaks[0].Type, verify.BreakUnknownFormat)
 	}
 }
 
@@ -510,5 +696,28 @@ func TestRejectsUnorderableBatches(t *testing.T) {
 				t.Errorf("a rejected batch wrote %d rows", len(rows))
 			}
 		})
+	}
+}
+
+// TestV2RunIDsAreUnique keeps the v2 property that TestRestartContinuesLinkage
+// used to carry: a run id is a v2 hash input, and a repeated one would make two
+// different batches hash identically.
+func TestV2RunIDsAreUnique(t *testing.T) {
+	s := memory.New()
+	l, _ := linker.New(s, linker.WithFormatV2())
+
+	first, err := l.Append(context.Background(), chainID, []linker.Input{input("e00", 0)})
+	if err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	second, err := l.Append(context.Background(), chainID, []linker.Input{input("e01", time.Second)})
+	if err != nil {
+		t.Fatalf("second append: %v", err)
+	}
+	if first.RunID == "" || second.RunID == "" {
+		t.Fatal("a v2 append reported no run id")
+	}
+	if first.RunID == second.RunID {
+		t.Error("two v2 Append calls produced the same run id")
 	}
 }

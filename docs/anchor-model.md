@@ -3,9 +3,9 @@
 What an anchor is, what it proves, what it does not, and which parts of the
 design are load-bearing versus incidental.
 
-This is written from a read of the producer (`internal/chainlinker`) and the
-published SDK, not from the ticket text. Where the two disagreed, the code won and
-the disagreement is recorded.
+This is written from a read of the production anchor generator and the published
+SDK, not from design documents. Where the two disagreed, the code won and the
+disagreement is recorded.
 
 ---
 
@@ -209,6 +209,41 @@ That second point is the same shape as the tombstone bug already fixed this
 month: a producer-side change that no verifier was taught about. The ordering is
 not optional — **verifiers first, producer second.**
 
+### V6 (2026-09-24): `company_id` becomes `subject`
+
+`proof` is a tool for putting your own inputs into a hash-linked chain. It had
+no business asking for a customer identifier, so the field is now a **subject**:
+the namespace the chain is about, any non-empty string. It stays inside the
+signed bytes, because an anchor that does not commit to its subject can be
+replayed onto another chain — but nothing authenticates it, so it separates
+namespaces rather than proving one.
+
+The key is part of what gets signed, so this is a version, not a rename:
+
+```
+  v3–v5   "company_id"     unchanged forever; existing anchors verify as they did
+  v6      "subject"        v4's layout, the field moves from 3rd to 8th (alphabetical)
+```
+
+V6 is built on **V4, not V5**: V5 commits to a Merkle root and has no
+cross-language vectors, so building on it would inherit a form nothing can
+verify. V6 therefore carries no `root_hash` or `tree_size`, and declaring
+either is rejected.
+
+Two things this change fixed that were not about naming:
+
+- The version guard read `if a.Version >= MerkleVersion`. It was written to
+  exclude V5 and silently excluded **every version after it**, so a V6 anchor
+  would have verified nowhere. Merkle is one version, not a floor.
+- V6 requires a non-empty subject. V3–V5 never required a non-empty
+  `company_id`, and they still do not — tightening that retroactively would flip
+  historical anchors from passing to broken.
+
+**Verifiers first still applies.** No SDK implements V6, so nothing should emit
+V6 anchors to a consumer that has not been taught them. The Go implementation
+pins the canonical bytes with a golden vector; that guards against drift, and is
+weaker than the cross-language agreement V3/V4 have.
+
 ---
 
 ## 6. Canonicalization
@@ -239,6 +274,101 @@ Key ordering is subtle enough to be worth stating: `root_hash` sorts between
 `signing_key_id` is inside the canonical form. It was not always — anchors signed
 before the fix carried an empty `signing_key_id` and were unverifiable.
 
+**That incident is the reason the producer API has the shape it does.** See §6a.
+
+---
+
+## 6a. Producing an anchor: why signing is one call
+
+`signing_key_id` being inside the signed bytes has a consequence that reads as
+obvious once stated and is missed every time it is not enforced:
+
+```
+   a.SigningKeyID = ""
+   canonical := Canonicalize(a)        ← signs  "signing_key_id":""
+   sig, id   := sign(canonical)
+   a.SigningKeyID = id                 ← publishes "signing_key_id":"abc…"
+   ────────────────────────────────────────────────────────────────────
+   the verifier re-canonicalizes the PUBLISHED anchor, gets different
+   bytes, and reports ErrInvalidSignature. Forever. With no diagnostic
+   that distinguishes it from an actually forged anchor.
+```
+
+This project has already shipped that bug once, in the platform, where every
+anchor produced over a period of months was unverifiable and the cause was not
+visible from the failure. It was re-introduced a second time — in the
+documentation of the open-source signer — and caught in review before release.
+Twice is a design signal, not carelessness: **an API that hands a caller the
+pieces and trusts them to assemble them in order will eventually be assembled
+out of order.**
+
+So `anchor.SignAnchor(ctx, signer, a)` does the whole sequence and returns a
+finished anchor:
+
+```
+   1. derive key id + public key from the signer      (KeyIDOf, ONE Public() call)
+   2. stamp signing_key_id                            (unless the caller set one)
+   3. ValidateVersionInvariants, and refuse v5        (exactly what VerifySignature refuses)
+   4. Canonicalize
+   5. sign
+   6. VERIFY the signature just produced              (unconditional)
+```
+
+Step 3 exists so this package cannot emit an anchor it would itself reject — a
+v5 anchor, or a v6 with an empty subject, would otherwise get a perfectly good
+signature and fail at verification.
+
+Step 6 exists because `crypto.Signer`'s byte slice is ambiguous by design:
+
+| algorithm | what the `[]byte` means |
+|---|---|
+| RSA, ECDSA | a **digest** the caller already hashed |
+| Ed25519, ML-DSA | the **whole message**; the algorithm hashes internally |
+
+A third-party signer written for the first convention returns a structurally
+perfect signature over `SHA-256(canonical)`. Correct length, correct algorithm,
+parses cleanly, verifies nowhere. Only verifying the output catches it.
+
+The lower-level `SignCanonical` remains for callers who must control
+canonicalization, and it refuses an empty `signing_key_id` outright — the one
+shape that is never legitimate.
+
+### What step 6 does *not* establish
+
+Consistency, not authenticity. It proves the signature matches the key the
+signer **advertises**. A substituted or compromised signer that swaps in its own
+keypair passes every check and returns a perfect signature under the attacker's
+key. Catching that needs a key obtained independently — a `TrustPlatform` or
+`TrustProvided` ring — never a `TrustSelf` ring built from the key that
+travelled with the anchor.
+
+### Key ids come from two different namespaces
+
+| source | shape | example |
+|---|---|---|
+| `proof keygen` / `KeyIDOf` | `^[0-9a-f]{32}$`, content-derived | `4f2b…` |
+| KMS / registry | assigned label | `aleutian-anchor-2026-01-v2` |
+
+Both are legal on the wire. `SignAnchor` derives an id only when the field is
+empty; a caller-set id is kept, because re-labelling a KMS key would make the
+anchor unresolvable against the trust store that holds it. The trade is
+explicit: a derived id cannot be wrong, an assigned one is the caller's
+assertion.
+
+### The subject is not erasable
+
+The subject is inside the signed bytes — which is what stops an anchor being
+replayed onto another chain, and also means it can never be removed, redacted
+or corrected. Changing it invalidates the signature, and through `chain_hash`
+and `previous_anchor_id` it invalidates every anchor after it. Anchors are meant
+to be published and escrowed.
+
+**A subject must therefore be a stable pseudonym or an opaque id, never a name,
+an email address, a username or a device hostname.** If the natural subject is
+personal, hash it with a secret salt held separately, so the anchor commits to
+the pseudonym and the mapping stays erasable. A tool that makes the subject
+permanent cannot also honour a request to delete it.
+
 ---
 
 ## 7. Delimiter injection in the anchor chain hash
@@ -256,8 +386,8 @@ start = "entry_aaa"             end = "entry_bbb|entry_ccc"  ─┘ SHA-512
 Two results that are easy to get backwards, both established by testing rather
 than reasoning:
 
-1. **Validating `company_id` does not help.** The collision above uses a
-   well-formed `comp_` ULID. The ambiguity is between the two entry IDs. This is
+1. **Validating the subject does not help.** The collision above uses a
+   well-formed subject. The ambiguity is between the two entry IDs. This is
    the opposite of the entry chain hash, where `previous_hash` being fixed-shape
    is what carries the guarantee (D4).
 2. **Banning `|` is necessary AND sufficient.** With no pipe in any field,
@@ -271,7 +401,7 @@ property is *provenance*, not validation — which is exactly the fragile kind.
 
 **Where it stops being theoretical:** keyless anchor-linkage verification.
 Against a signature-checking verifier the collision buys little, since `range.*`
-and `company_id` are inside the signed bytes and forging a colliding anchor needs
+and the subject are inside the signed bytes and forging a colliding anchor needs
 the signing key. But recomputing the anchor-of-anchors chain needs **no key** —
 and that is precisely the offline mode this library wants to offer. In that mode
 nothing else stands behind the boundary.

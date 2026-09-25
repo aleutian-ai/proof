@@ -38,4 +38,10 @@ go.work.sum
 __pycache__/
 *.py[cod]
 node_modules/
+
+# Built binaries. Anchored with a leading slash so only the repo root is
+# matched, never a package directory. `go build ./cmd/proof` from the root
+# drops a 5 MB executable called `proof` right next to the source, which
+# `git add .` then stages — the MCP binary below was caught the same way.
+/proof
 /cmd/proof-mcp/proof-mcp

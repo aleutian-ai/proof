@@ -31,9 +31,9 @@ and the difference is the whole design.
 
 | You checked | Proven | NOT proven |
 |---|---|---|
-| **Linkage only**<br>`verify.Chain` | Nothing was edited by anyone unable to also rewrite every entry after it. | That this is the whole chain. |
-| **\+ an anchor, no key**<br>`verify.BindAnchor` | The chain is the one that anchor committed to — including where it *started*, so **truncation is caught**. | That the anchor is genuine. |
-| **\+ the anchor's signature**<br>`verify.VerifyAnchor` | The anchor was signed by the holder of a key you named. | That the anchor reached you by a path its subject could not rewrite. |
+| **Linkage only**<br>`verify.Chain`<br>`proof verify e.json` | Nothing was edited by anyone unable to also rewrite every entry after it. | That this is the whole chain. |
+| **\+ an anchor, no key**<br>`verify.BindAnchor`<br>`… --anchor a.json` | The chain is the one that anchor committed to — including where it *started*, so **truncation is caught**. | That the anchor is genuine. |
+| **\+ the anchor's signature**<br>`verify.VerifyAnchor`<br>`… --anchor a.json --key pub.pem` | The anchor was signed by the holder of a key you named. | That the anchor reached you by a path its subject could not rewrite. |
 
 ### Why linkage alone cannot see truncation
 
@@ -158,11 +158,61 @@ Without `--out` the anchor goes to stdout and the summary to stderr, so
 Like `keygen`, this verb takes a private key and is therefore never exposed over
 MCP.
 
-> **Two things are still missing from the terminal loop.** There is no `append`
-> verb yet, so entries reach a database through the library rather than the CLI
-> (`_22a`); and `proof verify` checks chain linkage only — it cannot yet check
-> an anchor, so the artefact this verb produces must be verified through the
-> library or the MCP server. Neither is a limitation of the format.
+Check it back with `proof verify --anchor`, below.
+
+### The whole loop, from a terminal
+
+```console
+$ proof init   --db chain.db
+$ proof append --db chain.db --chain demo  < entries.jsonl
+$ proof export --db chain.db --chain demo --out e.jsonl --jsonl
+$ proof anchor --db chain.db --chain demo --subject acct-7f3a \
+      --key ml-dsa-65-private.pem --out a.json
+$ proof verify e.jsonl --anchor a.json --key ml-dsa-65-public.pem
+```
+
+`append` **mints** positions and hashes; its input carries none. Supplying
+`chain_hash`, `global_seq`, `run_id` or `sequence_num` is an error rather than
+ignored — silently recomputing a field someone supplied is how they end up
+believing their hashes were preserved.
+
+`import` **carries** them. It verifies the batch, refuses to write into an
+occupied sequence range, and then stores every hashed field verbatim, so
+`export → import → export` is byte-identical. It deliberately does not use the
+linker: re-linking would renumber from the target's tail, and v3 binds
+`global_seq`, so identical entries would acquire different hashes.
+
+Importing a *segment* needs `--previous-hash`, because its first entry links
+from a predecessor rather than from nothing.
+
+### Checking an anchor
+
+```console
+$ proof verify entries.json --anchor anchor.json --key ml-dsa-65-public.pem
+
+INTACT — 4 entries verified
+
+  Proven:     nothing was edited under you.
+  NOT proven: that this is the whole chain — not from linkage alone.
+              See the anchor result below, which is what closes it.
+
+ANCHOR BOUND — 4 entries covered
+  signature verified (provided)
+  establishes: the holder of a key you supplied attests to this chain
+```
+
+This is the truncation case made concrete. Drop entries from the front, re-link
+what remains, and `proof verify` alone reports **INTACT** — correctly, because
+linkage genuinely cannot see it. Add `--anchor` and the same file comes back
+`range_start_mismatch`, exit `1`.
+
+`--previous <anchor.json>` is needed for any anchor that is not the first in its
+chain (`--previous-hash <hex>` if you kept the hash but not the file). Omit it
+and the output **says** it assumed a genesis anchor, so a mismatch points at the
+missing input rather than at an imaginary attacker.
+
+`--key-trust` decides what success means — `platform`, `provided` or `self` —
+and the result always states what that establishes rather than saying "verified".
 
 ### Generating keys
 
@@ -377,7 +427,7 @@ xwing           X-Wing hybrid KEM — ML-KEM-768 + X25519
 keywrap         versioned wrapped-key wire format
 keyfile         PKCS#8 / SPKI key files + key ids, for all seven algorithms
 
-cmd/proof       CLI — verify · export · init · keygen · anchor
+cmd/proof       CLI — init · append · export · import · anchor · verify · keygen
 cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
 ```
 

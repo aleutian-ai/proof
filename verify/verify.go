@@ -72,7 +72,12 @@ const (
 	VerdictIntact Verdict = "INTACT"
 
 	// VerdictAnchored means the linkage holds AND an anchor bound it to a point
-	// in time. Not yet reachable: anchor verification is unimplemented.
+	// in time, so truncation is ruled out over the anchored range.
+	//
+	// [Chain] never returns this — it sees entries only. A caller that also
+	// binds an anchor ([BindAnchor]) promotes the verdict itself; `proof verify
+	// --anchor` does exactly that. Binding is the bar, not the signature: the
+	// signature is a separate axis, reported by BindResult.SignatureVerified.
 	VerdictAnchored Verdict = "INTACT_ANCHORED"
 
 	// VerdictBroken means at least one break was found.
@@ -178,7 +183,12 @@ type Result struct {
 
 	Breaks []Break `json:"breaks,omitempty"`
 
-	// AnchorChecked records whether an anchor was verified. Always false today.
+	// AnchorChecked records whether an anchor was checked alongside the linkage.
+	//
+	// [Chain] always leaves it false, because it is handed entries and nothing
+	// else. A caller that binds an anchor sets it, which is what makes the
+	// difference between "no anchor was checked" and "an anchor was checked and
+	// disagreed" visible to a consumer reading the JSON.
 	AnchorChecked bool `json:"anchor_checked"`
 }
 
@@ -190,6 +200,18 @@ type Options struct {
 	// chain produces a report as long as the chain. FirstBreak stays correct
 	// regardless.
 	MaxBreaks int
+
+	// PreviousHash is the chain hash the FIRST supplied entry links from.
+	//
+	// Empty — the zero value, and the usual case — means these entries begin a
+	// chain. Set it to verify a SEGMENT: entries taken from the middle of a
+	// chain link from their predecessor, not from nothing, so verifying them
+	// against an empty previous hash reports a break on the first entry of a
+	// perfectly good segment. [store.Reader.Predecessor] exists to supply it.
+	//
+	// This does NOT establish that the predecessor is genuine. It says "these
+	// entries link, given that one", which is the most a segment can support.
+	PreviousHash string
 }
 
 // Chain verifies a chain from exported entries.
@@ -253,7 +275,7 @@ func Chain(entries []Entry, opts Options) (Result, error) {
 		}
 	}
 
-	previousHash := ""
+	previousHash := opts.PreviousHash
 	previousSeq := int64(0)
 
 	for i, e := range entries {

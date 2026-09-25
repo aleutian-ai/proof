@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +70,10 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdKeygen(args[1:], stdout, stderr)
 	case "anchor":
 		return cmdAnchor(args[1:], stdout, stderr)
+	case "append":
+		return cmdAppend(args[1:], stdout, stderr)
+	case "import":
+		return cmdImport(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return exitOK
@@ -84,16 +89,30 @@ func usage(w *os.File) {
 
 usage:
   proof verify <entries.json> [--json] [--max-breaks N]
+               [--anchor <anchor.json>] [--previous <prev.json>]
+               [--key <public.pem>] [--key-trust platform|provided|self]
   proof export --db <path> --chain <id> [--out <path>] [--jsonl]
   proof init   --db <path>
+  proof append --db <path> --chain <id> [--format-v2]   < entries.jsonl
+  proof import --db <path> --chain <id>                 < exported.jsonl
   proof keygen [--alg x-wing] [--out-dir .] [--slot primary|backup|dual]
                [--name LABEL] [--op-vault VAULT] [--force]
   proof anchor --db <path> --chain <id> --subject <s> --key <private.pem>
                [--previous <anchor.json>] [--out <path>]
 
-exit: 0 ok · 1 chain broken · 2 usage · 3 io error
+exit: 0 ok · 1 chain broken · 2 usage · 3 io error · 4 chain busy
 
-verify reads only the file you name. No network, no credentials.
+verify reads only the files you name. No network, no credentials.
+
+Three claims, and they are not the same:
+
+  (no flags)        nothing was edited under you
+  --anchor          ...and this is the chain that anchor committed to
+  --anchor --key    ...and a key you named signed that anchor
+
+Pass --previous for any anchor that is not the first in its chain: an anchor
+commits to its predecessor's hash but names it only by id, so the hash cannot
+be recovered from the anchor you are checking.
 
 keygen writes a private key (0600) and a public key, in the standard PKCS#8 and
 SubjectPublicKeyInfo formats other tools can read. It self-tests every key
@@ -114,15 +133,30 @@ func cmdVerify(args []string, stdout, stderr *os.File) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit the result as JSON")
 	maxBreaks := fs.Int("max-breaks", 0, "stop collecting after N breaks (0 = all)")
-	if err := fs.Parse(args); err != nil {
+	var opts anchorOptions
+	fs.StringVar(&opts.anchorPath, "anchor", "", "also check the chain against this anchor JSON")
+	fs.StringVar(&opts.previousPath, "previous", "", "the previous anchor's JSON; omit only for the first anchor in a chain")
+	fs.StringVar(&opts.previousHash, "previous-hash", "", "the previous anchor's chain hash, if you kept the hash but not the anchor")
+	fs.StringVar(&opts.keyPath, "key", "", "also verify the anchor's signature with this ML-DSA-65 public key (PEM)")
+	fs.StringVar(&opts.keyTrust, "key-trust", "", "where the key came from: platform, provided (default), or self")
+	// Go's flag package stops at the first non-flag argument, so a plain
+	// fs.Parse would reject the natural `proof verify entries.json --anchor a.json`
+	// — the flags after the filename would be read as extra positionals. This
+	// loop lets flags and the filename appear in any order. It is not a
+	// hand-rolled parser: fs.Parse still does the work, and still knows which
+	// flags take a value, so `--anchor a.json` cannot be mistaken for a
+	// positional.
+	positional, err := parseInterspersed(fs, args)
+	if err != nil {
 		return exitUsage
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "proof verify: expected exactly one entries file")
+	if len(positional) != 1 {
+		fmt.Fprintf(stderr, "proof verify: expected exactly one entries file, got %d\n",
+			len(positional))
 		return exitUsage
 	}
 
-	entries, err := loadEntries(fs.Arg(0))
+	entries, err := loadEntries(positional[0])
 	if err != nil {
 		fmt.Fprintf(stderr, "proof verify: %v\n", err)
 		return exitIOError
@@ -134,17 +168,41 @@ func cmdVerify(args []string, stdout, stderr *os.File) int {
 		return exitIOError
 	}
 
+	anchorRes, aerr := verifyAnchorFlags(opts, entries)
+	if aerr != nil {
+		fmt.Fprintf(stderr, "proof verify: %v\n", aerr)
+		return exitUsage
+	}
+
+	// The result type carries both of these and nothing had ever set them —
+	// Chain cannot, because it is handed entries and nothing else. This is the
+	// caller that has the anchor, so this is where they become true.
+	if anchorRes != nil {
+		res.AnchorChecked = true
+		if res.Verdict == verify.VerdictIntact && anchorRes.bind.Bound {
+			res.Verdict = verify.VerdictAnchored
+		}
+	}
+
 	if *asJSON {
-		enc := json.NewEncoder(stdout)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(res); err != nil {
+		if err := encodeCombinedJSON(stdout, res, anchorRes); err != nil {
 			fmt.Fprintf(stderr, "proof verify: encode result: %v\n", err)
 			return exitIOError
 		}
 	} else {
-		printResult(stdout, res)
+		printResult(stdout, res, anchorRes != nil)
+		if anchorRes != nil {
+			printAnchorResult(stdout, anchorRes)
+		}
 	}
+
 	if res.Verdict == verify.VerdictBroken {
+		return exitBroken
+	}
+	// An anchor that does not describe this chain is a BROKEN verdict too. The
+	// chain linking cleanly while the anchor disagrees is exactly the truncation
+	// case — internally flawless, and not the chain that was committed to.
+	if anchorRes != nil && !anchorRes.bind.Bound {
 		return exitBroken
 	}
 	return exitOK
@@ -155,7 +213,7 @@ func cmdVerify(args []string, stdout, stderr *os.File) int {
 // The wording is deliberate. It reports what was actually established — that
 // nothing was edited — and states plainly what was NOT, because a reader who
 // sees "verified" will otherwise assume the stronger claim.
-func printResult(w *os.File, res verify.Result) {
+func printResult(w *os.File, res verify.Result, anchorFollows bool) {
 	switch res.Verdict {
 	case verify.VerdictBroken:
 		fmt.Fprintf(w, "BROKEN — first break at entry %d\n\n", res.FirstBreak)
@@ -182,9 +240,18 @@ func printResult(w *os.File, res verify.Result) {
 		}
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "\n  Proven:     nothing was edited under you.")
-		fmt.Fprintln(w, "  NOT proven: that this is the whole chain. Entries could have been")
-		fmt.Fprintln(w, "              removed from the front and the rest re-linked; detecting")
-		fmt.Fprintln(w, "              that needs an anchor, which was not checked here.")
+		if anchorFollows {
+			// Saying "no anchor was checked" two lines above an anchor result
+			// would be simply untrue. The truncation caveat still belongs here,
+			// because linkage alone genuinely cannot see it — the anchor below
+			// is what addresses it.
+			fmt.Fprintln(w, "  NOT proven: that this is the whole chain — not from linkage alone.")
+			fmt.Fprintln(w, "              See the anchor result below, which is what closes it.")
+		} else {
+			fmt.Fprintln(w, "  NOT proven: that this is the whole chain. Entries could have been")
+			fmt.Fprintln(w, "              removed from the front and the rest re-linked; detecting")
+			fmt.Fprintln(w, "              that needs an anchor, which was not checked here.")
+		}
 	}
 }
 
@@ -197,6 +264,22 @@ func loadEntries(path string) ([]verify.Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	return parseEntries(raw, path)
+}
+
+// loadEntriesFrom reads exported entries from a stream, sniffing the same two
+// shapes loadEntries accepts. Used by `proof import`, whose input arrives on
+// stdin rather than as a path.
+func loadEntriesFrom(r io.Reader) ([]verify.Entry, error) {
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read stdin: %w", err)
+	}
+	return parseEntries(raw, "stdin")
+}
+
+// parseEntries decodes a JSON array or JSONL, whichever it was handed.
+func parseEntries(raw []byte, path string) ([]verify.Entry, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" {
 		return nil, fmt.Errorf("%s is empty", path)
@@ -350,4 +433,57 @@ func cmdInit(args []string, stdout, stderr *os.File) int {
 	}
 	fmt.Fprintf(stdout, "created %s\n", *dbPath)
 	return exitOK
+}
+
+// parseInterspersed parses flags that may appear before, after, or between
+// positional arguments.
+//
+// # Description
+//
+// Go's flag package stops at the first argument that does not start with '-',
+// so `cmd file --flag value` leaves `--flag value` unparsed and looking like
+// two more positionals. Every modern CLI accepts the interleaved form, and an
+// operator who types it should not get a confusing "expected exactly one file".
+//
+// This repeatedly hands the remainder back to the SAME FlagSet, so flag parsing
+// stays the flag package's job — including knowing which flags consume the
+// token after them. Nothing here inspects a flag name.
+//
+// # Inputs
+//
+//   - fs: a FlagSet with its flags already declared
+//   - args: the raw arguments, minus the verb
+//
+// # Outputs
+//
+//   - []string: the positional arguments, in the order given
+//   - error: whatever fs.Parse returned; fs has already reported it
+//
+// # Example
+//
+//	positional, err := parseInterspersed(fs, args)
+//
+// # Limitations
+//
+//   - A positional that begins with '-' is indistinguishable from a flag, as
+//     everywhere else. Use "--" or "./-name".
+//
+// # Assumptions
+//
+//   - fs uses flag.ContinueOnError, so a parse failure returns rather than
+//     exiting the process out from under the caller.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return nil, err
+		}
+		rest = fs.Args()
+		if len(rest) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, rest[0])
+		rest = rest[1:]
+	}
 }

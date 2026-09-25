@@ -26,6 +26,32 @@ change is called out here.
   so an anchor cannot be replayed onto another chain. v6 uses v4's layout — NOT
   v5's, which commits to a Merkle root nothing can verify — and requires a
   non-empty subject. `anchor.SubjectVersion` names the version.
+- **`proof append` and `proof import` — the terminal loop closes.**
+  `append` mints positions through the linker and REFUSES input carrying
+  `chain_hash`, `global_seq`, `run_id`, `sequence_num` or `previous_hash`,
+  naming the field and the line: silently recomputing a value someone supplied
+  is how they come to believe it was preserved. `import` verifies first, refuses
+  an occupied sequence range, and stores verbatim — `export → import → export`
+  is byte-identical for v2 and v3 alike. It bypasses the linker on purpose,
+  since re-linking would renumber from the target's tail and v3 binds
+  `global_seq`.
+- **`verify.Options.PreviousHash`** lets a SEGMENT be verified. Entries taken
+  from the middle of a chain link from their predecessor, so checking them
+  against an empty previous hash reported a break on the first entry of a
+  perfectly good segment. `store.Reader.Predecessor` has always existed to
+  supply this; the verifier never had the parameter. Additive — the zero value
+  is the previous behaviour.
+- **`proof verify --anchor` — the CLI can now check anchors, not only produce
+  them.** Three claims from one verb, and they are not the same:
+  no flags checks linkage, `--anchor` binds the chain to an anchor, and
+  `--anchor --key` verifies the signature too. An anchor that does not describe
+  the chain exits `1`, the same as a broken chain, because it is one. The
+  verdict is promoted to `INTACT_ANCHORED` and `anchor_checked` set — a field
+  and a verdict the result type has always carried and nothing had ever set.
+- **`proof verify` accepts flags after the filename.** Go's flag package stops
+  at the first positional, so `proof verify entries.json --anchor a.json` — the
+  natural form — previously failed with a confusing complaint about the number
+  of files.
 - **`proof anchor` — the CLI verb.** Reads a chain from a database, verifies it,
   signs an anchor over it and writes JSON. Refuses a broken chain with exit code
   `1`, the same code `proof verify` uses, so a script treats the verdict

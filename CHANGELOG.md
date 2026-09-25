@@ -5,7 +5,13 @@ All notable changes to `github.com/aleutian-ai/proof`. Versions follow
 minor or patch release may contain a source-incompatible change, and every such
 change is called out here.
 
-## Unreleased
+## v0.2.0 — 2026-09-25
+
+The first release to carry the whole loop: originate entries, anchor them,
+and verify the result — all from a terminal, and all independently checkable.
+
+Documented as v0.2.0 on 2026-09-21 but never tagged, so this absorbs that
+section rather than skipping a version nobody could have fetched.
 
 ### Added
 
@@ -218,9 +224,10 @@ change is called out here.
   including the published Python and JS SDKs. A v3 entry names its format, so
   such a verifier reports a break rather than a wrong verdict.
 
-## v0.2.0 — 2026-09-21
 
 ### Security
+
+Key-material hardening in `xwing`, written up on 2026-09-21 and released here.
 
 - **`xwing`: secrets redact under every `fmt` verb except `%p`, and under
   `log/slog`.** `PrivateKey` and `SharedSecret` previously redacted only `%v`,
@@ -245,11 +252,12 @@ change is called out here.
   bytes; they consult no marshaling interface a type could use to refuse.
 - An unexported struct field of either type prints raw under `fmt`.
 
-### Source-incompatible change
+### Source-incompatible changes
 
-This is why the release is v0.2.0 rather than a patch: while the major version
-is 0, a minor bump is the conventional signal for a source-incompatible change.
-
+There are **two** in this release, and while the major version is 0 a minor bump
+is the conventional signal for exactly that. The larger one —
+`verify.BindAnchor` and `verify.VerifyAnchor` gaining a `previousAnchorHash`
+parameter — is described under **Changed** above. The other:
 
 - The three `xwing.ErrInvalid*` sentinels changed from `var` to `const`, of an
   unexported type. `errors.Is(err, xwing.ErrInvalidPublicKey)` and

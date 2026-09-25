@@ -463,16 +463,22 @@ destroy the proof that the data ever existed.
 
 ## Status
 
-Under active development, ahead of a first tagged release. Every capability
-described above is built and tested; what remains is packaging and the
-deduplication that motivated the project.
+Under active development. **v0.2.0** is the first release carrying the whole
+loop — originate, anchor, verify — from a terminal.
+
+While the major version is 0, a minor release may contain a source-incompatible
+change; v0.2.0 contains two, both called out in the
+[changelog](CHANGELOG.md). What remains is the deduplication that motivated the
+project, and a normative spec covering chain hash v3 and anchor v6 — both are
+implemented and tested here but specified only in the Go source and
+`docs/decisions.md`, which is the gap a second implementation would close.
 
 | | |
 |---|---|
 | ✅ built | format core · `anchor` (verify, sign **and build**) · `bundle` · `verify` · `linker` · CLI · MCP server (7 tools) |
-| ⏳ not yet | published tag · the monorepo and SDKs consuming this instead of their own copies |
+| ⏳ not yet | the monorepo and SDKs consuming this instead of their own copies |
 
-**415 tests** across the library and MCP module. Every guard here has been
+**469 tests** across the library and MCP module. Every guard here has been
 **mutation-tested** — the protection is deliberately broken and the test
 confirmed to fail — because a guard that has never failed is not a guard. That
 discipline has repeatedly caught tests which passed for the wrong reason.

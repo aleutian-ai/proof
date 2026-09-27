@@ -36,10 +36,12 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +50,7 @@ import (
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/bundle"
 	"github.com/aleutian-ai/proof/chainformat"
+	"github.com/aleutian-ai/proof/keyfile"
 	"github.com/aleutian-ai/proof/merkle"
 	"github.com/aleutian-ai/proof/verify"
 )
@@ -91,8 +94,10 @@ func registerTools(s *mcp.Server) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "compute_chain_hash",
-		Description: "Compute the chain hash for one entry's fields. Useful for " +
-			"checking a single link by hand, or for showing how the linkage works.",
+		Description: "Compute the chain hash for one entry's fields. format_version is " +
+			"required: 3 for chains written by proof append (binds global_seq), 2 for " +
+			"older chains (binds run_id and sequence_num). Sequence numbers are decimal " +
+			"strings, not JSON numbers.",
 	}, computeChainHash)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -203,17 +208,56 @@ func verifyChain(ctx context.Context, req *mcp.CallToolRequest, in verifyChainIn
 // compute_chain_hash
 // ---------------------------------------------------------------------------
 
+// computeChainHashIn takes either format. The caller must say which.
+//
+// Sequence numbers are decimal STRINGS: the MCP SDK routes arguments through a
+// map[string]any, so a JSON number becomes a float64 and anything above 2^53 is
+// silently changed before it reaches this struct.
 type computeChainHashIn struct {
-	PreviousHash string `json:"previous_hash" jsonschema:"the preceding entry's chain hash; empty for the first entry"`
-	RunID        string `json:"run_id" jsonschema:"the batch run identifier"`
-	SequenceNum  int64  `json:"sequence_num" jsonschema:"position within the run (not chain-wide)"`
-	Timestamp    string `json:"timestamp" jsonschema:"RFC3339 with microseconds, e.g. 2026-01-20T12:00:01.123456Z"`
-	ContentHash  string `json:"content_hash" jsonschema:"128 hex characters, or a TOMBSTONE: value"`
+	FormatVersion int    `json:"format_version" jsonschema:"REQUIRED: 3 for chains written by proof append, 2 for older chains"`
+	PreviousHash  string `json:"previous_hash" jsonschema:"the preceding entry's chain hash; empty for the first entry"`
+	Timestamp     string `json:"timestamp" jsonschema:"RFC3339 with microseconds, e.g. 2026-01-20T12:00:01.123456Z"`
+	ContentHash   string `json:"content_hash" jsonschema:"128 hex characters, or a TOMBSTONE: value"`
+
+	// v3 only, and required for v3.
+	GlobalSeq string `json:"global_seq,omitempty" jsonschema:"v3 only, required: chain-wide sequence number as a decimal string, e.g. \"4\""`
+
+	// v2 only, and required for v2.
+	RunID       string `json:"run_id,omitempty" jsonschema:"v2 only: the batch run identifier"`
+	SequenceNum string `json:"sequence_num,omitempty" jsonschema:"v2 only, required: position within the run as a decimal string, e.g. \"3\""`
 }
 
 type computeChainHashOut struct {
 	ChainHash string `json:"chain_hash"`
-	Preimage  string `json:"preimage_description"`
+
+	FormatVersion int    `json:"format_version"`
+	Preimage      string `json:"preimage_description"`
+}
+
+const (
+	preimageV2 = `SHA-512("aleutian.chain.v2:" ‖ previous_hash ‖ "|" ‖ run_id ‖ "|" ‖ ` +
+		`sequence_num ‖ "|" ‖ timestamp ‖ "|" ‖ content_hash)`
+	preimageV3 = `SHA-512("aleutian.chain.v3:" ‖ previous_hash ‖ "|" ‖ global_seq ‖ "|" ‖ ` +
+		`timestamp ‖ "|" ‖ content_hash)`
+)
+
+// parseSeq reads a decimal sequence string.
+//
+// An empty string is "absent" and yields (0, false, nil); the caller decides
+// whether that is legal for the format. Anything non-numeric or out of int64
+// range is an error, never a silent zero.
+func parseSeq(field, s string) (int64, bool, error) {
+	if s == "" {
+		return 0, false, nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s must be a decimal integer that fits in int64, got %q", field, s)
+	}
+	if n < 0 {
+		return 0, false, fmt.Errorf("%s must not be negative, got %d", field, n)
+	}
+	return n, true, nil
 }
 
 func computeChainHash(ctx context.Context, req *mcp.CallToolRequest, in computeChainHashIn) (
@@ -224,18 +268,60 @@ func computeChainHash(ctx context.Context, req *mcp.CallToolRequest, in computeC
 		return nil, computeChainHashOut{}, fmt.Errorf(
 			"timestamp must be RFC3339 (e.g. 2026-01-20T12:00:01.123456Z): %w", err)
 	}
-	// The validated form: a malformed previous_hash makes the preimage ambiguous
-	// and two different entries can collide. See docs/format-spec.md §3.
-	hash, err := chainformat.ComputeChainHash(
-		in.PreviousHash, in.RunID, in.SequenceNum, ts, in.ContentHash)
+
+	seqNum, haveSeqNum, err := parseSeq("sequence_num", in.SequenceNum)
 	if err != nil {
 		return nil, computeChainHashOut{}, err
 	}
-	return nil, computeChainHashOut{
-		ChainHash: hash,
-		Preimage: `SHA-512("aleutian.chain.v2:" ‖ previous_hash ‖ "|" ‖ run_id ‖ "|" ‖ ` +
-			`sequence_num ‖ "|" ‖ timestamp ‖ "|" ‖ content_hash)`,
-	}, nil
+	globalSeq, haveGlobalSeq, err := parseSeq("global_seq", in.GlobalSeq)
+	if err != nil {
+		return nil, computeChainHashOut{}, err
+	}
+
+	// The checked ComputeChainHash* are used, not the Unchecked variants: a
+	// malformed previous_hash makes the preimage ambiguous (format-spec §3), and a
+	// single-shot tool should say so rather than hash it.
+	switch in.FormatVersion {
+	case chainformat.FormatV2:
+		if haveGlobalSeq {
+			return nil, computeChainHashOut{}, fmt.Errorf(
+				"format_version 2 does not use global_seq; v2 binds run_id and sequence_num")
+		}
+		if !haveSeqNum {
+			// 0 is a real position, so a missing value is an error, not a default.
+			return nil, computeChainHashOut{}, fmt.Errorf("sequence_num is required for format_version 2")
+		}
+		hash, err := chainformat.ComputeChainHash(in.PreviousHash, in.RunID, seqNum, ts, in.ContentHash)
+		if err != nil {
+			return nil, computeChainHashOut{}, err
+		}
+		return nil, computeChainHashOut{
+			ChainHash: hash, FormatVersion: chainformat.FormatV2, Preimage: preimageV2,
+		}, nil
+
+	case chainformat.FormatV3:
+		// Refused on value, not presence: export rows always carry run_id "" and
+		// sequence_num 0, and copying one should work.
+		if in.RunID != "" || seqNum != 0 {
+			return nil, computeChainHashOut{}, fmt.Errorf(
+				"format_version 3 does not bind run_id or sequence_num; remove them")
+		}
+		if !haveGlobalSeq {
+			// 0 is a real sequence number, so a missing value is an error, not a default.
+			return nil, computeChainHashOut{}, fmt.Errorf("global_seq is required for format_version 3")
+		}
+		hash, err := chainformat.ComputeChainHashV3(in.PreviousHash, globalSeq, ts, in.ContentHash)
+		if err != nil {
+			return nil, computeChainHashOut{}, err
+		}
+		return nil, computeChainHashOut{
+			ChainHash: hash, FormatVersion: chainformat.FormatV3, Preimage: preimageV3,
+		}, nil
+
+	default:
+		return nil, computeChainHashOut{}, fmt.Errorf(
+			"format_version must be 2 or 3, got %d", in.FormatVersion)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -621,29 +707,53 @@ func explainTrustModel(ctx context.Context, req *mcp.CallToolRequest, in explain
 // shared loaders
 // ---------------------------------------------------------------------------
 
+// maxPublicKeyPEMBytes bounds a PEM-encoded ML-DSA-65 public key file.
+//
+// An ML-DSA-65 public key is anchor.PublicKeySize (1952) bytes RAW. PEM adds
+// SPKI framing, base64 expansion (4 out per 3 in), line breaks and the BEGIN/END
+// armour: `proof keygen` writes 2726 bytes. 4 KiB leaves room for any reasonable
+// encoder's line width while still refusing a file that is obviously not a key.
+//
+// The previous bound was anchor.PublicKeySize+1 — correct for RAW bytes, and the
+// reason this server could not read a single key `proof keygen` produced
+// (aleutianchain_54).
+const maxPublicKeyPEMBytes = 4 << 10
+
+// Distinguishable read failures. A caller needs to know whether the path was
+// wrong, the file was the wrong KIND, or it was too big — see readCapped.
+var (
+	errNotRegular = errors.New("not a regular file")
+	errTooLarge   = errors.New("file is too large")
+)
+
 // loadAnchor reads an anchor JSON file.
 func loadAnchor(path string) (anchor.Anchor, error) {
-	raw, err := readCapped(filepath.Clean(path), maxEntriesFileBytes)
+	clean := filepath.Clean(path)
+	raw, err := readCapped(clean, maxEntriesFileBytes)
 	if err != nil {
-		return anchor.Anchor{}, fmt.Errorf("cannot read the anchor file at that path")
+		return anchor.Anchor{}, fmt.Errorf("anchor file: %w", err)
 	}
 	var a anchor.Anchor
 	if err := json.Unmarshal(raw, &a); err != nil {
-		return anchor.Anchor{}, fmt.Errorf("the anchor file is not valid JSON")
+		return anchor.Anchor{}, fmt.Errorf("%s is not valid JSON: %w", clean, err)
 	}
 	return a, nil
 }
 
-// loadKeyRing reads a raw ML-DSA-65 public key and binds it to a trust level.
+// loadKeyRing reads a PEM-encoded ML-DSA-65 public key and binds it to a trust
+// level.
 //
 // The trust level is the caller's assertion about PROVENANCE, which this process
 // cannot determine for itself. Defaulting to "provided" rather than "platform"
 // is deliberate: the weaker claim is the safe default.
+//
+// Parsing goes through keyfile.ParsePublicKey — the SAME function the CLI's
+// `proof verify --key` uses. It previously read raw bytes instead, so the two
+// surfaces disagreed about what a key file is and only the CLI agreed with
+// `proof keygen` (aleutianchain_54).
 func loadKeyRing(path, trustLabel, keyID string) (*anchor.KeyRing, error) {
-	raw, err := readCapped(filepath.Clean(path), anchor.PublicKeySize+1)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read the public key file at that path")
-	}
+	// The trust label is a pure argument check, so it happens BEFORE any I/O.
+	// Validating it afterwards would report a file problem for a bad argument.
 	trust := anchor.TrustProvided
 	switch trustLabel {
 	case "", string(anchor.TrustProvided):
@@ -654,20 +764,70 @@ func loadKeyRing(path, trustLabel, keyID string) (*anchor.KeyRing, error) {
 	default:
 		return nil, fmt.Errorf("key_trust must be one of: platform, provided, self")
 	}
-	return anchor.NewKeyRing(trust, map[string][]byte{keyID: raw})
+
+	clean := filepath.Clean(path)
+	pemBytes, err := readCapped(clean, maxPublicKeyPEMBytes)
+	if err != nil {
+		return nil, fmt.Errorf("public key file: %w", err)
+	}
+
+	alg, pub, err := keyfile.ParsePublicKey(pemBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not a PEM-encoded public key "+
+			"(expected one from `proof keygen --alg ml-dsa-65`): %w", clean, err)
+	}
+	if alg != keyfile.MLDSA65 {
+		// Name what was supplied AND what is needed. "wrong algorithm" sends a
+		// reader to check the wrong thing.
+		return nil, fmt.Errorf("%s holds a %s public key, but anchors are signed "+
+			"with ML-DSA-65", clean, alg)
+	}
+
+	return anchor.NewKeyRing(trust, map[string][]byte{keyID: pub})
 }
 
-// readCapped reads a regular file, refusing anything larger than cap.
-func readCapped(path string, cap int64) ([]byte, error) {
+// readCapped reads a regular file, refusing anything larger than limit.
+//
+// Errors are DISTINGUISHABLE on purpose. Every failure here used to be reported
+// as "cannot read the <X> file at that path", but three of the four causes are
+// not about the path at all — so a caller with a perfectly correct path was told
+// the path was the problem (aleutianchain_55). The original err is wrapped, never
+// dropped.
+//
+// Paths and sizes are safe to report; file CONTENTS are not, and none appear.
+func readCapped(path string, limit int64) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
+		// os.Lstat's error already names the path and the cause ("no such file or
+		// directory", "permission denied") and wraps the fs sentinels, so callers
+		// can still match on errors.Is.
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("not a regular file")
+		return nil, fmt.Errorf("%s is %s: %w", path, describeMode(info.Mode()), errNotRegular)
 	}
-	if info.Size() > cap {
-		return nil, fmt.Errorf("file exceeds the %d byte limit", cap)
+	if info.Size() > limit {
+		return nil, fmt.Errorf("%s is %d bytes, over the %d byte limit: %w",
+			path, info.Size(), limit, errTooLarge)
 	}
 	return os.ReadFile(path)
+}
+
+// describeMode names what a non-regular file actually is.
+//
+// "not a regular file" leaves a reader guessing; "is a directory" does not.
+func describeMode(m os.FileMode) string {
+	switch {
+	case m.IsDir():
+		return "a directory"
+	case m&os.ModeSymlink != 0:
+		return "a symbolic link"
+	case m&os.ModeDevice != 0:
+		return "a device"
+	case m&os.ModeNamedPipe != 0:
+		return "a named pipe"
+	case m&os.ModeSocket != 0:
+		return "a socket"
+	}
+	return "an irregular file"
 }

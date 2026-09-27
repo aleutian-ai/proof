@@ -9,6 +9,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +24,9 @@ import (
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/bundle"
 	"github.com/aleutian-ai/proof/chainformat"
+	"github.com/aleutian-ai/proof/keyfile"
+	"github.com/aleutian-ai/proof/linker"
+	"github.com/aleutian-ai/proof/store/memory"
 	"github.com/aleutian-ai/proof/verify"
 )
 
@@ -270,20 +276,163 @@ func TestVerifyChain_DetectsTampering(t *testing.T) {
 }
 
 func TestComputeChainHash(t *testing.T) {
+	// The v3 expectation comes from a chain the LINKER wrote, not from inputs this
+	// test invents — so the tool is checked against what proof append produces.
+	st := memory.New()
+	l, err := linker.New(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 27, 9, 0, 0, 0, time.UTC)
+	var batch []linker.Input
+	for i := 0; i < 2; i++ {
+		batch = append(batch, linker.Input{
+			EntryID: fmt.Sprintf("e%d", i), EntryType: "capture.request.v3",
+			Timestamp:   base.Add(time.Duration(i) * time.Second),
+			ContentHash: strings.Repeat(fmt.Sprintf("%02x", i+1), 64),
+			IngestedAt:  base.Add(time.Duration(i) * time.Second),
+		})
+	}
+	if _, err := l.Append(context.Background(), "c", batch); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.Range(context.Background(), "c", 0, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows[1].FormatVersion != chainformat.FormatV3 {
+		t.Fatalf("the linker wrote format %d; this test assumes v3 is its default", rows[1].FormatVersion)
+	}
+	v3ts := rows[1].Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z")
+
+	v2ts := "2026-01-20T12:00:00.123456Z"
+	ts2, _ := time.Parse(time.RFC3339Nano, v2ts)
+	ch := strings.Repeat("a", 128)
+	v2want := chainformat.ComputeChainHashUnchecked("", "run_mcp", 3, ts2, ch)
+
+	v3 := func(extra map[string]any) map[string]any {
+		m := map[string]any{
+			"format_version": 3, "previous_hash": rows[0].ChainHash,
+			"timestamp": v3ts, "content_hash": rows[1].ContentHash,
+			"global_seq": fmt.Sprint(rows[1].GlobalSeq),
+		}
+		for k, v := range extra {
+			if v == nil {
+				delete(m, k)
+			} else {
+				m[k] = v
+			}
+		}
+		return m
+	}
+	v2 := func(extra map[string]any) map[string]any {
+		m := map[string]any{
+			"format_version": 2, "previous_hash": "", "timestamp": v2ts,
+			"content_hash": ch, "run_id": "run_mcp", "sequence_num": "3",
+		}
+		for k, v := range extra {
+			if v == nil {
+				delete(m, k)
+			} else {
+				m[k] = v
+			}
+		}
+		return m
+	}
+
+	tests := []struct {
+		name       string
+		args       map[string]any
+		wantHash   string
+		wantFormat int
+		wantErr    string
+	}{
+		{name: "v3 reproduces the linker", args: v3(nil), wantHash: rows[1].ChainHash, wantFormat: 3},
+		{name: "v3 accepts an export row's structural zeros",
+			args: v3(map[string]any{"run_id": "", "sequence_num": "0"}), wantHash: rows[1].ChainHash, wantFormat: 3},
+		{name: "v2", args: v2(nil), wantHash: v2want, wantFormat: 2},
+
+		{name: "format_version missing", args: v3(map[string]any{"format_version": nil}), wantErr: "missing properties: [\"format_version\"]"},
+		{name: "format_version unknown", args: v3(map[string]any{"format_version": 4}), wantErr: "format_version must be 2 or 3"},
+		{name: "v3 without global_seq", args: v3(map[string]any{"global_seq": nil}), wantErr: "global_seq is required"},
+		{name: "v3 with a run_id", args: v3(map[string]any{"run_id": "r"}), wantErr: "does not bind run_id"},
+		{name: "v3 with a sequence_num", args: v3(map[string]any{"sequence_num": "5"}), wantErr: "does not bind run_id or sequence_num"},
+		{name: "v2 without sequence_num", args: v2(map[string]any{"sequence_num": nil}), wantErr: "sequence_num is required"},
+		{name: "v2 with global_seq", args: v2(map[string]any{"global_seq": "1"}), wantErr: "does not use global_seq"},
+		{name: "non-numeric global_seq", args: v3(map[string]any{"global_seq": "four"}), wantErr: "decimal integer"},
+		{name: "negative global_seq", args: v3(map[string]any{"global_seq": "-1"}), wantErr: "must not be negative"},
+		{name: "global_seq as a JSON number", args: v3(map[string]any{"global_seq": 1}), wantErr: "string"},
+		// The checked path must run for v3 too, not only v2: a pipe in previous_hash
+		// makes the preimage ambiguous.
+		{name: "v3 malformed previous_hash", args: v3(map[string]any{"previous_hash": "abc|d"}), wantErr: "128 lowercase hex"},
+	}
+
+	cs := connect(t)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+				Name: "compute_chain_hash", Arguments: tc.args,
+			})
+			if tc.wantErr != "" {
+				msg := ""
+				if err != nil {
+					msg = err.Error()
+				} else if res.IsError {
+					for _, c := range res.Content {
+						if tx, ok := c.(*mcp.TextContent); ok {
+							msg += tx.Text
+						}
+					}
+				} else {
+					t.Fatalf("expected an error containing %q, got a result", tc.wantErr)
+				}
+				if !strings.Contains(msg, tc.wantErr) {
+					t.Errorf("error %q does not contain %q", msg, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || res.IsError {
+				t.Fatalf("unexpected error: %v %+v", err, res)
+			}
+			var out computeChainHashOut
+			raw, _ := json.Marshal(res.StructuredContent)
+			if err := json.Unmarshal(raw, &out); err != nil {
+				t.Fatal(err)
+			}
+			if out.ChainHash != tc.wantHash {
+				t.Errorf("chain_hash = %s\n want %s", out.ChainHash, tc.wantHash)
+			}
+			if out.FormatVersion != tc.wantFormat {
+				t.Errorf("format_version = %d, want %d", out.FormatVersion, tc.wantFormat)
+			}
+			domain := fmt.Sprintf("aleutian.chain.v%d:", tc.wantFormat)
+			if !strings.Contains(out.Preimage, domain) {
+				t.Errorf("preimage_description does not name %s: %s", domain, out.Preimage)
+			}
+		})
+	}
+}
+
+// TestComputeChainHash_SequenceAbove2To53IsExact pins why the sequence fields
+// are strings: 2^53+1 as a JSON number used to come back as a hash for 2^53.
+func TestComputeChainHash_SequenceAbove2To53IsExact(t *testing.T) {
+	const big = int64(9007199254740993)
+	ts, _ := time.Parse(time.RFC3339Nano, "2026-01-20T12:00:01.123456Z")
+	ch := strings.Repeat("a", 128)
+	want := chainformat.ComputeChainHashV3Unchecked("", big, ts, ch)
+	wrong := chainformat.ComputeChainHashV3Unchecked("", big-1, ts, ch)
+	if want == wrong {
+		t.Fatal("the two hashes are equal; this test cannot detect truncation")
+	}
+
 	cs := connect(t)
 	var out computeChainHashOut
 	call(t, cs, "compute_chain_hash", map[string]any{
-		"previous_hash": "",
-		"run_id":        "run_mcp",
-		"sequence_num":  0,
-		"timestamp":     "2026-01-20T12:00:00.123456Z",
-		"content_hash":  strings.Repeat("a", 128),
+		"format_version": 3, "previous_hash": "", "timestamp": "2026-01-20T12:00:01.123456Z",
+		"content_hash": ch, "global_seq": "9007199254740993",
 	}, &out)
-
-	ts, _ := time.Parse(time.RFC3339Nano, "2026-01-20T12:00:00.123456Z")
-	want := chainformat.ComputeChainHashUnchecked("", "run_mcp", 0, ts, strings.Repeat("a", 128))
 	if out.ChainHash != want {
-		t.Errorf("chain_hash = %s, want %s", out.ChainHash, want)
+		t.Errorf("global_seq 2^53+1 was not hashed exactly (got the hash for 2^53: %v)", out.ChainHash == wrong)
 	}
 }
 
@@ -298,11 +447,12 @@ func TestComputeChainHash_RejectsMalformedPreviousHash(t *testing.T) {
 	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
 		Name: "compute_chain_hash",
 		Arguments: map[string]any{
-			"previous_hash": "abc|d", // a pipe: the collision vector
-			"run_id":        "run_mcp",
-			"sequence_num":  0,
-			"timestamp":     "2026-01-20T12:00:00.123456Z",
-			"content_hash":  strings.Repeat("a", 128),
+			"format_version": 2,
+			"previous_hash":  "abc|d", // a pipe: the collision vector
+			"run_id":         "run_mcp",
+			"sequence_num":   "0",
+			"timestamp":      "2026-01-20T12:00:00.123456Z",
+			"content_hash":   strings.Repeat("a", 128),
 		},
 	})
 	if err == nil && !res.IsError {
@@ -499,8 +649,18 @@ func anchoredFixture(t *testing.T, n int, truncateBy int) (entriesPath, anchorPa
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyPath = filepath.Join(dir, "key.bin")
-	if err := os.WriteFile(keyPath, pubBytes, 0o600); err != nil {
+	// PEM, through keyfile — the encoding `proof keygen` actually writes.
+	//
+	// This used to write RAW bytes to "key.bin", which is why nothing caught that
+	// verify_anchor could not read a single key the tool itself produces: the test
+	// invented a format, then confirmed the server agreed with the invention
+	// (aleutianchain_54).
+	pemBytes, err := keyfile.MarshalPublicKey(keyfile.MLDSA65, pubBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath = filepath.Join(dir, "ml-dsa-65-public.pem")
+	if err := os.WriteFile(keyPath, pemBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return entriesPath, anchorPath, keyPath
@@ -739,4 +899,214 @@ func TestModuleIsInstallable(t *testing.T) {
 				"resolves through a replace. Require a published tag.", i+1)
 		}
 	}
+}
+
+// =============================================================================
+// Loader failure diagnosis — aleutianchain_54 and _55
+// =============================================================================
+
+// TestReadCapped_DistinguishesFailures pins that each cause says what it is.
+//
+// All four used to be reported as "cannot read the <X> file at that path". Three
+// of them are not about the path, so a caller with a correct path was told the
+// path was wrong. That is the bug _54 hid behind: a PEM key over a raw-bytes cap
+// looked like a missing file.
+func TestReadCapped_DistinguishesFailures(t *testing.T) {
+	dir := t.TempDir()
+
+	small := filepath.Join(dir, "small.txt")
+	if err := os.WriteFile(small, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(big, make([]byte, 64), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		path      string
+		limit     int64
+		wantErr   bool
+		wantIs    error
+		wantWords []string
+		notWords  []string
+	}{
+		{
+			name: "a readable file within the limit", path: small, limit: 1 << 20,
+		},
+		{
+			name: "no such file", path: filepath.Join(dir, "absent.txt"), limit: 1 << 20,
+			wantErr: true, wantIs: fs.ErrNotExist,
+			wantWords: []string{"absent.txt"},
+		},
+		{
+			name: "a directory", path: dir, limit: 1 << 20,
+			wantErr: true, wantIs: errNotRegular,
+			wantWords: []string{"directory"},
+			// Must NOT claim the path is unreadable: the path is fine.
+			notWords: []string{"cannot read"},
+		},
+		{
+			name: "over the limit", path: big, limit: 16,
+			wantErr: true, wantIs: errTooLarge,
+			// The sizes are the actionable part. This is the exact shape of _54.
+			wantWords: []string{"64 bytes", "16 byte limit"},
+			notWords:  []string{"cannot read"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := readCapped(tc.path, tc.limit)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("expected success, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
+				t.Errorf("error does not match its sentinel (so callers cannot "+
+					"branch on the cause): %v", err)
+			}
+			for _, w := range tc.wantWords {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error is missing %q: %v", w, err)
+				}
+			}
+			for _, w := range tc.notWords {
+				if strings.Contains(err.Error(), w) {
+					t.Errorf("error wrongly says %q when the path was fine: %v", w, err)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadKeyRing_ReadsTheEncodingKeygenWrites is _54's core claim.
+func TestLoadKeyRing_ReadsTheEncodingKeygenWrites(t *testing.T) {
+	dir := t.TempDir()
+	pub, _, err := mldsa65.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := pub.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes, err := keyfile.MarshalPublicKey(keyfile.MLDSA65, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A PEM key is ~2.7 KB, well over the 1953-byte raw bound this used to use.
+	if len(pemBytes) <= anchor.PublicKeySize+1 {
+		t.Fatalf("this test cannot detect the _54 regression: the PEM is %d bytes, "+
+			"within the old raw cap of %d", len(pemBytes), anchor.PublicKeySize+1)
+	}
+
+	path := filepath.Join(dir, "ml-dsa-65-public.pem")
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadKeyRing(path, "provided", "k1"); err != nil {
+		t.Fatalf("loadKeyRing rejected the encoding `proof keygen` writes: %v", err)
+	}
+
+	// Raw bytes are NOT silently accepted: the CLI and this server must agree on
+	// one encoding, or they drift apart again.
+	rawPath := filepath.Join(dir, "key.bin")
+	if err := os.WriteFile(rawPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadKeyRing(rawPath, "provided", "k1"); err == nil {
+		t.Error("raw key bytes were accepted; the two surfaces can drift again")
+	}
+}
+
+// TestLoadKeyRing_RefusesByAlgorithm pins that a wrong-algorithm key is reported
+// as a wrong algorithm, naming both what was given and what is needed.
+func TestLoadKeyRing_RefusesByAlgorithm(t *testing.T) {
+	dir := t.TempDir()
+	// A structurally valid ML-DSA-44 public key file. The BYTES need not be a real
+	// key: the refusal must happen on the declared algorithm, before any use.
+	pemBytes, err := keyfile.MarshalPublicKey(keyfile.MLDSA44, make([]byte, 1312))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "ml-dsa-44-public.pem")
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = loadKeyRing(path, "provided", "k1")
+	if err == nil {
+		t.Fatal("an ML-DSA-44 key must be refused; anchors are ML-DSA-65")
+	}
+	for _, want := range []string{"ML-DSA-44", "ML-DSA-65"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name %q so the reader knows what to fix: %v", want, err)
+		}
+	}
+}
+
+// TestLoadKeyRing_ChecksTheTrustLabelBeforeTouchingDisk pins the ordering.
+//
+// A bad key_trust reported as a file problem sends the reader to the wrong place.
+func TestLoadKeyRing_ChecksTheTrustLabelBeforeTouchingDisk(t *testing.T) {
+	_, err := loadKeyRing(filepath.Join(t.TempDir(), "does-not-exist.pem"), "nonsense", "k1")
+	if err == nil {
+		t.Fatal("expected a rejection")
+	}
+	if !strings.Contains(err.Error(), "key_trust") {
+		t.Errorf("a bad key_trust must be reported as such, not as a file error: %v", err)
+	}
+}
+
+// TestLoadAnchor_DistinguishesFailures: loadAnchor had the identical
+// single-message shape and only loadKeyRing was under test.
+func TestLoadAnchor_DistinguishesFailures(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "not-json.json")
+	if err := os.WriteFile(bad, []byte("this is not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("no such file", func(t *testing.T) {
+		_, err := loadAnchor(filepath.Join(dir, "absent.json"))
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("a missing anchor file must match fs.ErrNotExist: %v", err)
+		}
+	})
+
+	t.Run("a directory", func(t *testing.T) {
+		_, err := loadAnchor(dir)
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if !errors.Is(err, errNotRegular) || !strings.Contains(err.Error(), "directory") {
+			t.Errorf("a directory must be reported as a directory: %v", err)
+		}
+	})
+
+	t.Run("not JSON", func(t *testing.T) {
+		_, err := loadAnchor(bad)
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if !strings.Contains(err.Error(), "not valid JSON") {
+			t.Errorf("a parse failure must say so, not blame the path: %v", err)
+		}
+		// The file's CONTENTS must not appear: an anchor can carry a subject, and
+		// this message may be relayed to a model provider.
+		if strings.Contains(err.Error(), "this is not json") {
+			t.Errorf("the error echoes file contents: %v", err)
+		}
+	})
 }

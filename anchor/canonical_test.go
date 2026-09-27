@@ -5,6 +5,7 @@ package anchor
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,11 +35,13 @@ func validV4() Anchor {
 	return a
 }
 
-func validV5() Anchor {
+// withdrawnV5 is a v5 anchor that is otherwise entirely well-formed.
+//
+// That is the point: v5 is refused for its VERSION, not for any missing field.
+// There is nothing a caller can add to make one acceptable.
+func withdrawnV5() Anchor {
 	a := validV4()
 	a.Version = 5
-	a.RootHash = strings.Repeat("b", 128)
-	a.TreeSize = 100
 	return a
 }
 
@@ -158,31 +161,30 @@ func TestCanonicalize_V3ExcludesVerifiedThrough(t *testing.T) {
 	}
 }
 
-// TestCanonicalize_V5FieldOrder pins the two non-adjacent insertions.
+// TestCanonicalize_V5IsRefused pins that the withdrawn version produces NO bytes.
 //
-// root_hash sorts between range and signing_key_id; tree_size between
-// signing_key_id and verified_through. Getting either wrong produces bytes that
-// look plausible and verify nowhere.
-func TestCanonicalize_V5FieldOrder(t *testing.T) {
-	got, err := Canonicalize(validV5())
-	if err != nil {
-		t.Fatalf("canonicalize: %v", err)
+// Canonical bytes are what a caller signs. While v5 canonicalized, this package
+// could hand back bytes for a version it would then refuse to verify — so an
+// anchor could be signed and be permanently unverifiable. Returning an error
+// instead of bytes is what makes that impossible rather than merely discouraged.
+func TestCanonicalize_V5IsRefused(t *testing.T) {
+	got, err := Canonicalize(withdrawnV5())
+	if err == nil {
+		t.Fatalf("Canonicalize accepted the withdrawn v5 and returned %d bytes:\n%s",
+			len(got), got)
 	}
-	s := string(got)
-	order := []string{
-		`"range":`, `"root_hash":`, `"signing_key_id":`, `"tree_size":`,
-		`"verified_through":`, `"version":`,
+	if got != nil {
+		t.Errorf("Canonicalize returned %d bytes alongside its error; a caller "+
+			"ignoring err would sign them:\n%s", len(got), got)
 	}
-	prev := -1
-	for _, key := range order {
-		at := strings.Index(s, key)
-		if at < 0 {
-			t.Fatalf("v5 canonical form is missing %s:\n%s", key, s)
-		}
-		if at < prev {
-			t.Errorf("v5 key %s is out of alphabetical order:\n%s", key, s)
-		}
-		prev = at
+	if !errors.Is(err, ErrVerificationUnsupported) {
+		t.Errorf("error does not wrap ErrVerificationUnsupported, so callers "+
+			"branching on that sentinel stop seeing v5: %v", err)
+	}
+	// The message must name the version as withdrawn. "unsupported version 5
+	// (implemented: 1..6)" is a contradiction to whoever reads it.
+	if !strings.Contains(err.Error(), "withdrawn") {
+		t.Errorf("error does not say v5 was withdrawn: %v", err)
 	}
 }
 
@@ -201,7 +203,7 @@ func TestCanonicalize_UnsupportedVersionIsAnError(t *testing.T) {
 
 // TestCanonicalize_ExcludesSignature pins that the signature never signs itself.
 func TestCanonicalize_ExcludesSignature(t *testing.T) {
-	for _, a := range []Anchor{validV3(), validV4(), validV5()} {
+	for _, a := range []Anchor{validV3(), validV4(), validV6()} {
 		got, err := Canonicalize(a)
 		if err != nil {
 			t.Fatalf("v%d: %v", a.Version, err)
@@ -214,7 +216,7 @@ func TestCanonicalize_ExcludesSignature(t *testing.T) {
 
 // TestCanonicalize_IsStable pins that repeat calls produce identical bytes.
 func TestCanonicalize_IsStable(t *testing.T) {
-	for _, a := range []Anchor{validV3(), validV4(), validV5()} {
+	for _, a := range []Anchor{validV3(), validV4(), validV6()} {
 		first, err := Canonicalize(a)
 		if err != nil {
 			t.Fatalf("v%d: %v", a.Version, err)
@@ -262,12 +264,6 @@ func TestValidateVersionInvariants(t *testing.T) {
 	v4NoClaim := validV4()
 	v4NoClaim.VerifiedThrough = 0
 
-	v5NoRoot := validV5()
-	v5NoRoot.RootHash = ""
-
-	v5NoTree := validV5()
-	v5NoTree.TreeSize = 0
-
 	tests := []struct {
 		name    string
 		anchor  Anchor
@@ -275,11 +271,10 @@ func TestValidateVersionInvariants(t *testing.T) {
 	}{
 		{"valid v3", validV3(), false},
 		{"valid v4", validV4(), false},
-		{"valid v5", validV5(), false},
 		{"v3 declaring verified_through", v3WithClaim, true},
 		{"v4 claiming nothing", v4NoClaim, true},
-		{"v5 without root_hash", v5NoRoot, true},
-		{"v5 without tree_size", v5NoTree, true},
+		// Otherwise well-formed. v5 is refused for its version alone.
+		{"withdrawn v5", withdrawnV5(), true},
 		{"unsupported version", Anchor{Version: 9}, true},
 	}
 	for _, tc := range tests {

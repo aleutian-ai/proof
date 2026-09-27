@@ -1,0 +1,105 @@
+{
+  "_comment": "Salted commitments: SHA-512(\"aleutian.commit.v1:\" || nonce || SHA-512(content)), nonce exactly 32 bytes. Expected values computed with Python hashlib, independently of any implementation under test. 'vectors' MUST reproduce exactly; every 'reject' case MUST fail verification. See docs/format-spec.md section 8.",
+  "domain": "aleutian.commit.v1:",
+  "nonce_size": 32,
+  "vectors": [
+    {
+      "description": "low-entropy content: the guessing case this construction exists for",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "636f6e73656e743a20796573",
+      "commitment": "a373ef1ad31021e12de598dc570e44c26700db32bf9d5fee170bebf54a0d59ee4b2f0d2a17dd68b6dee688533caafbc9b0427f4c56ad4aa47e9d27a62e987188"
+    },
+    {
+      "description": "same nonce, other content: must differ",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "636f6e73656e743a206e6f",
+      "commitment": "0c88192c5e968e505788db2776a82d5d965ad5fa04bfb3a0990bcf14d09c66729bafde106bb5c14038be00b9c24a488a6d329f49cc54dd650cad65f3724d6009"
+    },
+    {
+      "description": "same content, other nonce: must differ",
+      "nonce_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "content_hex": "636f6e73656e743a20796573",
+      "commitment": "0baec926c09fe13eefe1811b71d684f9d5dcbe2902ba6ea7b8d3396cca3f3fd0ed39f2c6c4a7207c551ee8907f98e44b6544182e1219f77576e7d1739c990cc1"
+    },
+    {
+      "description": "empty content",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "",
+      "commitment": "d5ffe2fa83200db468b6b97b26dc0081495d3d7627e709409bbe8cd97bd859aea4c56f70fbe6ebbd2fc1eae46cada15424f1b02f6b334d88286cd7921736a5a0"
+    },
+    {
+      "description": "binary content including NUL and high bytes",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "00017f80feff",
+      "commitment": "c3a957d9968f5efc81de447574e0ee219cc3a3f3fc4a79cbd50e32fe6bb20a14b8c31933d64b192f0245a9419313ef19ee36584e00cd84be3d893af25dc8366e"
+    },
+    {
+      "description": "JSON record",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "7b226163746f72223a226167656e742d37222c22616374696f6e223a22726566756e64222c22616d6f756e745f63656e7473223a313939397d",
+      "commitment": "5e0e918681b5ed1a496ce69dfaa9a276c2bc3077d01f248197db3685f902f183eac5665e62bab72f378f5b0118b081bacebcb4ef4e635e292ce1100577baee9e"
+    },
+    {
+      "description": "content of 111 bytes: the longest that fits one SHA-512 block",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e",
+      "commitment": "bc6dfdc910b469b16e1f8afc3e8b260c1748341aa371af5a635f166d4414666a106f384d89994fdb4f792ede9ca3fd11aed4aec7b8c6b30621cd711a60a5599b"
+    },
+    {
+      "description": "content of 112 bytes: the first that needs two SHA-512 blocks",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+      "commitment": "610e27040b773f76c0903340a840c213944eac8d0370c163f646213a47a3d058f4241dcb65202e9e7674a97e93203d9c81ef04c7f1249fea0350208c7672538b"
+    },
+    {
+      "description": "content of 128 bytes: exactly one block of data",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
+      "commitment": "05e84fa3a3a926e792c0bf468cbbbd1c049413997a051245bb4af8a5045bcb4033c2e0a461c0b827ba902dbdc50ef0c1edb952e386e2c054f61f50b1aaa6d3f2"
+    },
+    {
+      "description": "long content spanning several blocks",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "7b226163746f72223a226167656e742d37222c22616374696f6e223a22726566756e64222c22616d6f756e745f63656e7473223a313939392c226e6f7465223a227878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878227d",
+      "commitment": "0a089ea8de9625673d5269eec59f8dd91d1d0c1b1fc7b156337fb008152fcbb5db28ece18272fe806fc2e069bc8f136a0b60bdcd118136ee5b37ac12bc44c606"
+    }
+  ],
+  "reject": [
+    {
+      "description": "nonce of 0 bytes",
+      "nonce_hex": "",
+      "content_hex": "78",
+      "commitment": "a373ef1ad31021e12de598dc570e44c26700db32bf9d5fee170bebf54a0d59ee4b2f0d2a17dd68b6dee688533caafbc9b0427f4c56ad4aa47e9d27a62e987188"
+    },
+    {
+      "description": "nonce of 31 bytes",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e",
+      "content_hex": "636f6e73656e743a20796573",
+      "commitment": "a373ef1ad31021e12de598dc570e44c26700db32bf9d5fee170bebf54a0d59ee4b2f0d2a17dd68b6dee688533caafbc9b0427f4c56ad4aa47e9d27a62e987188"
+    },
+    {
+      "description": "nonce of 33 bytes",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00",
+      "content_hex": "636f6e73656e743a20796573",
+      "commitment": "a373ef1ad31021e12de598dc570e44c26700db32bf9d5fee170bebf54a0d59ee4b2f0d2a17dd68b6dee688533caafbc9b0427f4c56ad4aa47e9d27a62e987188"
+    },
+    {
+      "description": "uppercase commitment: commitments compare exactly",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "636f6e73656e743a20796573",
+      "commitment": "A373EF1AD31021E12DE598DC570E44C26700DB32BF9D5FEE170BEBF54A0D59EE4B2F0D2A17DD68B6DEE688533CAAFBC9B0427F4C56AD4AA47E9D27A62E987188"
+    },
+    {
+      "description": "truncated commitment (127 chars)",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "636f6e73656e743a20796573",
+      "commitment": "a373ef1ad31021e12de598dc570e44c26700db32bf9d5fee170bebf54a0d59ee4b2f0d2a17dd68b6dee688533caafbc9b0427f4c56ad4aa47e9d27a62e98718"
+    },
+    {
+      "description": "other content under the same commitment",
+      "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "content_hex": "636f6e73656e743a206e6f",
+      "commitment": "a373ef1ad31021e12de598dc570e44c26700db32bf9d5fee170bebf54a0d59ee4b2f0d2a17dd68b6dee688533caafbc9b0427f4c56ad4aa47e9d27a62e987188"
+    }
+  ]
+}

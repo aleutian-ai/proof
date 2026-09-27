@@ -127,6 +127,11 @@ type BindResult struct {
 //
 //   - Keyless by design. res.SignatureVerified is always false.
 //   - Covers only the anchored range; entries after the anchor are unprotected.
+//   - The anchor is checked against the chain AS IT WAS WHEN SIGNED: entries must
+//     end at the anchor's last entry. With several checkpoints, pass each one
+//     entries[:a.EntryCount], not the whole current chain — entries added after
+//     the anchor make it fail with "committed last entry is not this chain's
+//     last entry", which is correct, not a break.
 //   - Checks that the anchor commits to THIS predecessor hash. It does not check
 //     that the predecessor is genuine, or that PreviousAnchorID names it — walk
 //     the anchor chain to its genesis for that.
@@ -240,8 +245,13 @@ func BindAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string) (Bi
 //
 // # Limitations
 //
-//   - v5 anchors are refused: canonicalizable, but no cross-language vectors exist
+//   - v5 is withdrawn and refused by name; see anchor.WithdrawnVersion
 //   - Says nothing about anchor provenance (see above)
+//   - The anchor is checked against the chain AS IT WAS WHEN SIGNED: entries must
+//     end at the anchor's last entry. With several checkpoints, pass each one
+//     entries[:a.EntryCount], not the whole current chain — entries added after
+//     the anchor make it fail with "committed last entry is not this chain's
+//     last entry", which is correct, not a break.
 //
 // # Assumptions
 //

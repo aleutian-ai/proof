@@ -31,8 +31,7 @@ type EntryRange struct {
 // carries no storage-engine tags and no cloud dependency.
 //
 // Not every field participates in every version's canonical form. See
-// Canonicalize — VerifiedThrough is absent before v4, and RootHash/TreeSize
-// before v5.
+// Canonicalize — VerifiedThrough is absent before v4.
 //
 // # Limitations
 //
@@ -119,12 +118,8 @@ type Anchor struct {
 	// was verified clean at signing time. Zero for v3.
 	VerifiedThrough int64 `json:"verified_through,omitempty"`
 
-	// RootHash (v5+) is the Merkle root the anchor commits to. Empty before v5.
-	//
-	// A v5 anchor with an empty RootHash is MALFORMED, not merely old: Version is
-	// inside the signed bytes, so it is a valid signature over invalid content.
-	RootHash string `json:"root_hash,omitempty"`
-
-	// TreeSize (v5+) is the leaf count of the committed Merkle tree.
-	TreeSize int64 `json:"tree_size,omitempty"`
+	// RootHash and TreeSize used to live here, for the withdrawn v5. They are
+	// GONE rather than deprecated: they were only ever read by v5's canonical
+	// form, and a field that no canonical form reads is a field a caller can set
+	// and believe was signed. See WithdrawnVersion.
 }

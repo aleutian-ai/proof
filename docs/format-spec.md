@@ -3,7 +3,7 @@
 **Status:** normative for what it covers · **Audience:** anyone implementing a
 verifier in any language
 
-**Covered here:** chain hash **v2**, capture leaf v3.
+**Covered here:** chain hash **v2**, capture leaf v3, salted commitments.
 **NOT yet covered here:** chain hash **v3** (`aleutian.chain.v3:`), which is the
 current default for new chains, and anchor **v6**. Both are implemented and
 tested in this repository, and both are specified only by the Go source and
@@ -298,7 +298,61 @@ Hex-decode before leaf-hashing, or your roots will differ from everyone else's.
 
 ---
 
-## 8. Test vectors
+## 8. Salted commitments
+
+`content_hash` is public. When content is committed **unencrypted** and has low
+entropy, a plain SHA-512 can be guessed: hash `consent: yes` and `consent: no`
+and see which matches. A salted commitment prevents this without any shared
+secret:
+
+```
+commitment = SHA-512( "aleutian.commit.v1:" ‖ nonce ‖ SHA-512(content) )
+```
+
+- `nonce` is **exactly 32 bytes** from a cryptographically secure random source,
+  **fresh for every item**. A nonce of any other length MUST be refused, not
+  hashed. Nonces MUST NOT be reused or derived (e.g. from a key and an id):
+  disclosing one item would then expose the other to guessing, and identical
+  content under one nonce yields identical, linkable commitments.
+- The content is hashed **first**, so the outer input is always exactly 115 bytes
+  (19-byte domain + 32-byte nonce + 64-byte digest). That makes it unambiguous,
+  and it closes length extension: with `SHA-512(domain ‖ nonce ‖ content)`,
+  anyone could derive a second commitment from a public one without the nonce,
+  publish it, and — after the first item is disclosed — open it to that content
+  plus appended bytes, falsely claiming to have committed first.
+- The result is 128 lowercase hex characters, used directly as the entry's
+  `content_hash`. Comparison is exact: an uppercase commitment does not match.
+  The chain hash is computed over it like any other `content_hash`; **nothing in
+  §2 changes.**
+- **Plain hash or commitment is not visible on the chain.** A verifier MUST learn
+  which an entry is from outside the chain — its entry type, or the disclosure.
+- **Disclosure** of one item reveals its content and nonce. Anyone recomputes the
+  commitment and compares it to the chain entry. No other item's content is
+  revealed, but the disclosed content becomes tied to that entry's timestamp and
+  position.
+- **Erasure** destroys an item's content and nonce. Only once EVERY copy of the
+  nonce is gone — backups, replicas, and anyone it was disclosed to — can the
+  commitment no longer be opened or tied to the content; the chain still
+  verifies. If any copy survives, the item is pseudonymised, not erased. Entry
+  metadata (entry id, type) MUST carry no subject identifiers, or erasing the
+  content erases nothing.
+- Content encrypted with **randomized** encryption (fresh nonce/IV per item, as
+  HPKE does) does not need this: commit the ciphertext's plain SHA-512.
+  Deterministic encryption (e.g. AES-SIV with a fixed nonce) leaks equality and
+  needs a salted commitment too.
+
+A keyed hash (one HMAC key for all items) was rejected: disclosing a single item
+would require revealing the key, exposing every other item to guessing. Chain
+verification needs no secret under either scheme; the difference is entirely in
+disclosure.
+
+Reference implementation: `commitment` package. Vectors:
+`commitment_vectors.json` (§9) — `vectors` MUST reproduce exactly, and every
+`reject` case MUST fail verification.
+
+---
+
+## 9. Test vectors
 
 `fixtures/testdata/` carries the cross-language golden vectors. Reproduce them
 exactly, or your implementation is not compatible:
@@ -308,13 +362,14 @@ exactly, or your implementation is not compatible:
 | `chain_vectors.json` | chain hash: genesis, linked, **tombstone** |
 | `v3_golden_capture_request.json` | leaf canonical bytes + content hash |
 | `merkle_golden.json` | roots, inclusion, consistency |
+| `commitment_vectors.json` | salted commitments, §8 — incl. multi-block content and cases that MUST be rejected |
 
-Each vector pairs inputs with the expected output. If you reproduce all three
-files byte-for-byte, you agree with every other implementation.
+Each vector pairs inputs with the expected output. If you reproduce every file
+listed here byte-for-byte, you agree with every other implementation.
 
 ---
 
-## 9. Conformance checklist
+## 10. Conformance checklist
 
 - [ ] Chain hash reproduces all `chain_vectors.json` vectors
 - [ ] `previous_hash` validated as empty-or-128-hex **before** hashing (§3)
@@ -326,5 +381,6 @@ files byte-for-byte, you agree with every other implementation.
 - [ ] 4096-byte cap enforced on encode **and** verify
 - [ ] zk invariant rejected at encode time (§6.3)
 - [ ] Merkle leaves hex-decoded before hashing (§7)
+- [ ] Salted commitments reproduce `commitment_vectors.json` `vectors`, and fail every `reject` case (§8)
 - [ ] Verdicts distinguish consistency from existence
       ([verification-model.md](verification-model.md))

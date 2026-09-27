@@ -14,16 +14,27 @@ const (
 	// the v3 canonical layout, matching the producer and the published SDK.
 	MinVersion = 1
 
-	// MaxVersion is the newest canonical form implemented. See Canonicalize for
-	// why v5 is implemented but not yet cross-language validated.
+	// MaxVersion is the newest canonical form implemented.
 	MaxVersion = 6
 
-	// MerkleVersion is the version at which an anchor commits to a Merkle root.
+	// WithdrawnVersion is version 5, which is BURNED: it is inside
+	// [MinVersion, MaxVersion] but no canonical form exists for it and none will
+	// be added. The number is never reused.
 	//
-	// It is a SINGLE version, not a floor. v6 is built on v4's layout and does
-	// not commit to a Merkle root; any check written as ">= MerkleVersion"
-	// would wrongly capture it and every version after it.
-	MerkleVersion = 5
+	// v5 was designed to commit to a Merkle root. It was given a canonical form
+	// and a validation rule, and then refused by this package's own verifier,
+	// because committing to a root that no implementation can check asserts a
+	// guarantee nobody can test. No producer ever emitted one, and no SDK ever
+	// implemented one — Python and JS went straight from v4 to v6.
+	//
+	// Keeping the number reserved rather than renumbering v6 down to 5 costs one
+	// gap in a sequence and buys certainty: any artifact anywhere declaring v5 is
+	// refused by name, and cannot be silently reinterpreted as something else.
+	//
+	// The former name, MerkleVersion, read as a FLOOR and was twice written as
+	// ">= MerkleVersion" — which refused v6 and every version after it. The name
+	// went with the capability.
+	WithdrawnVersion = 5
 
 	// SubjectVersion is the version at which company_id became subject.
 	//
@@ -32,6 +43,21 @@ const (
 	// own rather than being a refactor.
 	SubjectVersion = 6
 )
+
+// errWithdrawn names v5 as withdrawn rather than unsupported.
+//
+// The default branch's wording — "unsupported version 5 (implemented: 1..6)" —
+// reads as a contradiction, because 5 IS inside that range. Whoever holds an
+// artifact declaring v5 should be told the version was withdrawn, not left to
+// conclude their build is too old to read it.
+// It wraps ErrVerificationUnsupported so callers that already branch on that
+// sentinel keep working; v5 was previously refused with it at two later points.
+func errWithdrawn() error {
+	return fmt.Errorf("%w: v%d was withdrawn and has no canonical form — it "+
+		"committed to a Merkle root that no implementation can verify. No producer "+
+		"ever emitted one; the version number is reserved and will not be reused",
+		ErrVerificationUnsupported, WithdrawnVersion)
+}
 
 // canonicalRange is the range sub-object in canonical key order.
 //
@@ -70,24 +96,6 @@ type canonicalV4 struct {
 	Version          int            `json:"version"`
 }
 
-// canonicalV5 adds root_hash and tree_size. Ordering is alphabetical but not
-// adjacent: root_hash sorts between range and signing_key_id (ra < ro < s),
-// tree_size between signing_key_id and verified_through (s < t < v).
-type canonicalV5 struct {
-	AnchorID         string         `json:"anchor_id"`
-	ChainHash        string         `json:"chain_hash"`
-	CompanyID        string         `json:"company_id"`
-	CreatedAtMs      int64          `json:"created_at_ms"`
-	EntryCount       int64          `json:"entry_count"`
-	PreviousAnchorID string         `json:"previous_anchor_id"`
-	Range            canonicalRange `json:"range"`
-	RootHash         string         `json:"root_hash"`
-	SigningKeyID     string         `json:"signing_key_id"`
-	TreeSize         int64          `json:"tree_size"`
-	VerifiedThrough  int64          `json:"verified_through"`
-	Version          int            `json:"version"`
-}
-
 // canonicalV6 is v4's layout with company_id renamed to subject.
 //
 // Alphabetical, as every version is: "signing_key_id" < "subject" (i < u at
@@ -95,8 +103,8 @@ type canonicalV5 struct {
 // field MOVES as a result — it sorted third as company_id and sorts eighth as
 // subject — which is precisely why this is a new version and not an edit.
 //
-// Built on v4, NOT v5: v5 commits to a Merkle root and cannot be verified
-// (no cross-language vectors exist), so building on it would inherit that.
+// Built on v4, NOT on the withdrawn v5, which committed to a Merkle root no
+// implementation could check.
 type canonicalV6 struct {
 	AnchorID         string         `json:"anchor_id"`
 	ChainHash        string         `json:"chain_hash"`
@@ -130,13 +138,8 @@ type canonicalV6 struct {
 //
 //	1, 2, 3  →  9-field layout (no verified_through)
 //	4        →  10 fields, adds verified_through
-//	5        →  12 fields, adds root_hash and tree_size
+//	5        →  WITHDRAWN. Refused by name; see WithdrawnVersion
 //	6        →  10 fields, v4's layout with company_id renamed to subject
-//
-// v5 is implemented from the producer's layout but has NO cross-language
-// fixture, because no SDK implements v5 and no producer emits it. Its bytes are
-// pinned here by a golden test so drift is detectable, but "pinned" is weaker
-// than "cross-language verified" and callers should treat v5 as provisional.
 //
 // # Inputs
 //
@@ -199,21 +202,11 @@ func Canonicalize(a Anchor) ([]byte, error) {
 			Version:          a.Version,
 		})
 
-	case a.Version == 5:
-		return json.Marshal(canonicalV5{
-			AnchorID:         a.AnchorID,
-			ChainHash:        a.ChainHash,
-			CompanyID:        a.Subject,
-			CreatedAtMs:      a.CreatedAtMs,
-			EntryCount:       a.EntryCount,
-			PreviousAnchorID: a.PreviousAnchorID,
-			Range:            r,
-			RootHash:         a.RootHash,
-			SigningKeyID:     a.SigningKeyID,
-			TreeSize:         a.TreeSize,
-			VerifiedThrough:  a.VerifiedThrough,
-			Version:          a.Version,
-		})
+	case a.Version == WithdrawnVersion:
+		// Refused HERE, at canonicalization, rather than later at signature
+		// verification. There are no bytes to return: producing canonical bytes
+		// for v5 would let a caller sign one.
+		return nil, errWithdrawn()
 
 	case a.Version == SubjectVersion:
 		return json.Marshal(canonicalV6{
@@ -252,7 +245,8 @@ func Canonicalize(a Anchor) ([]byte, error) {
 //
 //   - v<=3 must have verified_through == 0 (it predates the field)
 //   - v4 must have verified_through > 0 (a v4 that claims nothing is not a v4)
-//   - v5 must additionally carry a non-empty root_hash and positive tree_size
+//   - v5 is refused outright; see WithdrawnVersion
+//   - v6 must have verified_through > 0 and a non-empty subject
 //
 // # Inputs
 //
@@ -286,16 +280,8 @@ func ValidateVersionInvariants(a Anchor) error {
 		if a.VerifiedThrough <= 0 {
 			return fmt.Errorf("anchor: v4 must declare a positive verified_through")
 		}
-	case a.Version == 5:
-		if a.VerifiedThrough <= 0 {
-			return fmt.Errorf("anchor: v5 must declare a positive verified_through")
-		}
-		if a.RootHash == "" {
-			return fmt.Errorf("anchor: v%d commits to a Merkle root but root_hash is empty", MerkleVersion)
-		}
-		if a.TreeSize <= 0 {
-			return fmt.Errorf("anchor: v%d must declare a positive tree_size", MerkleVersion)
-		}
+	case a.Version == WithdrawnVersion:
+		return errWithdrawn()
 	case a.Version == SubjectVersion:
 		if a.VerifiedThrough <= 0 {
 			return fmt.Errorf("anchor: v%d must declare a positive verified_through", SubjectVersion)
@@ -305,10 +291,6 @@ func ValidateVersionInvariants(a Anchor) error {
 		// non-empty an invariant — which v3..v5 never did for company_id.
 		if a.Subject == "" {
 			return fmt.Errorf("anchor: v%d must declare a non-empty subject", SubjectVersion)
-		}
-		if a.RootHash != "" || a.TreeSize != 0 {
-			return fmt.Errorf("anchor: v%d is built on the v4 layout and commits to no Merkle root, "+
-				"but declares root_hash/tree_size", SubjectVersion)
 		}
 	default:
 		return fmt.Errorf("anchor: unsupported version %d (implemented: %d..%d)",

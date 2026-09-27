@@ -179,12 +179,12 @@ func SignAnchor(ctx context.Context, s ContextSigner, a Anchor) (Anchor, error) 
 
 	// Refuse before signing exactly what VerifySignature refuses after, so this
 	// package cannot produce an anchor it will not accept.
+	// This also refuses the withdrawn v5, which ValidateVersionInvariants rejects
+	// by name. There used to be a second, explicit v5 check here; it became dead
+	// once v5 lost its canonical form, and two places refusing the same thing is
+	// how one of them drifts.
 	if err := ValidateVersionInvariants(out); err != nil {
 		return Anchor{}, fmt.Errorf("anchor: refusing to sign an invalid anchor: %w", err)
-	}
-	if out.Version == MerkleVersion {
-		return Anchor{}, fmt.Errorf("%w: refusing to sign v%d, which this package "+
-			"canonicalizes but will not verify", ErrVerificationUnsupported, out.Version)
 	}
 
 	canonical, err := Canonicalize(out)

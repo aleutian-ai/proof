@@ -1,14 +1,24 @@
 # proof
 
-**AleutianChain** — the verifiable audit chain behind [Aleutian](https://aleutian.ai),
-as a standalone Go library.
+**An open protocol and toolkit for creating independently verifiable histories
+of digital evidence.** Known inside [Aleutian](https://aleutian.ai) as
+AleutianChain; this is the standalone Go library, CLI and MCP server.
 
-An audit chain is an append-only sequence in which each entry's hash covers its
-predecessor's. Any retroactive edit breaks every link after it, so tampering is
-detectable **without trusting the storage layer, or the party that wrote it.**
+You **commit** evidence to a chain as it happens, **anchor** signed checkpoints,
+and anyone can later **verify** that history, without trusting you, Aleutian, or
+wherever the evidence is stored. Each entry's hash covers its predecessor's, so
+any retroactive edit breaks every link after it.
 
-This repository is the format and the maths — the part a third party needs in
-order to check the work. It is deliberately not the service.
+`proof` is the **integrity** layer, not the confidentiality layer. It commits a
+fingerprint of your evidence, never the evidence itself, and it does not encrypt,
+store or manage keys. Compose it with whatever you already use for those:
+[`examples/encrypted-artifact`](examples/encrypted-artifact) encrypts with circl
+and 1Password and commits the result. See [What proof is not](#what-proof-is-not).
+
+```
+   encrypt  →  store  →  COMMIT  →  ANCHOR  →  VERIFY  →  disclose / decrypt
+   (yours)     (yours)   └──────────── proof ──────────┘   (yours)
+```
 
 ```go
 import "github.com/aleutian-ai/proof/chainformat"
@@ -451,6 +461,7 @@ should not need a newer toolchain because of a storage engine they never use.
 
 ```
 chainformat     leaf encoding, chain hash linkage, tombstones   ← the core
+commitment      salted commitments for unencrypted content (format-spec §8)
 canonical       deterministic JSON encoding
 linker          sequence assignment + hash linkage — the append path
 verify          the verdicts: Chain, BindAnchor, VerifyAnchor
@@ -461,14 +472,20 @@ bundle          export-bundle manifest root + directory verification
 store           persistence port + bolt / memory adapters
 fixtures        cross-language conformance vectors + digest manifest
 
-mldsa           ML-DSA-44/65/87 sign + verify (FIPS 204)
+mldsa           ML-DSA-44/65/87 sign + verify (FIPS 204) — anchors use ML-DSA-65
+keyfile         PKCS#8 / SPKI key files + key ids, for all seven algorithms
+
+                post-quantum KEM primitives. The chain does NOT use these; they
+                are here for key files and the Aleutian platform's wrapped-key
+                format. Encrypting your evidence is not their job — see above.
 mlkem           ML-KEM-768/1024 encapsulate + decapsulate (FIPS 203)
 xwing           X-Wing hybrid KEM — ML-KEM-768 + X25519
 keywrap         versioned wrapped-key wire format
-keyfile         PKCS#8 / SPKI key files + key ids, for all seven algorithms
 
 cmd/proof       CLI — init · append · export · import · anchor · verify · keygen
 cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
+
+examples/       composition, not features — e.g. encrypted-artifact
 ```
 
 ---
@@ -527,11 +544,21 @@ discipline has repeatedly caught tests which passed for the wrong reason.
 
 ---
 
-## What is deliberately not here
+## What proof is not
 
-This is the format, the maths, and the append path — not the service. Absent, and
+This is the format, the maths, and the commit path — not the service. Absent, and
 staying absent:
 
+- **encryption and confidentiality** — `proof` commits a fingerprint and never
+  sees content. Encrypt with what you already trust (circl, age, a KMS) and commit
+  the ciphertext; [`examples/encrypted-artifact`](examples/encrypted-artifact)
+  shows how. Erasure then means destroying the key: the chain keeps verifying,
+  the content is gone.
+- **storage of the evidence itself** — a folder, S3, a database: yours to choose.
+  The chain holds commitments, not payloads.
+
+  Committing content **unencrypted**? Use `commitment.Salted`, so the public
+  chain cannot be used to guess low-entropy content like `consent: yes`.
 - **tenancy, retention, key ceremony, hosted anchoring** — operational plane
 - **cloud clients of any kind** — asserted by test, because a verifier an auditor
   cannot run without credentials to the thing being audited is not a verifier

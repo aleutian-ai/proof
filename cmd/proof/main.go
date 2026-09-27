@@ -85,7 +85,7 @@ func run(args []string, stdout, stderr *os.File) int {
 }
 
 func usage(w *os.File) {
-	fmt.Fprint(w, `proof — verify AleutianChain audit chains
+	fmt.Fprint(w, `proof — commit evidence to a chain, anchor it, verify it
 
 usage:
   proof verify <entries.json> [--json] [--max-breaks N]

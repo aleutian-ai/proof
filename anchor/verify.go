@@ -30,8 +30,10 @@ var (
 	// was the wrong length.
 	ErrInvalidSignature = errors.New("anchor: invalid signature")
 
-	// ErrVerificationUnsupported means the anchor's version can be canonicalized
-	// but must not be verified. See Trust and the v5 note on VerifySignature.
+	// ErrVerificationUnsupported means the anchor declares a version this package
+	// will not act on. Today that is exactly the withdrawn v5, which has no
+	// canonical form, so the refusal comes from ValidateVersionInvariants and
+	// applies to signing as well as verifying. See WithdrawnVersion.
 	ErrVerificationUnsupported = errors.New("anchor: verification not supported for this version")
 )
 
@@ -196,18 +198,16 @@ func (r *KeyRing) PublicKey(keyID string) ([]byte, Trust, error) {
 //  1. Version invariants, BEFORE canonicalization. Version is inside the signed
 //     bytes, so checking it first stops a malformed anchor from selecting a
 //     different canonical form than the one that was signed.
-//  2. Version support. v5 is canonicalizable but NOT verifiable — see below.
-//  3. Key lookup. An unknown key is its own error, never a quiet failure.
-//  4. Signature decode and LENGTH check, before any cryptography runs.
-//  5. Signature verification.
+//  2. Key lookup. An unknown key is its own error, never a quiet failure.
+//  3. Signature decode and LENGTH check, before any cryptography runs.
+//  4. Signature verification.
 //
 // # Why v5 is refused
 //
-// This package can canonicalize v5 (root_hash, tree_size), but v5 has no
-// cross-language test vector anywhere: no SDK implements it and no producer emits
-// it. Verifying would assert byte-agreement with implementations that do not
-// exist. Canonicalizing is harmless; verifying is a claim. Verifiers must ship
-// before any producer emits v5, or every deployed verifier rejects it.
+// v5 is WITHDRAWN — see WithdrawnVersion. It has no canonical form at all, so
+// step 1 rejects it by name and no separate check is needed here. It previously
+// canonicalized and was refused at this point instead; that arrangement let this
+// package produce bytes for a version it would not accept.
 //
 // # Inputs
 //
@@ -249,19 +249,7 @@ func VerifySignature(a Anchor, src KeySource) (Trust, error) {
 		return "", err
 	}
 
-	// 2. v5 canonicalizes but must not be verified.
-	//
-	// An EXACT test, not ">= MerkleVersion". The open-ended form was written to
-	// exclude v5 and silently excluded every version after it too — v6 would
-	// have verified nowhere. Merkle is one version, not a floor.
-	if a.Version == MerkleVersion {
-		return "", fmt.Errorf("%w: v%d has no cross-language test vectors; "+
-			"canonicalization is implemented but verification would assert agreement "+
-			"with implementations that do not exist",
-			ErrVerificationUnsupported, a.Version)
-	}
-
-	// 3. Key lookup. Distinct from a bad signature, deliberately.
+	// 2. Key lookup. Distinct from a bad signature, deliberately.
 	pubKey, trust, err := src.PublicKey(a.SigningKeyID)
 	if err != nil {
 		return "", err
@@ -271,7 +259,7 @@ func VerifySignature(a Anchor, src KeySource) (Trust, error) {
 			ErrInvalidSignature, len(pubKey), PublicKeySize)
 	}
 
-	// 4. Decode and length-check the signature BEFORE handing it to the library.
+	// 3. Decode and length-check the signature BEFORE handing it to the library.
 	sig, err := base64.StdEncoding.DecodeString(a.Signature)
 	if err != nil {
 		return "", fmt.Errorf("%w: signature is not valid base64", ErrInvalidSignature)
@@ -286,7 +274,7 @@ func VerifySignature(a Anchor, src KeySource) (Trust, error) {
 		return "", fmt.Errorf("anchor: canonicalize: %w", err)
 	}
 
-	// 5. Verify, through the same primitive SignCanonical self-checks with, so
+	// 4. Verify, through the same primitive SignCanonical self-checks with, so
 	// "the signer just produced this" and "this package accepts this" cannot
 	// drift apart.
 	if err := verifyMLDSA65(pubKey, canonical, sig); err != nil {

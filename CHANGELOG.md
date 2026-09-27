@@ -7,7 +7,77 @@ change is called out here.
 
 ## Unreleased
 
+### Changed
+
+- **MCP `compute_chain_hash` handles chain hash v3.** It previously knew only
+  v2, so it could not reproduce any entry `proof append` writes. Given v2 inputs
+  for a v3 entry, it returned a wrong hash with no error.
+  *(Breaking schema change. No users.)*
+  - `format_version` is **required**: 2 or 3, with no default.
+  - v3 takes `global_seq`, and it is required. Non-empty `run_id` or non-zero
+    `sequence_num` is refused under v3.
+  - v2 requires `sequence_num` and refuses `global_seq`.
+  - `global_seq` and `sequence_num` are **decimal strings**. The MCP SDK
+    decodes arguments via `map[string]any`, which turns JSON numbers into
+    `float64`: `9007199254740993` was hashed as `9007199254740992`.
+  - The result now includes the `format_version` that was used, and the
+    matching preimage.
+
+### Removed
+
+- **Anchor v5 is WITHDRAWN.** It had a canonical form, a validation rule, tests
+  and a golden vector — and no producer, in any repository, ever emitted one. Its
+  own verifier refused it, on the grounds that committing to a Merkle root no
+  implementation can check asserts a guarantee nobody can test. Python and JS
+  never implemented it at all; they went straight from v4 to v6.
+
+  What changed:
+
+  - `Canonicalize` and `ValidateVersionInvariants` refuse v5 **by name**, wrapping
+    `ErrVerificationUnsupported`. Previously v5 canonicalized and was refused only
+    at `VerifySignature`, so this package would hand back bytes for a version it
+    would not accept — bytes a caller could sign, producing an anchor that was
+    permanently unverifiable.
+  - `MerkleVersion` → **`WithdrawnVersion`**. *(source-incompatible)* The old name
+    read as a floor and was twice written `>= MerkleVersion`, which refused v6 and
+    every version after it. The name went with the capability.
+  - `Anchor.RootHash` and `Anchor.TreeSize` are **removed**. *(source-incompatible)*
+    Only v5's canonical form ever read them; a field no canonical form reads is a
+    field a caller can set and believe was signed. v6's runtime check rejecting
+    them is gone too — the compiler does it now.
+  - The v5 refusal now lives in **one** place instead of three. The duplicate
+    checks in `SignAnchor` and `VerifySignature` were dead once v5 lost its
+    canonical form, and two places refusing the same thing is how one drifts.
+
+  The number 5 is reserved and will not be reused. Renumbering v6 down to 5 was
+  considered and rejected: a reserved gap costs one number and guarantees that any
+  artifact declaring v5 is refused by name rather than silently reinterpreted.
+
+  `merkle/` is untouched — Merkle trees, inclusion and consistency proofs are
+  unaffected. What was withdrawn is an *anchor version* that committed to a root,
+  not the tree machinery. The MCP `verify_inclusion` tool still works.
+
+  **Not changed outside this module:** the hosted platform has its own
+  `storage.MerkleAnchorVersion = 5` and its own anchor types, still referenced by
+  `internal/chainlinker/merkle_proof.go`. That is a separate type system. If the
+  monorepo re-export lands, that file is what needs attention.
+
 ### Added
+
+- **`commitment`: salted commitments for content committed unencrypted.**
+  `SHA-512("aleutian.commit.v1:" ‖ nonce ‖ SHA-512(content))` with a fresh
+  32-byte nonce per item. A plain hash of low-entropy content can be guessed; this
+  cannot without the nonce. Disclosing one item reveals that item's content only.
+  The content is hashed first so the construction cannot be length-extended into
+  a false "I committed first" claim. `Salted` and `Verify` (constant-time); the
+  deterministic core is unexported so nonces cannot be fixed or derived. No format
+  change: the result is an ordinary `content_hash`. Specified in
+  `docs/format-spec.md` §8. Vectors in `fixtures/testdata/commitment_vectors.json`
+  (10 reproduce + 6 must-reject, incl. multi-block content) were computed with
+  Python's `hashlib`, independently of the Go code.
+- **`examples/encrypted-artifact`**: `proof` composed with encryption it does not
+  own — circl HPKE (X-Wing) and 1Password, ciphertext in a plain folder, commit,
+  anchor, verify, decrypt.
 
 - **A conformance contract, and three implementations held to it.**
   `fixtures/MANIFEST.json` records every vector's SHA-256; `fixtures.LoadManifest`
@@ -20,6 +90,33 @@ change is called out here.
   which is the difference between a conformance suite and a mirror.
 
 ### Fixed
+
+- **MCP `verify_anchor` could not read the keys `proof keygen` writes.**
+  `loadKeyRing` capped the read at `anchor.PublicKeySize+1` (1953) and expected
+  RAW key bytes; `proof keygen` writes PEM, at 2726 bytes. Every key the tool
+  itself produces was refused — and refused with *"cannot read the public key
+  file at that path"*, when the path was correct.
+
+  It now parses through `keyfile.ParsePublicKey`, the same function the CLI's
+  `proof verify --key` uses, so the two surfaces cannot disagree about what a key
+  file is. Wrong-algorithm keys are refused by algorithm, naming what was supplied
+  and what is needed. `key_trust` is validated before any I/O, so a bad argument
+  is no longer reported as a file problem.
+
+  Nothing caught this because `anchoredFixture` wrote raw bytes: the test invented
+  an encoding and then confirmed the server agreed with the invention.
+
+- **Every file-read failure blamed the path.** `readCapped` collapsed four
+  distinguishable causes — missing, not a regular file, over the limit, read error
+  — into one message that named the path. Three of them are not about the path, so
+  a correct path was reported as the fault.
+
+  Failures are now distinguishable, with `errNotRegular` and `errTooLarge`
+  sentinels, the underlying error wrapped rather than dropped, both sizes reported
+  when a file is too large, and `describeMode` naming what a non-regular file
+  actually is. `loadAnchor` had the identical shape and got the same treatment.
+  Messages carry paths and sizes, never file contents — these reach a model
+  provider.
 
 - **Two of four copies of `chain_vectors.json` were FABRICATED.**
   `sdk/verification-go/testdata/` and `sdk/verification-python/tests/fixtures/`

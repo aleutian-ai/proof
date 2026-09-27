@@ -77,11 +77,15 @@ func TestCanonicalV6_KeyOrderIsAlphabetical(t *testing.T) {
 	}
 }
 
-// TestCanonicalV3toV5_StillSayCompanyID is the compatibility promise. These
+// TestCanonicalV3toV4_StillSayCompanyID is the compatibility promise. These
 // bytes are what existing anchors were signed over; renaming a Go field must
 // not touch them, or every anchor ever issued becomes unverifiable.
-func TestCanonicalV3toV5_StillSayCompanyID(t *testing.T) {
-	for _, a := range []Anchor{validV3(), validV4(), validV5()} {
+//
+// v5 is absent because it no longer canonicalizes at all — see WithdrawnVersion.
+// It never had a producer, so nothing was ever signed over its bytes and there
+// is no compatibility promise to keep.
+func TestCanonicalV3toV4_StillSayCompanyID(t *testing.T) {
+	for _, a := range []Anchor{validV3(), validV4()} {
 		got, err := Canonicalize(a)
 		if err != nil {
 			t.Fatalf("v%d: canonicalize: %v", a.Version, err)
@@ -112,8 +116,8 @@ func TestV6_VerifiesAndV5StillDoesNot(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected a key lookup failure")
 		}
-		if strings.Contains(err.Error(), "no cross-language test vectors") {
-			t.Error("v6 was refused by the Merkle guard; the check is still open-ended")
+		if strings.Contains(err.Error(), "withdrawn") {
+			t.Error("v6 was refused as withdrawn; the v5 check is capturing more than v5")
 		}
 	})
 
@@ -122,8 +126,8 @@ func TestV6_VerifiesAndV5StillDoesNot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("key ring: %v", err)
 		}
-		if _, err := VerifySignature(validV5(), ring); err == nil ||
-			!strings.Contains(err.Error(), "no cross-language test vectors") {
+		if _, err := VerifySignature(withdrawnV5(), ring); err == nil ||
+			!strings.Contains(err.Error(), "withdrawn") {
 			t.Errorf("v5 must remain unverifiable, got %v", err)
 		}
 	})
@@ -140,8 +144,9 @@ func TestV6_Invariants(t *testing.T) {
 		{"valid", func(*Anchor) {}, ""},
 		{"empty subject", func(a *Anchor) { a.Subject = "" }, "non-empty subject"},
 		{"zero verified_through", func(a *Anchor) { a.VerifiedThrough = 0 }, "verified_through"},
-		{"carries a Merkle root", func(a *Anchor) { a.RootHash = strings.Repeat("a", 128) }, "root_hash"},
-		{"carries a tree size", func(a *Anchor) { a.TreeSize = 5 }, "tree_size"},
+		// The "carries a Merkle root" / "carries a tree size" cases are gone with
+		// the RootHash/TreeSize fields themselves: v6 can no longer declare them
+		// because nothing can. Enforced by the type, not by a check.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -163,9 +168,10 @@ func TestV6_Invariants(t *testing.T) {
 		})
 	}
 
-	// v3..v5 never required a non-empty company_id, and tightening that now
-	// would flip historical anchors from passing to broken.
-	for _, a := range []Anchor{validV3(), validV4(), validV5()} {
+	// v3 and v4 never required a non-empty company_id, and tightening that now
+	// would flip historical anchors from passing to broken. v5 is excluded because
+	// it is refused for its VERSION, before any field is considered.
+	for _, a := range []Anchor{validV3(), validV4()} {
 		a.Subject = ""
 		if err := ValidateVersionInvariants(a); err != nil {
 			t.Errorf("v%d with an empty subject must still validate: %v", a.Version, err)
@@ -184,7 +190,7 @@ func TestAnchorJSON_KeyFollowsTheVersion(t *testing.T) {
 	}{
 		{validV3(), `"company_id":`, `"subject":`},
 		{validV4(), `"company_id":`, `"subject":`},
-		{validV5(), `"company_id":`, `"subject":`},
+		{withdrawnV5(), `"company_id":`, `"subject":`},
 		{validV6(), `"subject":`, `"company_id":`},
 	}
 	for _, tc := range cases {
@@ -204,7 +210,10 @@ func TestAnchorJSON_KeyFollowsTheVersion(t *testing.T) {
 // TestAnchorJSON_RoundTrip: marshal then unmarshal must preserve every field,
 // for both spellings.
 func TestAnchorJSON_RoundTrip(t *testing.T) {
-	for _, want := range []Anchor{validV3(), validV4(), validV5(), validV6()} {
+	// withdrawnV5 is absent: this test also canonicalizes each anchor, and v5 has
+	// no canonical form. JSON round-tripping a v5 struct still works — it is the
+	// signed FORM that was withdrawn, not the type.
+	for _, want := range []Anchor{validV3(), validV4(), validV6()} {
 		raw, err := json.Marshal(want)
 		if err != nil {
 			t.Fatalf("v%d: marshal: %v", want.Version, err)

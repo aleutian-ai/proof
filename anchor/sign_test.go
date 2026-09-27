@@ -132,17 +132,15 @@ func TestSignAnchor_DoesNotMutateItsInput(t *testing.T) {
 func TestSignAnchor_RefusesWhatThisPackageWillNotVerify(t *testing.T) {
 	s := newTestSigner(t)
 
-	// A FULLY VALID v5, so the refusal is the v5 rule itself and not an
-	// invariant failure standing in for it. SignAnchor checks invariants before
-	// version support, matching VerifySignature's order exactly.
-	t.Run("a valid v5 is still refused", func(t *testing.T) {
-		a := validV5()
+	// v5 is refused for its VERSION, so the anchor is deliberately well-formed in
+	// every other respect: there is nothing a caller can add to make one
+	// signable. The refusal now comes from ValidateVersionInvariants, which is
+	// also what VerifySignature uses — one rule, both directions.
+	t.Run("a well-formed v5 is still refused", func(t *testing.T) {
+		a := withdrawnV5()
 		a.SigningKeyID = ""
-		if err := ValidateVersionInvariants(a); err != nil {
-			t.Fatalf("the fixture is not a valid v5, so this test would prove nothing: %v", err)
-		}
 		if _, err := SignAnchor(context.Background(), s, a); !errors.Is(err, ErrVerificationUnsupported) {
-			t.Errorf("SignAnchor on a valid v5 returned %v, want ErrVerificationUnsupported", err)
+			t.Errorf("SignAnchor on a v5 returned %v, want ErrVerificationUnsupported", err)
 		}
 	})
 

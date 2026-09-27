@@ -4,6 +4,7 @@
 package anchor
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"strings"
@@ -178,25 +179,47 @@ func TestVerifySignature_MalformedSignaturesRejectedBeforeCrypto(t *testing.T) {
 	}
 }
 
-// TestVerifySignature_V5IsRefused pins that v5 canonicalizes but does not verify.
+// TestVerifySignature_V5IsRefused pins that the withdrawn v5 is refused.
 //
-// v5 has no cross-language vectors: no SDK implements it, no producer emits it.
-// Verifying would assert byte-agreement with implementations that do not exist.
+// The premise changed when v5 was withdrawn. v5 used to canonicalize and be
+// refused only here, at verification — so this package could hand out canonical
+// bytes for a version it would not accept, and a caller could sign one. Now v5
+// has no canonical form, and the refusal comes from ValidateVersionInvariants,
+// which runs on the signing path too.
+//
+// A v5 anchor therefore cannot be signed at all, so this test builds one by hand
+// rather than through signAnchor.
 func TestVerifySignature_V5IsRefused(t *testing.T) {
-	signed, pub := signAnchor(t, validV5())
-	ring := ringFor(t, TrustPlatform, signed.SigningKeyID, pub)
+	a := withdrawnV5()
+	// Well-formed except for the version, and carrying a signature-shaped value:
+	// the refusal must not depend on the signature being absent or malformed.
+	a.SigningKeyID = "any-key"
+	a.Signature = base64.StdEncoding.EncodeToString(make([]byte, SignatureSize))
 
-	// It must canonicalize — the format is implemented.
-	if _, err := Canonicalize(signed); err != nil {
-		t.Fatalf("v5 must still canonicalize: %v", err)
+	ring, err := NewKeyRing(TrustPlatform, map[string][]byte{
+		"any-key": make([]byte, PublicKeySize),
+	})
+	if err != nil {
+		t.Fatalf("key ring: %v", err)
 	}
 
-	_, err := VerifySignature(signed, ring)
+	_, err = VerifySignature(a, ring)
 	if !errors.Is(err, ErrVerificationUnsupported) {
 		t.Fatalf("v5 verification must be explicitly refused, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "cross-language") {
+	if !strings.Contains(err.Error(), "withdrawn") {
 		t.Errorf("the refusal must say WHY, not just that it is unsupported: %v", err)
+	}
+
+	// And it must not canonicalize, which is the stronger guarantee: there are no
+	// bytes for anyone to sign.
+	if _, err := Canonicalize(a); !errors.Is(err, ErrVerificationUnsupported) {
+		t.Errorf("Canonicalize must refuse the withdrawn v5, got %v", err)
+	}
+
+	// Signing must refuse for the same reason, on the same sentinel.
+	if _, err := SignAnchor(context.Background(), newTestSigner(t), a); !errors.Is(err, ErrVerificationUnsupported) {
+		t.Errorf("SignAnchor must refuse the withdrawn v5, got %v", err)
 	}
 }
 

@@ -13,6 +13,10 @@
       "sha256": "1f1e112920c203ba6c2e24543c6745582e5cbf7e458a9daf5702fe10b21506b5",
       "bytes": 1590
     },
+    "commitment_vectors.json": {
+      "sha256": "5ff4a440548f2f61b0604b7bbd735a1fc082ceacb87368731f0bc42c8e491e73",
+      "bytes": 7314
+    },
     "merkle_golden.json": {
       "sha256": "e35abfff68f0aa5ad92e24b44924d4468e9238da06bc8fe1fab60daa7e6973b4",
       "bytes": 11683

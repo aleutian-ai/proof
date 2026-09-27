@@ -114,3 +114,39 @@ func CaptureRequestV3Golden() []byte { return captureRequestV3Golden }
 //	    t.Fatalf("decode merkle golden: %v", err)
 //	}
 func MerkleGolden() []byte { return merkleGolden }
+
+// commitmentVectors is the salted-commitment golden vector: nonce and content
+// paired with the expected commitment, plus cases every implementation must
+// reject. Expected values were computed with
+// Python's hashlib, independently of the Go implementation they test.
+//
+//go:embed testdata/commitment_vectors.json
+var commitmentVectors []byte
+
+// CommitmentVectors returns the salted-commitment golden vectors as raw JSON.
+//
+// # Description
+//
+// The canonical fixture for [github.com/aleutian-ai/proof/commitment].
+// Distributed to non-Go implementations as
+// fixtures/testdata/commitment_vectors.json — the same bytes.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+//
+// # Example
+//
+//	type vector struct {
+//	    NonceHex   string `json:"nonce_hex"`
+//	    ContentHex string `json:"content_hex"`
+//	    Commitment string `json:"commitment"`
+//	}
+//	var v struct {
+//	    Vectors []vector `json:"vectors"` // must reproduce exactly
+//	    Reject  []vector `json:"reject"`  // must all fail verification
+//	}
+//	if err := json.Unmarshal(fixtures.CommitmentVectors(), &v); err != nil {
+//	    t.Fatalf("decode commitment vectors: %v", err)
+//	}
+func CommitmentVectors() []byte { return commitmentVectors }

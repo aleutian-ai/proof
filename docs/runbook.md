@@ -12,7 +12,7 @@ go build ./... && go vet ./... && gofmt -l .     # must be clean; gofmt prints n
 go test ./...                                    # ~497 tests
 go test ./... -race                              # before touching the store
 
-go test . -run TestLifecycle -v                  # seal → link → verify → erase → verify
+go test . -run TestLifecycle -v                  # encrypt (test helper) → commit → verify → erase → verify
 go test . -run TestStoreE2E -v                   # adapter × scenario matrix
 go test . -run 'Dependency|NoCloud' -v           # the dependency guard
 go test ./store/... -v                           # store conformance, both adapters
@@ -169,9 +169,16 @@ error where the mistake was made.
 **Tombstones.** Never recompute their chain hash. Three shipped SDKs got this
 wrong. See format-spec §5.
 
-**`sequence_num` vs `global_seq`.** `sequence_num` is position within a run and
-IS hashed. `global_seq` is chain-wide and is NOT. Swapping them changes every
-hash.
+**`sequence_num` vs `global_seq` — depends on the format.** v3 (the default)
+hashes `global_seq`, the chain-wide position, and does NOT hash `run_id` or
+`sequence_num`. v2 is the reverse: it hashes `run_id` and `sequence_num`, the
+position within a batch, and not `global_seq`. Using one format's field under the
+other changes every hash.
+
+**Several checkpoints.** A checkpoint is verified against the chain as it was
+when signed: pass it `entries[:a.EntryCount]`, not the whole current chain.
+Entries added after a checkpoint make it fail to bind — correctly. Found by
+`examples/encrypted-artifact`, the first code to verify more than one.
 
 **Merkle leaves.** Hex-decode `content_hash` before leaf-hashing. Hashing the hex
 text produces roots nobody else can reproduce.

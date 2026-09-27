@@ -122,6 +122,23 @@ var allowedDeps = map[string][]string{
 		"golang.org/x/text",
 	},
 
+	// Salted commitments. Standard library only, and it must stay that way: it
+	// is the one piece a verifier in any language re-implements from the spec.
+	"/commitment": {},
+
+	// An EXAMPLE, not part of the library: it shows encryption (circl's HPKE with
+	// X-Wing) composed with proof from the outside. proof itself encrypts nothing;
+	// circl/hpke is reachable only from here, and it brings x/crypto (HKDF,
+	// ChaCha20-Poly1305) with it. x/crypto was already in go.mod as circl's
+	// indirect dependency; this entry keeps it confined to the example.
+	"/examples/encrypted-artifact": {
+		"github.com/cloudflare/circl",
+		"go.etcd.io/bbolt",
+		"golang.org/x/crypto",
+		"golang.org/x/sys",
+		"golang.org/x/text",
+	},
+
 	// The anchor producer. It imports anchor AND verify — that is what a
 	// producer is — so it inherits the union of their dependencies and adds
 	// none of its own. Listed explicitly so that a new dependency reaching it

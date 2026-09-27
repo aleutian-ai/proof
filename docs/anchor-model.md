@@ -181,7 +181,17 @@ customer.
 |---|---|---|---|
 | ≤3 | 9 | baseline | **yes — default** |
 | 4 | 10 | `verified_through` | yes, behind `minAnchorVersion` opt-in |
-| 5 | 12 | `root_hash`, `tree_size` | **no — nothing emits it** |
+| 5 | — | **WITHDRAWN** (was `root_hash`, `tree_size`) | **no — nothing ever emitted it** |
+| 6 | 10 | `company_id` → `subject` | no — `proof` only |
+
+> **v5 was withdrawn from `proof` on 2026-09-27.** It has no canonical form in
+> this module: `Canonicalize` and `ValidateVersionInvariants` refuse it by name,
+> the `RootHash`/`TreeSize` fields are gone from `anchor.Anchor`, and the number
+> is reserved and will not be reused. The rest of this section describes the
+> **hosted platform's** version landscape (`storage.MerkleAnchorVersion`,
+> `ProofBuilder.requireMerkleAnchor`, `minAnchorVersion`), which is a separate
+> type system and still carries v5. If `_15` ever makes the platform re-export
+> `proof/anchor`, `internal/chainlinker/merkle_proof.go` is what breaks.
 
 V4 is interesting design: before signing, the generator *verifies* the range it
 is about to attest to, and `verified_through` records how far that verification
@@ -225,16 +235,19 @@ The key is part of what gets signed, so this is a version, not a rename:
   v6      "subject"        v4's layout, the field moves from 3rd to 8th (alphabetical)
 ```
 
-V6 is built on **V4, not V5**: V5 commits to a Merkle root and has no
+V6 is built on **V4, not V5**: V5 committed to a Merkle root and had no
 cross-language vectors, so building on it would inherit a form nothing can
-verify. V6 therefore carries no `root_hash` or `tree_size`, and declaring
-either is rejected.
+verify. V6 therefore carries no `root_hash` or `tree_size` — and since the
+withdrawal it cannot, because those fields no longer exist on the type. That is
+now enforced by the compiler rather than by a runtime check.
 
 Two things this change fixed that were not about naming:
 
 - The version guard read `if a.Version >= MerkleVersion`. It was written to
   exclude V5 and silently excluded **every version after it**, so a V6 anchor
-  would have verified nowhere. Merkle is one version, not a floor.
+  would have verified nowhere. Merkle was one version, not a floor. The constant
+  is now `WithdrawnVersion`, renamed precisely because the old name read as a
+  floor and invited that mistake twice.
 - V6 requires a non-empty subject. V3–V5 never required a non-empty
   `company_id`, and they still do not — tightening that retroactively would flip
   historical anchors from passing to broken.
@@ -267,9 +280,15 @@ the matching invariants *before* canonicalizing (a V≤3 anchor must have
 `verified_through == 0`; a V4 must have it positive), which is the right order:
 reject the downgrade before doing work that depends on the version.
 
-Key ordering is subtle enough to be worth stating: `root_hash` sorts between
-`range` and `signing_key_id` (`ra < ro < s`), and `tree_size` between
-`signing_key_id` and `verified_through`. Alphabetical, but not in struct order.
+Key ordering is subtle enough to be worth stating, and v6 is the live example:
+`subject` sorts between `signing_key_id` and `verified_through` (`i < u` at index
+1), which is why renaming `company_id` moved the field from 3rd to 8th.
+Alphabetical, but not in struct order.
+
+(The withdrawn v5 was the sharpest case — `root_hash` sorted between `range` and
+`signing_key_id`, `tree_size` between `signing_key_id` and `verified_through`, so
+one field insertion split into two non-adjacent positions. Recorded because the
+hazard is general, not because v5 is still readable.)
 
 `signing_key_id` is inside the canonical form. It was not always — anchors signed
 before the fix carried an empty `signing_key_id` and were unverifiable.

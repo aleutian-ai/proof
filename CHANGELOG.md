@@ -9,8 +9,16 @@ change is called out here.
 
 ### Changed
 
+- **CLI: `proof append` is now `proof commit`.** *(Breaking; no alias.)* proof's
+  vocabulary is commit → anchor → verify → disclose, and the CLI verb was the one
+  place still saying `append`. Same input, same behaviour; the output's
+  `appended` count is now `committed`. `proof import` keeps
+  its name, because it carries an existing chain verbatim rather than committing
+  new evidence. The library's `linker.Append` is unchanged: at the storage layer,
+  "append" is the accurate word.
+
 - **MCP `compute_chain_hash` handles chain hash v3.** It previously knew only
-  v2, so it could not reproduce any entry `proof append` writes. Given v2 inputs
+  v2, so it could not reproduce any entry `proof commit` writes. Given v2 inputs
   for a v3 entry, it returned a wrong hash with no error.
   *(Breaking schema change. No users.)*
   - `format_version` is **required**: 2 or 3, with no default.

@@ -27,7 +27,7 @@ import (
 //
 // NOT REACHABLE FROM A SECOND PROCESS TODAY, and the reason is worth knowing:
 // boltstore.Open passes no Timeout, so bbolt blocks on its exclusive file lock
-// rather than failing. A second `proof append` against a database another
+// rather than failing. A second `proof commit` against a database another
 // process has open therefore HANGS instead of exiting 4. That affects every
 // verb that opens a database, not only this one. Tracked as `_53`.
 //
@@ -35,14 +35,14 @@ import (
 // what a library caller running two appends concurrently produces.
 const exitBusy = 4
 
-// appendInput is one line of `proof append` stdin.
+// commitInput is one line of `proof commit` stdin.
 //
 // # Description
 //
 // Deliberately NOT verify.Entry. This verb MINTS positions, so accepting a
 // shape that carries chain_hash or global_seq would invite a caller to supply
 // values that are then silently recomputed — and believe their hashes were
-// preserved. Those fields are rejected by name; see [decodeAppendInput].
+// preserved. Those fields are rejected by name; see [decodeCommitInput].
 //
 // IngestedAt is required and orders the batch. It is NOT persisted: once linked,
 // global_seq is the order, so store.Entry has no field for it and `proof export`
@@ -53,7 +53,7 @@ const exitBusy = 4
 //
 //   - Timestamps are RFC 3339 with whatever precision the producer used; they
 //     are hash content and are hashed at the precision given.
-type appendInput struct {
+type commitInput struct {
 	EntryID     string `json:"entry_id"`
 	EntryType   string `json:"entry_type"`
 	Timestamp   string `json:"timestamp"`
@@ -64,9 +64,9 @@ type appendInput struct {
 // mintedFields are the fields this verb assigns and therefore refuses to accept.
 var mintedFields = []string{"chain_hash", "global_seq", "sequence_num", "run_id", "previous_hash"}
 
-// cmdAppend links entries onto a chain, minting their positions and hashes.
-func cmdAppend(args []string, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("append", flag.ContinueOnError)
+// cmdCommit links entries onto a chain, minting their positions and hashes.
+func cmdCommit(args []string, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("commit", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dbPath := fs.String("db", "", "chain database path")
 	chainID := fs.String("chain", "", "chain id to append to")
@@ -75,23 +75,23 @@ func cmdAppend(args []string, stdout, stderr *os.File) int {
 		return exitUsage
 	}
 	if *dbPath == "" || *chainID == "" {
-		fmt.Fprintln(stderr, "proof append: --db and --chain are required")
+		fmt.Fprintln(stderr, "proof commit: --db and --chain are required")
 		return exitUsage
 	}
 
 	inputs, err := readAppendInputs(os.Stdin)
 	if err != nil {
-		fmt.Fprintf(stderr, "proof append: %v\n", err)
+		fmt.Fprintf(stderr, "proof commit: %v\n", err)
 		return exitUsage
 	}
 	if len(inputs) == 0 {
-		fmt.Fprintln(stderr, "proof append: no entries on stdin")
+		fmt.Fprintln(stderr, "proof commit: no entries on stdin")
 		return exitUsage
 	}
 
 	s, err := boltstore.Open(*dbPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "proof append: %v\n", err)
+		fmt.Fprintf(stderr, "proof commit: %v\n", err)
 		// A held lock is retryable; a missing or corrupt file is not. A script
 		// that cannot tell them apart retries the wrong one forever.
 		if errors.Is(err, boltstore.ErrLocked) {
@@ -107,7 +107,7 @@ func cmdAppend(args []string, stdout, stderr *os.File) int {
 	}
 	l, err := linker.New(s, opts...)
 	if err != nil {
-		fmt.Fprintf(stderr, "proof append: %v\n", err)
+		fmt.Fprintf(stderr, "proof commit: %v\n", err)
 		return exitIOError
 	}
 
@@ -116,7 +116,7 @@ func cmdAppend(args []string, stdout, stderr *os.File) int {
 	// fsyncs — and leave a partial chain behind on failure.
 	res, err := l.Append(ctx.Background(), *chainID, inputs)
 	if err != nil {
-		fmt.Fprintf(stderr, "proof append: %v\n", err)
+		fmt.Fprintf(stderr, "proof commit: %v\n", err)
 		if errors.Is(err, linker.ErrChainBusy) {
 			return exitBusy
 		}
@@ -124,17 +124,17 @@ func cmdAppend(args []string, stdout, stderr *os.File) int {
 	}
 
 	out := struct {
-		Appended int    `json:"appended"`
-		FirstSeq int64  `json:"first_seq"`
-		LastSeq  int64  `json:"last_seq"`
-		HeadHash string `json:"head_hash"`
-		RunID    string `json:"run_id,omitempty"`
+		Committed int    `json:"committed"`
+		FirstSeq  int64  `json:"first_seq"`
+		LastSeq   int64  `json:"last_seq"`
+		HeadHash  string `json:"head_hash"`
+		RunID     string `json:"run_id,omitempty"`
 	}{res.Appended, res.FirstSeq, res.LastSeq, res.HeadHash, res.RunID}
 
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(out); err != nil {
-		fmt.Fprintf(stderr, "proof append: encode result: %v\n", err)
+		fmt.Fprintf(stderr, "proof commit: encode result: %v\n", err)
 		return exitIOError
 	}
 	return exitOK
@@ -149,7 +149,7 @@ func cmdAppend(args []string, stdout, stderr *os.File) int {
 //
 // # Inputs
 //
-//   - r: JSONL, one appendInput per non-blank line
+//   - r: JSONL, one commitInput per non-blank line
 //
 // # Outputs
 //
@@ -195,7 +195,7 @@ func readAppendInputs(r io.Reader) ([]linker.Input, error) {
 			}
 		}
 
-		var in appendInput
+		var in commitInput
 		if err := json.Unmarshal(raw, &in); err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
@@ -212,7 +212,7 @@ func readAppendInputs(r io.Reader) ([]linker.Input, error) {
 }
 
 // toLinkerInput converts one decoded line, validating what the linker cannot.
-func (in appendInput) toLinkerInput() (linker.Input, error) {
+func (in commitInput) toLinkerInput() (linker.Input, error) {
 	ts, err := time.Parse(time.RFC3339Nano, in.Timestamp)
 	if err != nil {
 		return linker.Input{}, fmt.Errorf("timestamp is not RFC 3339: %w", err)

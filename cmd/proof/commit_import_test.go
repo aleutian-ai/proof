@@ -54,14 +54,14 @@ func runWithStdin(t *testing.T, stdin string, verb func([]string, *os.File, *os.
 	return code, string(o), string(e)
 }
 
-// appendLines builds append-input JSONL for n entries.
-func appendLines(t *testing.T, n, startAt int) string {
+// commitLines builds append-input JSONL for n entries.
+func commitLines(t *testing.T, n, startAt int) string {
 	t.Helper()
 	base := time.Date(2026, 9, 25, 9, 0, 0, 0, time.UTC)
 	var b strings.Builder
 	for i := startAt; i < startAt+n; i++ {
 		ts := base.Add(time.Duration(i) * time.Minute)
-		line, err := json.Marshal(appendInput{
+		line, err := json.Marshal(commitInput{
 			EntryID:     fmt.Sprintf("ent_%03d", i),
 			EntryType:   "capture.request.v3",
 			Timestamp:   ts.Format(time.RFC3339Nano),
@@ -102,24 +102,24 @@ func exportChain(t *testing.T, db, chainID string) string {
 	return string(raw)
 }
 
-// TestAppend_ThenVerifyIsIntact is the minimum bar: what append writes, verify
+// TestCommit_ThenVerifyIsIntact is the minimum bar: what append writes, verify
 // accepts.
-func TestAppend_ThenVerifyIsIntact(t *testing.T) {
+func TestCommit_ThenVerifyIsIntact(t *testing.T) {
 	db := newDB(t, "a")
-	code, out, stderr := runWithStdin(t, appendLines(t, 4, 0), cmdAppend, "--db", db, "--chain", "c")
+	code, out, stderr := runWithStdin(t, commitLines(t, 4, 0), cmdCommit, "--db", db, "--chain", "c")
 	if code != exitOK {
 		t.Fatalf("append exit %d: %s", code, stderr)
 	}
 	var res struct {
-		Appended int    `json:"appended"`
-		LastSeq  int64  `json:"last_seq"`
-		RunID    string `json:"run_id"`
+		Committed int    `json:"committed"`
+		LastSeq   int64  `json:"last_seq"`
+		RunID     string `json:"run_id"`
 	}
 	if err := json.Unmarshal([]byte(out), &res); err != nil {
 		t.Fatalf("append output is not JSON: %v\n%s", err, out)
 	}
-	if res.Appended != 4 || res.LastSeq != 3 {
-		t.Errorf("appended=%d last_seq=%d, want 4/3", res.Appended, res.LastSeq)
+	if res.Committed != 4 || res.LastSeq != 3 {
+		t.Errorf("committed=%d last_seq=%d, want 4/3", res.Committed, res.LastSeq)
 	}
 	if res.RunID != "" {
 		t.Errorf("v3 must not mint a run id, got %q", res.RunID)
@@ -134,15 +134,15 @@ func TestAppend_ThenVerifyIsIntact(t *testing.T) {
 	}
 }
 
-// TestAppend_IsBatchIndependent pins v3's whole reason for existing, at the CLI
+// TestCommit_IsBatchIndependent pins v3's whole reason for existing, at the CLI
 // level: two appends and one append of the concatenation must produce the same
 // chain. Under --format-v2 they must NOT, since v2 binds the batch.
-func TestAppend_IsBatchIndependent(t *testing.T) {
+func TestCommit_IsBatchIndependent(t *testing.T) {
 	split := func(t *testing.T, flags ...string) string {
 		db := newDB(t, "split")
-		for _, chunk := range []string{appendLines(t, 2, 0), appendLines(t, 2, 2)} {
+		for _, chunk := range []string{commitLines(t, 2, 0), commitLines(t, 2, 2)} {
 			args := append([]string{"--db", db, "--chain", "c"}, flags...)
-			if code, _, e := runWithStdin(t, chunk, cmdAppend, args...); code != exitOK {
+			if code, _, e := runWithStdin(t, chunk, cmdCommit, args...); code != exitOK {
 				t.Fatalf("append: %s", e)
 			}
 		}
@@ -151,7 +151,7 @@ func TestAppend_IsBatchIndependent(t *testing.T) {
 	single := func(t *testing.T, flags ...string) string {
 		db := newDB(t, "single")
 		args := append([]string{"--db", db, "--chain", "c"}, flags...)
-		if code, _, e := runWithStdin(t, appendLines(t, 4, 0), cmdAppend, args...); code != exitOK {
+		if code, _, e := runWithStdin(t, commitLines(t, 4, 0), cmdCommit, args...); code != exitOK {
 			t.Fatalf("append: %s", e)
 		}
 		return exportChain(t, db, "c")
@@ -172,15 +172,15 @@ func TestAppend_IsBatchIndependent(t *testing.T) {
 	})
 }
 
-// TestAppend_RejectsMintedFields: silently dropping a field the caller thought
+// TestCommit_RejectsMintedFields: silently dropping a field the caller thought
 // mattered is how someone ends up believing their hashes were preserved.
-func TestAppend_RejectsMintedFields(t *testing.T) {
+func TestCommit_RejectsMintedFields(t *testing.T) {
 	for _, field := range mintedFields {
 		t.Run(field, func(t *testing.T) {
 			line := fmt.Sprintf(`{"entry_id":"e","entry_type":"t","timestamp":"2026-09-25T09:00:00Z",`+
 				`"content_hash":"%s","ingested_at":"2026-09-25T09:00:01Z","%s":"x"}`,
 				strings.Repeat("ab", 64), field)
-			code, _, stderr := runWithStdin(t, line, cmdAppend, "--db", newDB(t, "m"), "--chain", "c")
+			code, _, stderr := runWithStdin(t, line, cmdCommit, "--db", newDB(t, "m"), "--chain", "c")
 			if code != exitUsage {
 				t.Fatalf("exit %d, want usage", code)
 			}
@@ -191,9 +191,9 @@ func TestAppend_RejectsMintedFields(t *testing.T) {
 	}
 }
 
-// TestAppend_RejectsBadLinesByNumber, committing nothing.
-func TestAppend_RejectsBadLinesByNumber(t *testing.T) {
-	good := strings.TrimSpace(appendLines(t, 1, 0))
+// TestCommit_RejectsBadLinesByNumber, committing nothing.
+func TestCommit_RejectsBadLinesByNumber(t *testing.T) {
+	good := strings.TrimSpace(commitLines(t, 1, 0))
 	cases := map[string]string{
 		"malformed JSON":      good + "\n{not json\n",
 		"missing ingested_at": good + "\n" + `{"entry_id":"e2","entry_type":"t","timestamp":"2026-09-25T09:00:00Z","content_hash":"` + strings.Repeat("ab", 64) + `"}` + "\n",
@@ -202,7 +202,7 @@ func TestAppend_RejectsBadLinesByNumber(t *testing.T) {
 	for name, input := range cases {
 		t.Run(name, func(t *testing.T) {
 			db := newDB(t, "bad")
-			code, _, stderr := runWithStdin(t, input, cmdAppend, "--db", db, "--chain", "c")
+			code, _, stderr := runWithStdin(t, input, cmdCommit, "--db", db, "--chain", "c")
 			if code != exitUsage {
 				t.Fatalf("exit %d, want usage", code)
 			}
@@ -238,7 +238,7 @@ func TestImport_RoundTripIsByteIdentical(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			src := newDB(t, "src")
 			args := append([]string{"--db", src, "--chain", "c"}, tc.flags...)
-			if code, _, e := runWithStdin(t, appendLines(t, 5, 0), cmdAppend, args...); code != exitOK {
+			if code, _, e := runWithStdin(t, commitLines(t, 5, 0), cmdCommit, args...); code != exitOK {
 				t.Fatalf("append: %s", e)
 			}
 			exported := exportChain(t, src, "c")
@@ -265,7 +265,7 @@ func TestImport_RoundTripIsByteIdentical(t *testing.T) {
 // tail, and v3 binds global_seq, so the hashes would change.
 func TestImport_PreservesNumberingThatDoesNotStartAtZero(t *testing.T) {
 	src := newDB(t, "src")
-	if code, _, e := runWithStdin(t, appendLines(t, 6, 0), cmdAppend, "--db", src, "--chain", "c"); code != exitOK {
+	if code, _, e := runWithStdin(t, commitLines(t, 6, 0), cmdCommit, "--db", src, "--chain", "c"); code != exitOK {
 		t.Fatalf("append: %s", e)
 	}
 	full := strings.Split(strings.TrimSpace(exportChain(t, src, "c")), "\n")
@@ -311,14 +311,14 @@ func TestImport_PreservesNumberingThatDoesNotStartAtZero(t *testing.T) {
 // verify, because the survivors stay consistent with each other.
 func TestImport_RefusesAnOccupiedRange(t *testing.T) {
 	db := newDB(t, "occupied")
-	if code, _, e := runWithStdin(t, appendLines(t, 4, 0), cmdAppend, "--db", db, "--chain", "c"); code != exitOK {
+	if code, _, e := runWithStdin(t, commitLines(t, 4, 0), cmdCommit, "--db", db, "--chain", "c"); code != exitOK {
 		t.Fatalf("append: %s", e)
 	}
 	before := exportChain(t, db, "c")
 
 	// A DIFFERENT chain occupying the same sequence numbers.
 	other := newDB(t, "other")
-	if code, _, e := runWithStdin(t, appendLines(t, 4, 100), cmdAppend, "--db", other, "--chain", "c"); code != exitOK {
+	if code, _, e := runWithStdin(t, commitLines(t, 4, 100), cmdCommit, "--db", other, "--chain", "c"); code != exitOK {
 		t.Fatalf("append: %s", e)
 	}
 
@@ -338,7 +338,7 @@ func TestImport_RefusesAnOccupiedRange(t *testing.T) {
 // once written it is indistinguishable from one that broke in place.
 func TestImport_RefusesABrokenChain(t *testing.T) {
 	src := newDB(t, "src")
-	if code, _, e := runWithStdin(t, appendLines(t, 4, 0), cmdAppend, "--db", src, "--chain", "c"); code != exitOK {
+	if code, _, e := runWithStdin(t, commitLines(t, 4, 0), cmdCommit, "--db", src, "--chain", "c"); code != exitOK {
 		t.Fatalf("append: %s", e)
 	}
 	lines := strings.Split(strings.TrimSpace(exportChain(t, src, "c")), "\n")
@@ -367,7 +367,7 @@ func TestImport_RefusesABrokenChain(t *testing.T) {
 // TestImport_AcceptsBothInputShapes, the same sniffing `verify` does.
 func TestImport_AcceptsBothInputShapes(t *testing.T) {
 	src := newDB(t, "src")
-	if code, _, e := runWithStdin(t, appendLines(t, 3, 0), cmdAppend, "--db", src, "--chain", "c"); code != exitOK {
+	if code, _, e := runWithStdin(t, commitLines(t, 3, 0), cmdCommit, "--db", src, "--chain", "c"); code != exitOK {
 		t.Fatalf("append: %s", e)
 	}
 	jsonl := exportChain(t, src, "c")
@@ -395,10 +395,10 @@ func TestImport_AcceptsBothInputShapes(t *testing.T) {
 	}
 }
 
-// TestAppendImport_RequireTheirArguments.
-func TestAppendImport_RequireTheirArguments(t *testing.T) {
+// TestCommitImport_RequireTheirArguments.
+func TestCommitImport_RequireTheirArguments(t *testing.T) {
 	for name, verb := range map[string]func([]string, *os.File, *os.File) int{
-		"append": cmdAppend, "import": cmdImport,
+		"commit": cmdCommit, "import": cmdImport,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _, _ := runWithStdin(t, "", verb, "--chain", "c"); code != exitUsage {
@@ -422,7 +422,7 @@ func TestAppendImport_RequireTheirArguments(t *testing.T) {
 // would misreport the chain's shape to anything reading rows directly.
 func TestImport_SetsPreviousHash(t *testing.T) {
 	src := newDB(t, "src")
-	if code, _, e := runWithStdin(t, appendLines(t, 3, 0), cmdAppend, "--db", src, "--chain", "c"); code != exitOK {
+	if code, _, e := runWithStdin(t, commitLines(t, 3, 0), cmdCommit, "--db", src, "--chain", "c"); code != exitOK {
 		t.Fatalf("append: %s", e)
 	}
 	dst := newDB(t, "dst")
@@ -466,7 +466,7 @@ func TestVerbs_LockedDatabaseExitsBusyRatherThanHanging(t *testing.T) {
 	db := newDB(t, "locked")
 
 	// Seed it, then hold the lock the way a concurrent process would.
-	if code, _, e := runWithStdin(t, appendLines(t, 2, 0), cmdAppend, "--db", db, "--chain", "c"); code != exitOK {
+	if code, _, e := runWithStdin(t, commitLines(t, 2, 0), cmdCommit, "--db", db, "--chain", "c"); code != exitOK {
 		t.Fatalf("seed append: %s", e)
 	}
 	// Import needs EXPORTED shape, not append-input shape, or it fails at
@@ -485,7 +485,7 @@ func TestVerbs_LockedDatabaseExitsBusyRatherThanHanging(t *testing.T) {
 		verb  func([]string, *os.File, *os.File) int
 		stdin string
 	}{
-		"append": {cmdAppend, appendLines(t, 1, 9)},
+		"commit": {cmdCommit, commitLines(t, 1, 9)},
 		"import": {cmdImport, exported},
 	}
 	for name, tc := range verbs {

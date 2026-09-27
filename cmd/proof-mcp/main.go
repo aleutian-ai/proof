@@ -95,7 +95,7 @@ func registerTools(s *mcp.Server) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "compute_chain_hash",
 		Description: "Compute the chain hash for one entry's fields. format_version is " +
-			"required: 3 for chains written by proof append (binds global_seq), 2 for " +
+			"required: 3 for chains written by proof commit (binds global_seq), 2 for " +
 			"older chains (binds run_id and sequence_num). Sequence numbers are decimal " +
 			"strings, not JSON numbers.",
 	}, computeChainHash)
@@ -214,7 +214,7 @@ func verifyChain(ctx context.Context, req *mcp.CallToolRequest, in verifyChainIn
 // map[string]any, so a JSON number becomes a float64 and anything above 2^53 is
 // silently changed before it reaches this struct.
 type computeChainHashIn struct {
-	FormatVersion int    `json:"format_version" jsonschema:"REQUIRED: 3 for chains written by proof append, 2 for older chains"`
+	FormatVersion int    `json:"format_version" jsonschema:"REQUIRED: 3 for chains written by proof commit, 2 for older chains"`
 	PreviousHash  string `json:"previous_hash" jsonschema:"the preceding entry's chain hash; empty for the first entry"`
 	Timestamp     string `json:"timestamp" jsonschema:"RFC3339 with microseconds, e.g. 2026-01-20T12:00:01.123456Z"`
 	ContentHash   string `json:"content_hash" jsonschema:"128 hex characters, or a TOMBSTONE: value"`

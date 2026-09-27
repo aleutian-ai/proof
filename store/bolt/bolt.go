@@ -70,7 +70,7 @@ var _ store.Store = (*Store)(nil)
 // DefaultLockTimeout bounds how long Open waits for another process's lock.
 //
 // bbolt's own default is zero, which waits FOREVER. That is defensible for a
-// long-running service and wrong for a command-line tool: `proof append` against
+// long-running service and wrong for a command-line tool: `proof commit` against
 // a database another process had open produced no output, no error and no exit
 // code — it simply hung, with nothing to indicate a lock was the reason.
 //

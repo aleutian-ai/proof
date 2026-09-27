@@ -277,7 +277,7 @@ func TestVerifyChain_DetectsTampering(t *testing.T) {
 
 func TestComputeChainHash(t *testing.T) {
 	// The v3 expectation comes from a chain the LINKER wrote, not from inputs this
-	// test invents — so the tool is checked against what proof append produces.
+	// test invents — so the tool is checked against what proof commit produces.
 	st := memory.New()
 	l, err := linker.New(st)
 	if err != nil {

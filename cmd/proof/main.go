@@ -70,8 +70,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdKeygen(args[1:], stdout, stderr)
 	case "anchor":
 		return cmdAnchor(args[1:], stdout, stderr)
-	case "append":
-		return cmdAppend(args[1:], stdout, stderr)
+	case "commit":
+		return cmdCommit(args[1:], stdout, stderr)
 	case "import":
 		return cmdImport(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
@@ -93,7 +93,7 @@ usage:
                [--key <public.pem>] [--key-trust platform|provided|self]
   proof export --db <path> --chain <id> [--out <path>] [--jsonl]
   proof init   --db <path>
-  proof append --db <path> --chain <id> [--format-v2]   < entries.jsonl
+  proof commit --db <path> --chain <id> [--format-v2]   < entries.jsonl
   proof import --db <path> --chain <id>                 < exported.jsonl
   proof keygen [--alg x-wing] [--out-dir .] [--slot primary|backup|dual]
                [--name LABEL] [--op-vault VAULT] [--force]

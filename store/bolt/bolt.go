@@ -10,7 +10,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 
@@ -65,16 +67,74 @@ type Store struct {
 
 var _ store.Store = (*Store)(nil)
 
+// DefaultLockTimeout bounds how long Open waits for another process's lock.
+//
+// bbolt's own default is zero, which waits FOREVER. That is defensible for a
+// long-running service and wrong for a command-line tool: `proof append` against
+// a database another process had open produced no output, no error and no exit
+// code — it simply hung, with nothing to indicate a lock was the reason.
+//
+// Five seconds is long enough to ride out a concurrent short write and short
+// enough that an operator does not conclude the tool is broken.
+const DefaultLockTimeout = 5 * time.Second
+
+// ErrLocked means another process holds the database's file lock.
+//
+// Distinct from a generic open failure so a caller can tell "wait and retry"
+// from "this file is corrupt or unreadable", which call for opposite responses.
+var ErrLocked = errors.New("bolt: database is locked by another process")
+
+// config holds Open's options.
+type config struct {
+	lockTimeout time.Duration
+}
+
+// Option configures Open.
+type Option func(*config)
+
+// WithLockTimeout sets how long Open waits for another process's lock.
+//
+// # Description
+//
+// Zero means wait indefinitely — bbolt's own default, and the behaviour before
+// [DefaultLockTimeout] existed. Pass it deliberately if a caller genuinely
+// prefers to block, such as a daemon that has nothing else to do.
+//
+// # Inputs
+//
+//   - d: how long to wait; 0 waits forever
+//
+// # Outputs
+//
+//   - Option: to pass to [Open]
+//
+// # Example
+//
+//	s, err := bolt.Open(path, bolt.WithLockTimeout(30*time.Second))
+//
+// # Limitations
+//
+//   - Bounds the LOCK wait only. It is not a deadline for the open itself.
+//
+// # Assumptions
+//
+//   - The caller would rather be told about contention than wait through it.
+func WithLockTimeout(d time.Duration) Option {
+	return func(c *config) { c.lockTimeout = d }
+}
+
 // Open opens or creates a chain database at path.
 //
 // # Inputs
 //
 //   - path: file path; created if absent, along with the buckets
+//   - opts: see [WithLockTimeout]
 //
 // # Outputs
 //
 //   - *Store: ready for use; the caller must Close it
-//   - error: if the file cannot be opened or the buckets cannot be created
+//   - error: [ErrLocked] when another process holds the file lock, or if the
+//     file cannot be opened or the buckets cannot be created
 //
 // # Example
 //
@@ -83,9 +143,24 @@ var _ store.Store = (*Store)(nil)
 //	    return err
 //	}
 //	defer s.Close()
-func Open(path string) (*Store, error) {
-	db, err := bolt.Open(path, 0o600, nil)
+//
+// # Limitations
+//
+//   - Waits [DefaultLockTimeout] for a contended lock and then fails. Pass
+//     WithLockTimeout(0) to wait indefinitely instead.
+func Open(path string, opts ...Option) (*Store, error) {
+	cfg := config{lockTimeout: DefaultLockTimeout}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: cfg.lockTimeout})
 	if err != nil {
+		if errors.Is(err, bolt.ErrTimeout) {
+			return nil, fmt.Errorf("%w: %s is held by another process (waited %s). "+
+				"Only one process may hold a chain database at a time",
+				ErrLocked, path, cfg.lockTimeout)
+		}
 		return nil, fmt.Errorf("bolt: open %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {

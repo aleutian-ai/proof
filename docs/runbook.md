@@ -108,6 +108,14 @@ directly.
 is circular — it proves only that the encoder is deterministic. Take vectors from
 an independently written implementation and confirm them against a second one.
 
+As of 2026-09-26 this is enforced rather than merely advised:
+`fixtures/MANIFEST.json` pins every vector's SHA-256, and the Python and JS
+suites check their vendored copies against it. Verify any copy with:
+
+```console
+$ ./scripts/sync-vectors.sh --check ../AleutianEnterprise/sdk/testdata
+```
+
 ### Change something that affects hashed bytes
 
 Do not, unless you intend to invalidate every existing chain. If you must:
@@ -140,7 +148,11 @@ go get <dep> && cat go.mod          # did the `go` line move?
 - [ ] `go test ./...` and `go test ./... -race` green
 - [ ] `go test . -run 'Dependency|NoCloud'` green
 - [ ] `go.mod` `go` directive unchanged — or the change is intended
-- [ ] Fixtures unchanged, or regenerated and re-baked across all languages
+- [ ] Fixtures unchanged. If one MUST change, it is a format change: regenerate
+      `fixtures/MANIFEST.json`, re-vendor with
+      `./scripts/sync-vectors.sh --write <sdk>/testdata`, and EXPECT the Python
+      and JS suites to fail until they are synced — that failure is the contract
+      working, not an obstacle (see `docs/decisions.md` D18)
 - [ ] `docs/format-spec.md` matches the code if hashed bytes changed
 - [ ] `README.md` status table matches what is actually built
 - [ ] No overclaiming: tamper-*evident* not tamper-proof; *inside* the FIPS

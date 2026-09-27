@@ -1,0 +1,25 @@
+{
+  "_comment": "The AleutianChain conformance vectors, and their digests. THIS FILE IS THE CONTRACT. Every implementation claiming compatibility must reproduce these vectors' expected outputs exactly. The digests exist so that a copy vendored into another repository cannot drift unnoticed: an implementation reads its local copy and checks it against these digests before trusting it. Changing a vector is a deliberate act that changes a digest here, which every other implementation then notices. A vector must never be regenerated to make a failing implementation pass -- that is the circularity these vectors exist to break.",
+  "vectors": {
+    "anchor_chain_hash_vectors.json": {
+      "sha256": "a201732e12591267693286f62ebbd1d8ecae1b2e8dec38905df4d1ec927cd067",
+      "bytes": 3836
+    },
+    "anchor_v4_canonical_vectors.json": {
+      "sha256": "66277f5d390d2e307cb97b0dcbf9331b839cdcedb54f0919d1f46cfa3d3cfde3",
+      "bytes": 2872
+    },
+    "chain_vectors.json": {
+      "sha256": "1f1e112920c203ba6c2e24543c6745582e5cbf7e458a9daf5702fe10b21506b5",
+      "bytes": 1590
+    },
+    "merkle_golden.json": {
+      "sha256": "e35abfff68f0aa5ad92e24b44924d4468e9238da06bc8fe1fab60daa7e6973b4",
+      "bytes": 11683
+    },
+    "v3_golden_capture_request.json": {
+      "sha256": "8c3d7add4cf6fe7c764d963ef59d764b8a314b9d708a22ddc48b9faab7bfedea",
+      "bytes": 8554
+    }
+  }
+}

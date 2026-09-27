@@ -222,9 +222,13 @@ func printResult(w *os.File, res verify.Result, anchorFollows bool) {
 			if b.Detail != "" {
 				fmt.Fprintf(w, "       %s\n", b.Detail)
 			}
-			if b.Expected != "" {
-				fmt.Fprintf(w, "       expected %s…\n       actual   %s…\n",
-					b.Expected[:32], b.Actual[:32])
+			// Truncated SAFELY. This slice was b.Expected[:32] and b.Actual[:32]
+			// behind a check on Expected alone, so a break carrying one side and
+			// not the other — or a short value — panicked `proof verify` on the
+			// very path it exists for. Found by a test for something else.
+			if b.Expected != "" || b.Actual != "" {
+				fmt.Fprintf(w, "       expected %s\n       actual   %s\n",
+					shortHash(b.Expected), shortHash(b.Actual))
 			}
 		}
 		if len(res.Breaks) > 1 {
@@ -252,6 +256,45 @@ func printResult(w *os.File, res verify.Result, anchorFollows bool) {
 			fmt.Fprintln(w, "              removed from the front and the rest re-linked; detecting")
 			fmt.Fprintln(w, "              that needs an anchor, which was not checked here.")
 		}
+	}
+}
+
+// shortHash renders a hash for a human, truncated to a readable prefix.
+//
+// # Description
+//
+// Never slices past the end. A break may carry an empty or short value — an
+// entry whose chain hash is missing entirely, for instance — and a report that
+// panics while describing a broken chain is worse than no report.
+//
+// # Inputs
+//
+//   - h: a hash, possibly empty or shorter than the prefix
+//
+// # Outputs
+//
+//   - string: the first 32 characters with an ellipsis, the whole value if
+//     shorter, or "(none)" if empty
+//
+// # Example
+//
+//	fmt.Println(shortHash(b.Expected))
+//
+// # Limitations
+//
+//   - For display only. Never compare truncated hashes.
+//
+// # Assumptions
+//
+//   - None.
+func shortHash(h string) string {
+	switch {
+	case h == "":
+		return "(none)"
+	case len(h) <= 32:
+		return h
+	default:
+		return h[:32] + "…"
 	}
 }
 

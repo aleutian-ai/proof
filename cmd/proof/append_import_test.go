@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
+	"github.com/aleutian-ai/proof/verify"
 )
 
 // withStdin runs fn with os.Stdin replaced by the given content.
@@ -447,5 +449,121 @@ func TestImport_SetsPreviousHash(t *testing.T) {
 		if rows[i].PreviousHash != rows[i-1].ChainHash {
 			t.Errorf("entry %d's previous hash does not point at its predecessor", i)
 		}
+	}
+}
+
+// TestVerbs_LockedDatabaseExitsBusyRatherThanHanging is the regression test for
+// `_53`.
+//
+// Before the fix, boltstore.Open passed no Timeout, so bbolt waited on its
+// exclusive file lock FOREVER. A verb run against a database another process
+// had open produced no output, no error and no exit code — it simply hung, with
+// nothing to indicate a lock was the cause. Writing this very test is what
+// exposed it: the test hung too.
+//
+// The bound is what makes exitBusy reachable at all from the CLI.
+func TestVerbs_LockedDatabaseExitsBusyRatherThanHanging(t *testing.T) {
+	db := newDB(t, "locked")
+
+	// Seed it, then hold the lock the way a concurrent process would.
+	if code, _, e := runWithStdin(t, appendLines(t, 2, 0), cmdAppend, "--db", db, "--chain", "c"); code != exitOK {
+		t.Fatalf("seed append: %s", e)
+	}
+	// Import needs EXPORTED shape, not append-input shape, or it fails at
+	// verification before ever reaching the store — which would make this test
+	// pass for the wrong reason.
+	exported := exportChain(t, db, "c")
+
+	holder, err := boltstore.Open(db)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer holder.Close()
+
+	// A short timeout so the test is quick; the DEFAULT is what ships.
+	verbs := map[string]struct {
+		verb  func([]string, *os.File, *os.File) int
+		stdin string
+	}{
+		"append": {cmdAppend, appendLines(t, 1, 9)},
+		"import": {cmdImport, exported},
+	}
+	for name, tc := range verbs {
+		t.Run(name, func(t *testing.T) {
+			done := make(chan int, 1)
+			go func() {
+				code, _, _ := runWithStdin(t, tc.stdin, tc.verb, "--db", db, "--chain", "c")
+				done <- code
+			}()
+			select {
+			case code := <-done:
+				if code != exitBusy {
+					t.Errorf("exit %d, want %d (busy)", code, exitBusy)
+				}
+			case <-time.After(boltstore.DefaultLockTimeout + 10*time.Second):
+				t.Fatal("the verb HUNG on a locked database; the lock timeout is not in effect")
+			}
+		})
+	}
+}
+
+// TestBoltOpen_LockTimeoutIsConfigurable: a caller that genuinely wants to wait
+// can, and the error says what is wrong.
+func TestBoltOpen_LockTimeoutIsConfigurable(t *testing.T) {
+	db := newDB(t, "cfg")
+	holder, err := boltstore.Open(db)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer holder.Close()
+
+	start := time.Now()
+	_, err = boltstore.Open(db, boltstore.WithLockTimeout(200*time.Millisecond))
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, boltstore.ErrLocked) {
+		t.Fatalf("got %v, want ErrLocked", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("waited %s despite a 200ms timeout", elapsed)
+	}
+	// The message must say it is a LOCK, not a corruption or permission problem.
+	for _, want := range []string{"another process", "locked"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// TestPrintResult_DoesNotPanicOnShortHashes is the regression test for a crash
+// found while testing something else.
+//
+// printResult sliced b.Expected[:32] and b.Actual[:32] behind a check on
+// Expected ALONE, so a break carrying one side and not the other — or a value
+// shorter than 32 characters — panicked. That is `proof verify` crashing while
+// describing a broken chain, which is the one path the verb exists for.
+func TestPrintResult_DoesNotPanicOnShortHashes(t *testing.T) {
+	cases := map[string]verify.Break{
+		"both empty":    {Position: 0, Type: verify.BreakUnknownFormat, EntryID: "e"},
+		"expected only": {Position: 0, EntryID: "e", Expected: strings.Repeat("a", 128)},
+		"actual only":   {Position: 0, EntryID: "e", Actual: strings.Repeat("b", 128)},
+		"both short":    {Position: 0, EntryID: "e", Expected: "abc", Actual: "de"},
+		"exactly 32":    {Position: 0, EntryID: "e", Expected: strings.Repeat("a", 32), Actual: strings.Repeat("b", 32)},
+		"one side 31":   {Position: 0, EntryID: "e", Expected: strings.Repeat("a", 31), Actual: strings.Repeat("b", 128)},
+	}
+	for name, brk := range cases {
+		t.Run(name, func(t *testing.T) {
+			f, err := os.CreateTemp(t.TempDir(), "out")
+			if err != nil {
+				t.Fatalf("temp: %v", err)
+			}
+			defer f.Close()
+			// A panic here fails the test, which is the whole assertion.
+			printResult(f, verify.Result{
+				Verdict:    verify.VerdictBroken,
+				FirstBreak: 0,
+				Breaks:     []verify.Break{brk},
+			}, false)
+		})
 	}
 }

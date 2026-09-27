@@ -5,6 +5,7 @@ package main
 
 import (
 	ctx "context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -72,6 +73,11 @@ func cmdImport(args []string, stdout, stderr *os.File) int {
 	s, err := boltstore.Open(*dbPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "proof import: %v\n", err)
+		// A held lock is retryable; a missing or corrupt file is not. A script
+		// that cannot tell them apart retries the wrong one forever.
+		if errors.Is(err, boltstore.ErrLocked) {
+			return exitBusy
+		}
 		return exitIOError
 	}
 	defer s.Close()

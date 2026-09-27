@@ -5,6 +5,7 @@ package xwing
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
 	"errors"
@@ -42,7 +43,20 @@ func secretFixtures() (PrivateKey, SharedSecret) {
 // leaks reports whether out contains the fixture byte in any common encoding.
 func leaks(out string) bool {
 	// 0xa5 as decimal, hex (both cases), escaped, octal, binary, and base64.
-	for _, marker := range []string{"165", "a5a5", "A5A5", `\xa5`, "0xa5", "245", "10100101", "paWl"} {
+	//
+	// The decimal and octal markers are REPEATED. A bare "165" or "245" is three
+	// digits and matches by accident — a slog handler's nanosecond timestamp
+	// contains one often enough to fail this test on Linux roughly one run in
+	// ten, reporting a leak that never happened. A security test that cries wolf
+	// teaches people to re-run it, which is worse than not having it.
+	//
+	// Repetition costs nothing in detection power: the fixtures are 32 bytes of
+	// 0xa5, so any real leak prints the value dozens of times over. A single
+	// isolated occurrence is not a shape this data can take.
+	for _, marker := range []string{
+		"165 165", "165,165", "a5a5", "A5A5", `\xa5\xa5`, "0xa5, 0xa5",
+		"245245", "245 245", "10100101 10100101", "1010010110100101", "paWl",
+	} {
 		if strings.Contains(out, marker) {
 			return true
 		}
@@ -210,5 +224,47 @@ func assertSentinel(t *testing.T, what string, err, want error) {
 	}
 	if wrapped := fmt.Errorf("context: %w", err); !errors.Is(wrapped, want) {
 		t.Errorf("%s: sentinel not matched through a %%w wrap", what)
+	}
+}
+
+// TestLeaksDetectorActuallyDetects proves the helper above still catches a real
+// leak after its markers were made repetition-based.
+//
+// The markers were loosened from "165" to "165 165" because three digits match
+// a nanosecond timestamp by accident. Loosening a SECURITY detector to make a
+// test pass is exactly the wrong move unless you then prove it still detects —
+// so this feeds it the actual renderings a leak produces.
+func TestLeaksDetectorActuallyDetects(t *testing.T) {
+	priv, ss := secretFixtures()
+
+	realLeaks := map[string]string{
+		"%v of the seed":          fmt.Sprintf("%v", priv.Seed),
+		"%d of the seed":          fmt.Sprintf("%d", priv.Seed),
+		"%x of the seed":          fmt.Sprintf("%x", priv.Seed),
+		"%X of the seed":          fmt.Sprintf("%X", priv.Seed),
+		"%q of the shared secret": fmt.Sprintf("%q", ss[:]),
+		"%v of the shared secret": fmt.Sprintf("%v", ss[:]),
+		"%o of the seed":          fmt.Sprintf("%o", priv.Seed),
+		"%b of the seed":          fmt.Sprintf("%b", priv.Seed),
+		"base64":                  base64.StdEncoding.EncodeToString(ss[:]),
+	}
+	for name, out := range realLeaks {
+		if !leaks(out) {
+			t.Errorf("leaks() MISSED a real leak (%s): %.80q", name, out)
+		}
+	}
+
+	// And it must not fire on output that merely resembles one. These are the
+	// false positives that made the detector flaky.
+	notLeaks := map[string]string{
+		"a nanosecond timestamp":   `{"time":"2026-09-26T14:34:20.442458256Z","level":"INFO"}`,
+		"another timestamp":        `2026-09-26T01:16:52.165000000Z`,
+		"a redacted log line":      `{"priv":"[REDACTED PrivateKey]","ss":"[REDACTED SharedSecret]"}`,
+		"an unrelated hash prefix": "a5b1808a2627b3df8a70635d8995b783",
+	}
+	for name, out := range notLeaks {
+		if leaks(out) {
+			t.Errorf("leaks() FIRED on output containing no secret (%s): %q", name, out)
+		}
 	}
 }

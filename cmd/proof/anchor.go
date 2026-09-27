@@ -65,6 +65,10 @@ func cmdAnchor(args []string, stdout, stderr *os.File) int {
 	entries, err := readChain(*dbPath, *chainID)
 	if err != nil {
 		fmt.Fprintf(stderr, "proof anchor: %v\n", err)
+		// A held lock is retryable; a missing or corrupt file is not.
+		if errors.Is(err, boltstore.ErrLocked) {
+			return exitBusy
+		}
 		return exitIOError
 	}
 	if len(entries) == 0 {

@@ -15,24 +15,23 @@ go 1.25.0
 // server against unreleased library changes, use a go.work at the repo root
 // (gitignored) rather than reintroducing a replace here.
 //
-// ⚠ DO NOT TAG THIS MODULE until the require below names proof v0.3.0 or later.
-// The commit tool imports packages that v0.2.0 does not have (commitment,
-// internal/noncestore, boltstore.WithLockTimeout), so this module builds only in
-// the workspace today. Release order: tag proof v0.3.0 → go get
-// github.com/aleutian-ai/proof@v0.3.0 && go mod tidy here → GOWORK=off go build
-// ./... and go test ./... → commit → tag cmd/proof-mcp.
+// When the server needs library changes that are not released yet, tag the
+// library first, then bump the require below, and check with
+// GOWORK=off go build ./... && GOWORK=off go test ./... before tagging this
+// module. It cannot be tagged against unreleased library code.
 
 require (
-	github.com/aleutian-ai/proof v0.2.0
+	github.com/aleutian-ai/proof v0.3.0
 	github.com/cloudflare/circl v1.6.3
+	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 )
 
 require (
-	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	go.etcd.io/bbolt v1.4.3 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect

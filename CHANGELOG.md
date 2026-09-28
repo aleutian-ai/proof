@@ -5,12 +5,19 @@ All notable changes to `github.com/aleutian-ai/proof`. Versions follow
 minor or patch release may contain a source-incompatible change, and every such
 change is called out here.
 
-## Unreleased
+## v0.3.0 — 2026-09-28
 
-> **Release order (required).** Tag `proof` first. `cmd/proof-mcp` imports
-> packages that do not exist in `v0.2.0`, so it builds only in the workspace until
-> its `go.mod` is bumped to the new `proof` tag and `GOWORK=off go build ./...`
-> passes. Only then tag `cmd/proof-mcp`. See the note in `cmd/proof-mcp/go.mod`.
+> **Two tags.** The library is `v0.3.0`. The MCP server is a separate module and
+> is tagged `cmd/proof-mcp/v0.3.0` right after, because its new `commit` tool
+> depends on packages first released here (`commitment`, `internal/noncestore`).
+> `go install github.com/aleutian-ai/proof/cmd/proof-mcp@latest` picks it up once
+> both tags are published.
+>
+> **Breaking changes** (pre-1.0, no known users): `proof append` → `proof commit`;
+> anchor v5 withdrawn (`MerkleVersion` → `WithdrawnVersion`, `Anchor.RootHash`
+> and `Anchor.TreeSize` removed); MCP `compute_chain_hash` requires
+> `format_version` and takes sequence numbers as strings; `proof-mcp --db`
+> requires `--chains`.
 
 ### Changed
 

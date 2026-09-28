@@ -14,6 +14,13 @@ go 1.25.0
 // that has one. Depend on a PUBLISHED version of the library. To develop the
 // server against unreleased library changes, use a go.work at the repo root
 // (gitignored) rather than reintroducing a replace here.
+//
+// ⚠ DO NOT TAG THIS MODULE until the require below names proof v0.3.0 or later.
+// The commit tool imports packages that v0.2.0 does not have (commitment,
+// internal/noncestore, boltstore.WithLockTimeout), so this module builds only in
+// the workspace today. Release order: tag proof v0.3.0 → go get
+// github.com/aleutian-ai/proof@v0.3.0 && go mod tidy here → GOWORK=off go build
+// ./... and go test ./... → commit → tag cmd/proof-mcp.
 
 require (
 	github.com/aleutian-ai/proof v0.2.0

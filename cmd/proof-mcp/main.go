@@ -37,6 +37,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -50,8 +51,10 @@ import (
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/bundle"
 	"github.com/aleutian-ai/proof/chainformat"
+	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/keyfile"
 	"github.com/aleutian-ai/proof/merkle"
+	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
 )
 
@@ -69,23 +72,90 @@ func main() {
 }
 
 func run() error {
+	cfg, err := parseFlags(os.Args[1:])
+	if err != nil {
+		return err
+	}
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "aleutianchain",
 		Version: "0.1.0",
 	}, nil)
 
-	registerTools(server)
+	if err := registerTools(server, cfg); err != nil {
+		return err
+	}
 
 	return server.Run(context.Background(), &mcp.StdioTransport{})
+}
+
+// parseFlags reads the launch-time configuration.
+//
+// These are the HUMAN's choices, made when the server is registered with a
+// client. None of them can be set by a tool call. Without --db the server is
+// read-only: the commit tool is not registered at all.
+//
+// Diagnostics go to stderr: stdout carries the JSON-RPC stream.
+func parseFlags(args []string) (commitConfig, error) {
+	fs := flag.NewFlagSet("proof-mcp", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	db := fs.String("db", "", "evidence database the commit tool writes to; omit for a read-only server")
+	chains := fs.String("chains", "", "chains commit may write, comma-separated; required with --db. '*' allows any valid chain id")
+	if err := fs.Parse(args); err != nil {
+		return commitConfig{}, err
+	}
+	cfg := commitConfig{db: *db}
+	if *chains != "" && *db == "" {
+		return commitConfig{}, fmt.Errorf("--chains only applies with --db")
+	}
+	if *db != "" && *chains == "" {
+		// An explicit choice, not a default: without it, an injected prompt could
+		// append to any chain in the file, including ones the CLI writes.
+		return commitConfig{}, fmt.Errorf("--db requires --chains: name the chains agents may " +
+			"write (e.g. --chains agent-actions,payments), or '*' to allow any")
+	}
+	if *chains != "" && *chains != "*" {
+		cfg.chains = map[string]bool{}
+		for _, c := range strings.Split(*chains, ",") {
+			c = strings.TrimSpace(c)
+			if !idPattern.MatchString(c) {
+				return commitConfig{}, fmt.Errorf("--chains: %q is not a valid chain id "+
+					"(lowercase letters, digits, . _ -, max 64)", c)
+			}
+			cfg.chains[c] = true
+		}
+	}
+	if cfg.db != "" {
+		// Fail at launch, not on the first tool call: open (creating it if needed)
+		// and close again. Each commit reopens, so the CLI can share the file.
+		st, err := boltstore.Open(cfg.db, boltstore.WithLockTimeout(dbLockTimeout))
+		if err != nil {
+			return commitConfig{}, fmt.Errorf("--db %s: %w", cfg.db, err)
+		}
+		if err := st.Close(); err != nil {
+			return commitConfig{}, fmt.Errorf("--db %s: %w", cfg.db, err)
+		}
+		ns, err := noncestore.Open(noncestore.PathFor(cfg.db), dbLockTimeout)
+		if err != nil {
+			return commitConfig{}, fmt.Errorf("--db %s: nonce file: %w", cfg.db, err)
+		}
+		if err := ns.Close(); err != nil {
+			return commitConfig{}, fmt.Errorf("--db %s: nonce file: %w", cfg.db, err)
+		}
+	}
+	return cfg, nil
 }
 
 // registerTools wires every tool.
 //
 // Kept separate from run so tests can enumerate what is registered without
 // starting a server — see TestNoKeyMaterialTools.
-func registerTools(s *mcp.Server) {
+func registerTools(s *mcp.Server, cfg commitConfig) error {
+	// readOnly marks every tool except commit. TestExactlyOneToolWrites pins it.
+	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
+
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "verify_chain",
+		Name:        "verify_chain",
+		Annotations: readOnly,
 		Description: "Verify an exported audit chain. Reports whether the linkage is " +
 			"intact and, if not, the index of the FIRST break. Note the result " +
 			"distinguishes consistency (nothing was edited) from existence (this is " +
@@ -93,7 +163,8 @@ func registerTools(s *mcp.Server) {
 	}, verifyChain)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "compute_chain_hash",
+		Name:        "compute_chain_hash",
+		Annotations: readOnly,
 		Description: "Compute the chain hash for one entry's fields. format_version is " +
 			"required: 3 for chains written by proof commit (binds global_seq), 2 for " +
 			"older chains (binds run_id and sequence_num). Sequence numbers are decimal " +
@@ -101,7 +172,8 @@ func registerTools(s *mcp.Server) {
 	}, computeChainHash)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "canonicalize_leaf",
+		Name:        "canonicalize_leaf",
+		Annotations: readOnly,
 		Description: "Show the exact canonical bytes a capture entry hashes to, as " +
 			"hex, alongside its content hash. This is the 'show your work' tool: it " +
 			"lets a skeptic re-hash the bytes themselves rather than trusting the " +
@@ -109,13 +181,15 @@ func registerTools(s *mcp.Server) {
 	}, canonicalizeLeaf)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "verify_inclusion",
+		Name:        "verify_inclusion",
+		Annotations: readOnly,
 		Description: "Verify that a leaf belongs to a Merkle tree with a given root, " +
 			"using an inclusion proof.",
 	}, verifyInclusion)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "verify_anchor",
+		Name:        "verify_anchor",
+		Annotations: readOnly,
 		Description: "Check an exported chain against an anchor. This is what detects " +
 			"TRUNCATION, which chain verification alone cannot: a chain with entries " +
 			"removed from the front and the rest re-linked verifies as intact. Without " +
@@ -124,7 +198,8 @@ func registerTools(s *mcp.Server) {
 	}, verifyAnchorTool)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "verify_bundle",
+		Name:        "verify_bundle",
+		Annotations: readOnly,
 		Description: "Verify an export bundle directory: recompute the manifest root " +
 			"over the inventory, and re-hash every listed file to confirm the bytes on " +
 			"disk match what the manifest claims. Reports every problem found, not just " +
@@ -132,12 +207,15 @@ func registerTools(s *mcp.Server) {
 	}, verifyBundleTool)
 
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "explain_trust_model",
+		Name:        "explain_trust_model",
+		Annotations: readOnly,
 		Description: "Explain what a verification result does and does not prove, and " +
 			"why this tool ships no built-in trust store. Call this when a user asks " +
 			"whether a chain is 'trusted', 'valid', or 'proven' — those words hide a " +
 			"distinction that matters.",
 	}, explainTrustModel)
+
+	return registerCommit(s, cfg)
 }
 
 // ---------------------------------------------------------------------------

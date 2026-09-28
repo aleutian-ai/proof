@@ -7,6 +7,11 @@ change is called out here.
 
 ## Unreleased
 
+> **Release order (required).** Tag `proof` first. `cmd/proof-mcp` imports
+> packages that do not exist in `v0.2.0`, so it builds only in the workspace until
+> its `go.mod` is bumped to the new `proof` tag and `GOWORK=off go build ./...`
+> passes. Only then tag `cmd/proof-mcp`. See the note in `cmd/proof-mcp/go.mod`.
+
 ### Changed
 
 - **CLI: `proof append` is now `proof commit`.** *(Breaking; no alias.)* proof's
@@ -72,6 +77,26 @@ change is called out here.
 
 ### Added
 
+- **MCP `commit`: the first tool that writes.** Registered only with `--db`,
+  which requires `--chains` (the chains agents may write, or `'*'`). The agent
+  sends `content` (salted commitment; the nonce is kept in a local sidecar file,
+  `<db>.nonces`, and never returned) or a pre-computed `content_hash`. Entry ids,
+  timestamps (taken under the file lock) and positions are server-assigned;
+  hash-bound fields cannot be supplied; entry types are server-set
+  (`mcp.salted` / `mcp.digest` + optional label). At most 100 entries and 64 KiB
+  each, enforced in the input schema and again in bytes. Batches are atomic;
+  refused calls leave the database byte-identical; parallel calls queue instead
+  of failing. Every other tool is marked read-only, and a test pins that exactly
+  one tool writes. The SDK has no message-size limit, so the caps bound what is
+  written, not what is decoded.
+- **`proof disclose` and `proof forget`.** Prove one salted entry to a third
+  party (refuses to emit a disclosure that does not verify), or erase its nonce
+  so it can never be opened again. Forget says plainly which copies it cannot
+  reach.
+- **`linker.ErrHeadStateStale`.** When entries are durably written but the saved
+  head record is not, `Append` now returns the populated `Result` together with
+  this error, and `proof commit` reports success with a warning. Previously the
+  result was dropped, inviting a retry that committed the same evidence twice.
 - **`commitment`: salted commitments for content committed unencrypted.**
   `SHA-512("aleutian.commit.v1:" ‖ nonce ‖ SHA-512(content))` with a fresh
   32-byte nonce per item. A plain hash of low-entropy content can be guessed; this
@@ -98,6 +123,13 @@ change is called out here.
   which is the difference between a conformance suite and a mirror.
 
 ### Fixed
+
+- **A crashed writer no longer locks its chain forever.** The bolt store saved a
+  per-chain lease in the file and nothing cleared it, so a process killed
+  mid-append — routine for MCP servers — left that chain permanently "busy".
+  `Open` now clears stored leases: it holds bbolt's exclusive file lock, so no
+  other writer can be alive. Safe because the next append reads the tail from
+  the stored entries, never from saved state.
 
 - **MCP `verify_anchor` could not read the keys `proof keygen` writes.**
   `loadKeyRing` capped the read at `anchor.PublicKeySize+1` (1953) and expected

@@ -21,6 +21,14 @@ import (
 // appender at a time by design. Callers should retry, not treat it as corruption.
 var ErrChainBusy = errors.New("linker: chain is busy, another append holds the lease")
 
+// ErrHeadStateStale is returned, TOGETHER WITH a populated Result, when the
+// entries were durably written but the saved head record could not be updated.
+//
+// The append HAPPENED. Treat it as success and log the warning: retrying would
+// append the same evidence twice. The stale record is harmless — the next append
+// reads the tail from the stored entries, never from it.
+var ErrHeadStateStale = errors.New("linker: entries written, but the saved head record was not updated")
+
 // Input is an entry awaiting linkage.
 //
 // It carries only what the linker cannot derive. Position (run id, sequence
@@ -324,9 +332,16 @@ func (l *Linker) Append(ctx context.Context, chainID string, inputs []Input) (Re
 		ComputedAt: l.now(),
 	}); err != nil {
 		// The entries are durably written at this point. A stale head is
-		// recoverable — the next append reads the tail from the chain itself —
-		// so this is reported rather than treated as a failed append.
-		return Result{}, fmt.Errorf("linker: entries written but head state not updated: %w", err)
+		// recoverable — the next append reads the tail from the chain itself — so
+		// the Result is returned WITH the error: a caller that saw only an error
+		// would retry, and append the same evidence twice.
+		return Result{
+			RunID:    runID,
+			Appended: len(entries),
+			FirstSeq: entries[0].GlobalSeq,
+			LastSeq:  last.GlobalSeq,
+			HeadHash: last.ChainHash,
+		}, fmt.Errorf("%w: %v", ErrHeadStateStale, err)
 	}
 
 	return Result{

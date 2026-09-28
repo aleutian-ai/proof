@@ -1,0 +1,15 @@
+# proof-mcp driven by a real MCP client: opencode, on Alpine, with a local model
+# served by Ollama on the host. Nothing leaves the machine.
+FROM docker.io/library/alpine:3.20
+
+RUN apk add --no-cache bash curl ca-certificates libstdc++ libgcc
+
+# opencode ships a musl build; the installer picks it.
+RUN curl -fsSL https://opencode.ai/install | bash
+ENV PATH="/root/.opencode/bin:${PATH}"
+
+# Static Linux builds of proof and proof-mcp, produced by run.sh.
+COPY bin/proof bin/proof-mcp /usr/local/bin/
+
+COPY opencode.json /root/.config/opencode/opencode.json
+WORKDIR /work

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (host)",
+      "options": { "baseURL": "http://host.containers.internal:11434/v1" },
+      "models": {
+        "ministral-3:3b": { "name": "Ministral 3B" },
+        "ornith-1.5:35b": { "name": "Ornith 1.5 35B" }
+      }
+    }
+  },
+  "mcp": {
+    "aleutianchain": {
+      "type": "local",
+      "command": ["proof-mcp", "--db", "/data/evidence.db", "--chains", "agent-actions"],
+      "enabled": true
+    }
+  }
+}

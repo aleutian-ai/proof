@@ -34,10 +34,18 @@ import (
 // session — a real MCP round trip, without a subprocess.
 func connect(t *testing.T) *mcp.ClientSession {
 	t.Helper()
+	return connectWith(t, commitConfig{})
+}
+
+// connectWith starts a server with the given launch configuration.
+func connectWith(t *testing.T, cfg commitConfig) *mcp.ClientSession {
+	t.Helper()
 	ctx := context.Background()
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "aleutianchain", Version: "test"}, nil)
-	registerTools(server)
+	if err := registerTools(server, cfg); err != nil {
+		t.Fatal(err)
+	}
 
 	clientT, serverT := mcp.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, serverT, nil); err != nil {
@@ -144,24 +152,27 @@ func TestNoKeyMaterialTools(t *testing.T) {
 		"sign", "signer", "signature_over",
 	}
 
-	cs := connect(t)
-	tools, err := cs.ListTools(context.Background(), nil)
-	if err != nil {
-		t.Fatalf("list tools: %v", err)
-	}
-	if len(tools.Tools) == 0 {
-		t.Fatal("no tools registered; this test would pass vacuously")
-	}
+	// Both launch modes: the read-only server, and the one with --db, whose extra
+	// tool must pass the same name check.
+	for _, cs := range []*mcp.ClientSession{connect(t), connectWith(t, commitConfig{db: newCommitDB(t)})} {
+		tools, err := cs.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("list tools: %v", err)
+		}
+		if len(tools.Tools) == 0 {
+			t.Fatal("no tools registered; this test would pass vacuously")
+		}
 
-	for _, tool := range tools.Tools {
-		name := strings.ToLower(tool.Name)
-		for _, bad := range forbidden {
-			if strings.Contains(name, bad) {
-				t.Errorf("tool %q suggests key or plaintext handling.\n"+
-					"Tool results are transmitted to a model provider. Key material must "+
-					"never cross that boundary — keygen and decryption belong in the "+
-					"human-driven CLI. If this tool genuinely needs to exist, it must be "+
-					"file-path in, file-path out, with its own threat model.", tool.Name)
+		for _, tool := range tools.Tools {
+			name := strings.ToLower(tool.Name)
+			for _, bad := range forbidden {
+				if strings.Contains(name, bad) {
+					t.Errorf("tool %q suggests key or plaintext handling.\n"+
+						"Tool results are transmitted to a model provider. Key material must "+
+						"never cross that boundary — keygen and decryption belong in the "+
+						"human-driven CLI. If this tool genuinely needs to exist, it must be "+
+						"file-path in, file-path out, with its own threat model.", tool.Name)
+				}
 			}
 		}
 	}

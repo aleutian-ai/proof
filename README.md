@@ -264,16 +264,51 @@ As a library:
 $ go get github.com/aleutian-ai/proof
 ```
 
-As an MCP server, so an agent can check a chain during a conversation:
+As an MCP server, so an agent can check a chain during a conversation — and,
+if you allow it, commit evidence of its own actions as it works:
 
 ```console
 $ go install github.com/aleutian-ai/proof/cmd/proof-mcp@latest
-$ claude mcp add aleutianchain -- proof-mcp
+$ claude mcp add aleutianchain -- proof-mcp                              # read-only
+$ claude mcp add aleutianchain -- proof-mcp --db ./evidence.db \
+      --chains agent-actions,payments                                     # + commit
 ```
 
-Seven tools: `verify_chain`, `verify_anchor`, `verify_bundle`,
+Seven read-only tools: `verify_chain`, `verify_anchor`, `verify_bundle`,
 `compute_chain_hash`, `canonicalize_leaf`, `verify_inclusion`,
 `explain_trust_model`.
+
+With `--db`, an eighth: **`commit`, the only tool that writes.** `--chains` is
+required with it — name the chains agents may write, or `'*'` for any — so an
+injected prompt cannot append to chains you did not intend, including ones you
+write with the CLI. The agent sends text and picks one of those chains; the
+server makes a salted commitment, **keeps the nonce in a local file beside the
+database** (`evidence.db.nonces`), and returns nothing secret. Everything that
+is hashed — entry id, timestamp, position, chain hash — is assigned by the
+server. Entry types are server-set (`mcp.salted` or `mcp.digest`, plus an
+optional label), so a verifier knows which check an entry needs. The agent can
+append, never edit, reorder or remove; there is no import tool. Anchoring stays
+in the CLI, because signing keys never cross MCP.
+
+Later, whoever runs the server can prove or erase one entry:
+
+```console
+$ proof disclose --db evidence.db --chain agent-actions --entry mcp-… --content action.txt
+$ proof forget   --db evidence.db --chain agent-actions --entry mcp-…
+```
+
+**Know what crosses the model boundary.** The content an agent commits passes
+through the conversation, so the model provider sees it. The server keeps the
+nonce out of the transcript, but it cannot recall content that is already there.
+Erasing an entry (`proof forget`) makes it unopenable from this machine; it does
+not reach provider transcripts, backups, or anyone it was disclosed to. For
+content you may need to erase fully, compute a salted commitment yourself and
+send `content_hash`. Erasure also removes content, not the fact that an entry
+existed: its timestamp and position stay on the chain.
+
+What a committed entry proves is that it was recorded and not changed since —
+not that it is true. Timestamps are the server's clock and advisory; position
+(`global_seq`) is the authoritative order.
 
 ### No MCP tool touches key material, and none ever will
 
@@ -534,7 +569,7 @@ written down only in the Go source and `docs/decisions.md`.
 
 | | |
 |---|---|
-| ✅ built | format core · `anchor` (verify, sign **and build**) · `bundle` · `verify` · `linker` · CLI · MCP server (7 tools) |
+| ✅ built | format core · `anchor` (verify, sign **and build**) · `bundle` · `verify` · `linker` · CLI · MCP server (7 read-only tools + `commit` with `--db`) |
 | ⏳ not yet | the monorepo and SDKs consuming this instead of their own copies |
 
 **475 tests** across the library and MCP module, plus 645 in the Python SDK and 663 in the JavaScript SDK — all three held to the same conformance vectors. Every guard here has been

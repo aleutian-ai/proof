@@ -74,6 +74,10 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdCommit(args[1:], stdout, stderr)
 	case "import":
 		return cmdImport(args[1:], stdout, stderr)
+	case "disclose":
+		return cmdDisclose(args[1:], stdout, stderr)
+	case "forget":
+		return cmdForget(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return exitOK
@@ -95,6 +99,8 @@ usage:
   proof init   --db <path>
   proof commit --db <path> --chain <id> [--format-v2]   < entries.jsonl
   proof import --db <path> --chain <id>                 < exported.jsonl
+  proof disclose --db <path> --chain <id> --entry <id> --content <file>
+  proof forget   --db <path> --chain <id> --entry <id>
   proof keygen [--alg x-wing] [--out-dir .] [--slot primary|backup|dual]
                [--name LABEL] [--op-vault VAULT] [--force]
   proof anchor --db <path> --chain <id> --subject <s> --key <private.pem>

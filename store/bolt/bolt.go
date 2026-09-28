@@ -169,6 +169,20 @@ func Open(path string, opts ...Option) (*Store, error) {
 				return fmt.Errorf("create bucket %s: %w", b, err)
 			}
 		}
+		// Clear every stored lease. This process now holds bbolt's EXCLUSIVE file
+		// lock, so no other live process can be mid-append: any lease still in
+		// the file was left by a writer that died. Leaving it would block that
+		// chain forever — and MCP clients routinely kill their server processes.
+		//
+		// Clearing is safe because nothing depends on the dead writer's progress:
+		// WriteBatch is one atomic transaction, and the next append reads the
+		// tail from the entries actually stored (ReadTail), never from saved state.
+		if err := tx.DeleteBucket(bucketLeases); err != nil {
+			return fmt.Errorf("clear stale leases: %w", err)
+		}
+		if _, err := tx.CreateBucket(bucketLeases); err != nil {
+			return fmt.Errorf("recreate leases bucket: %w", err)
+		}
 		return nil
 	})
 	if err != nil {
@@ -484,9 +498,9 @@ func (s *Store) PutState(ctx context.Context, st *store.State) error {
 // callers rely on — a chain has one appender at a time — and because the token
 // makes an accidental cross-release impossible.
 //
-// Persisted in a bucket rather than held in memory so the lease survives a
-// reopen; a process that crashes mid-append leaves the lease held, which is the
-// safe direction to fail.
+// Stored in a bucket, but it does NOT survive a reopen: Open clears every lease,
+// because holding the exclusive file lock proves no other writer is alive. A
+// lease left by a crashed process used to stay held forever and block its chain.
 func (s *Store) Acquire(ctx context.Context, chainID string) (string, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return "", false, err

@@ -122,6 +122,9 @@ var allowedDeps = map[string][]string{
 		"golang.org/x/text",
 	},
 
+	// The nonce sidecar for MCP commits: bbolt (and x/sys through it), nothing else.
+	"/internal/noncestore": {"go.etcd.io/bbolt", "golang.org/x/sys"},
+
 	// Salted commitments. Standard library only, and it must stay that way: it
 	// is the one piece a verifier in any language re-implements from the spec.
 	"/commitment": {},

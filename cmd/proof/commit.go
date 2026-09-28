@@ -115,7 +115,12 @@ func cmdCommit(args []string, stdout, stderr *os.File) int {
 	// unit, so a per-line call would turn a 10,000-entry load into 10,000
 	// fsyncs — and leave a partial chain behind on failure.
 	res, err := l.Append(ctx.Background(), *chainID, inputs)
-	if err != nil {
+	switch {
+	case errors.Is(err, linker.ErrHeadStateStale):
+		// The entries ARE committed. Report success so nobody retries and commits
+		// the same evidence twice; the stale head record repairs itself.
+		fmt.Fprintf(stderr, "proof commit: warning: %v\n", err)
+	case err != nil:
 		fmt.Fprintf(stderr, "proof commit: %v\n", err)
 		if errors.Is(err, linker.ErrChainBusy) {
 			return exitBusy

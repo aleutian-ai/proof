@@ -18,6 +18,8 @@
 #     4. the full suite passes on linux/arm64
 #     5. the crypto packages pass on linux/amd64, where circl uses different
 #        assembly than on arm64
+#     6. the keyed-stream example (examples/integrations/topicsink) runs as
+#        its README shows: one chain per key, erase one, every chain verifies
 #
 #   Check 2 is the important one. Everything else is a build; that one is the
 #   guarantee.
@@ -415,6 +417,49 @@ elif [[ "$rc" -eq 0 ]]; then
     bad "fips140=only: X-Wing PASSED, but the README says it cannot run there"
 else
     bad "fips140=only: X-Wing failed for an unexpected reason:"; detail "$WORK/log5"
+fi
+
+# ------------------------------------------- 7. keyed stream: one chain per key
+# The README flow of examples/integrations/topicsink, built from this tree. No
+# services: it is the core every streaming integration puts a consumer in front of.
+step "topicsink: one chain per key, per-chain erasure (${IMAGE})"
+if podman run --rm -v "$REPO_ROOT:/src:ro" "$IMAGE" sh -c '
+set -e
+cp -r /src /work && cd /work
+go build -o /usr/local/bin/proof ./cmd/proof
+go build -o /usr/local/bin/topic-sink ./examples/integrations/topicsink/cmd/topic-sink
+cd /tmp
+proof keygen --alg ml-dsa-65 --out-dir keys >/dev/null
+printf "%s\n" \
+  "{\"user\":\"u-81\",\"event\":\"login\"}" "{\"user\":\"u-82\",\"event\":\"login\"}" \
+  "{\"user\":\"u-81\",\"event\":\"export\"}" "{\"user\":\"u-90\",\"event\":\"reset\"}" \
+  "{\"user\":\"u-81\",\"event\":\"logout\"}" > events.jsonl
+topic-sink commit -key user < events.jsonl
+topic-sink checkpoint -key-file keys/ml-dsa-65-private.pem
+topic-sink verify -pub-file keys/ml-dsa-65-public.pem | grep -q "all 3 chains verify"
+# The stock CLI verifies a topicsink chain and its checkpoint on its own.
+proof export --db sink-data/evidence.db --chain u-82 --out u-82.json
+proof verify u-82.json --anchor sink-data/anchors/u-82/0001.json --key keys/ml-dsa-65-public.pem >/dev/null
+topic-sink erase -chain u-81 >/dev/null
+out=$(topic-sink verify -pub-file keys/ml-dsa-65-public.pem)
+echo "$out" | grep -q "all 3 chains verify"
+echo "$out" | grep "chain u-81" | grep -q "0 opened, 3 erased"
+if echo "{\"user\":\"jo@example.com\"}" | topic-sink commit -key user 2>/dev/null; then
+    echo "AN EMAIL WAS ACCEPTED AS A CHAIN ID" >&2; exit 1
+fi
+f=$(ls sink-data/content/u-82 | head -1)
+echo "{\"user\":\"u-82\",\"event\":\"edited\"}" > "sink-data/content/u-82/$f"
+rc=0; out=$(topic-sink verify -pub-file keys/ml-dsa-65-public.pem) || rc=$?
+[ "$rc" -eq 1 ] || { echo "EDITED EVENT VERIFIED (exit $rc)" >&2; exit 1; }
+[ "$(echo "$out" | grep -c FAILS)" -eq 1 ] && echo "$out" | grep "chain u-82" | grep -q FAILS \
+  || { echo "$out" >&2; exit 1; }
+' >"$WORK/log6" 2>&1; then
+    ok "three keys → three chains, each checkpointed and verified on its own"
+    ok "the stock proof CLI verifies a topicsink chain and its checkpoint"
+    ok "erasing one user leaves every chain verifying, that user's events erased"
+    ok "an email is refused as a key; an edited event fails only its own chain"
+else
+    bad "topicsink example failed:"; detail "$WORK/log6"
 fi
 
 echo

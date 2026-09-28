@@ -21,6 +21,7 @@
 package noncestore
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"time"
@@ -100,4 +101,38 @@ func (s *Store) Delete(chainID, entryID string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucket).Delete(key(chainID, entryID))
 	})
+}
+
+// DeleteBatch removes the nonces of many entries in one chain, in one
+// transaction. Erasing a whole chain entry by entry would sync the file once per
+// entry. As with Delete, a nonce that is not there is not an error.
+func (s *Store) DeleteBatch(chainID string, entryIDs []string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucket)
+		for _, id := range entryIDs {
+			if err := b.Delete(key(chainID, id)); err != nil {
+				return fmt.Errorf("noncestore: delete %s: %w", id, err)
+			}
+		}
+		return nil
+	})
+}
+
+// DeleteChain removes every nonce stored for a chain, in one transaction,
+// including nonces whose entries never reached the chain (a commit that stopped
+// between storing its nonces and appending). It returns how many were removed.
+func (s *Store) DeleteChain(chainID string) (int, error) {
+	prefix := key(chainID, "")
+	n := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bucket).Cursor()
+		for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Seek(prefix) {
+			if err := c.Delete(); err != nil {
+				return fmt.Errorf("noncestore: delete: %w", err)
+			}
+			n++
+		}
+		return nil
+	})
+	return n, err
 }

@@ -142,6 +142,23 @@ var allowedDeps = map[string][]string{
 		"golang.org/x/text",
 	},
 
+	// An EXAMPLE: one chain per key from a keyed stream. It assembles the
+	// library (verify, anchor/build, the bolt store, the nonce file) and adds no
+	// dependency of its own; the service examples that import it bring theirs in
+	// their own modules.
+	"/examples/integrations/topicsink": {
+		"github.com/cloudflare/circl",
+		"go.etcd.io/bbolt",
+		"golang.org/x/sys",
+		"golang.org/x/text",
+	},
+	"/examples/integrations/topicsink/cmd/topic-sink": {
+		"github.com/cloudflare/circl",
+		"go.etcd.io/bbolt",
+		"golang.org/x/sys",
+		"golang.org/x/text",
+	},
+
 	// The anchor producer. It imports anchor AND verify — that is what a
 	// producer is — so it inherits the union of their dependencies and adds
 	// none of its own. Listed explicitly so that a new dependency reaching it

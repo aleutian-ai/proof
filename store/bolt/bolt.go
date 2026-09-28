@@ -402,6 +402,41 @@ func (s *Store) Bounds(ctx context.Context, chainID string) (int64, int64, error
 	return min, max, nil
 }
 
+// Chains returns the id of every chain with at least one entry, in byte order.
+//
+// Not part of the store port: a caller holding one chain never needs it. It is
+// for tools that keep many chains in one file and must find all of them from
+// the store itself — the only record an attacker cannot quietly edit without
+// breaking a chain — rather than from a folder or list kept beside it.
+//
+// It seeks past each chain rather than walking its entries, so its cost grows
+// with the number of chains, not the number of entries.
+func (s *Store) Chains(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var out []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bucketEntries).Cursor()
+		for k, _ := c.First(); k != nil; {
+			i := bytes.IndexByte(k, keySep)
+			if i < 0 {
+				return fmt.Errorf("entry key without a chain separator (%d bytes)", len(k))
+			}
+			chain := string(k[:i])
+			out = append(out, chain)
+			// chain ‖ 0x01 sorts after every chain ‖ 0x00 ‖ seq key, and chain ids
+			// never contain a NUL, so this lands on the next chain's first entry.
+			k, _ = c.Seek(append([]byte(chain), keySep+1))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bolt: chains: %w", err)
+	}
+	return out, nil
+}
+
 // GetState returns the chain's head state.
 func (s *Store) GetState(ctx context.Context, chainID string) (*store.State, error) {
 	if err := ctx.Err(); err != nil {

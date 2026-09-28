@@ -517,10 +517,11 @@ mlkem           ML-KEM-768/1024 encapsulate + decapsulate (FIPS 203)
 xwing           X-Wing hybrid KEM — ML-KEM-768 + X25519
 keywrap         versioned wrapped-key wire format
 
-cmd/proof       CLI — init · append · export · import · anchor · verify · keygen
+cmd/proof       CLI — init · commit · export · import · anchor · verify · keygen · disclose · forget
 cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
 
-examples/       composition, not features — e.g. encrypted-artifact
+examples/       composition, not features — encrypted-artifact; integrations/topicsink
+                (one chain per key from a keyed stream) and the tools that feed it
 ```
 
 ---

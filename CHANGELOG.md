@@ -7,11 +7,12 @@ change is called out here.
 
 ## v0.3.0 — 2026-09-28
 
-> **Two tags.** The library is `v0.3.0`. The MCP server is a separate module and
-> is tagged `cmd/proof-mcp/v0.3.0` right after, because its new `commit` tool
-> depends on packages first released here (`commitment`, `internal/noncestore`).
-> `go install github.com/aleutian-ai/proof/cmd/proof-mcp@latest` picks it up once
-> both tags are published.
+> **Two tags.** The library is `v0.3.0`. The MCP server is a separate module,
+> released as **`cmd/proof-mcp/v0.3.1`**, because its new `commit` tool depends on
+> packages first released here (`commitment`, `internal/noncestore`).
+> `cmd/proof-mcp/v0.3.0` is **retracted**: it was tagged one commit before its
+> `go.mod` required `proof v0.3.0`, so it does not build. `go install
+> github.com/aleutian-ai/proof/cmd/proof-mcp@latest` resolves to `v0.3.1`.
 >
 > **Breaking changes** (pre-1.0, no known users): `proof append` → `proof commit`;
 > anchor v5 withdrawn (`MerkleVersion` → `WithdrawnVersion`, `Anchor.RootHash`

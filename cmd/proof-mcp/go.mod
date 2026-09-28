@@ -38,3 +38,8 @@ require (
 	golang.org/x/text v0.21.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
+
+// v0.3.0 was tagged one commit too early: its go.mod still required proof
+// v0.2.0, which lacks packages the commit tool imports, so it does not build.
+// v0.3.1 is the same code with the correct requirement.
+retract v0.3.0

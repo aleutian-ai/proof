@@ -1,0 +1,111 @@
+{
+  "_comment": "Anchor v6 canonical form: compact JSON, keys in alphabetical order, signature excluded, strings escaped exactly as Go's encoding/json with HTML escaping ON (< > & as \\u003c \\u003e \\u0026; U+2028/U+2029 escaped; other non-ASCII as UTF-8). canonical_sha512 lets an implementation check bytes without trusting its JSON parser. Computed in Python (scripts/independent-vectors.py). See docs/format-spec.md, Anchors.",
+  "version": 1,
+  "vectors": [
+    {
+      "name": "plain",
+      "anchor": {
+        "version": 6,
+        "anchor_id": "anchor_0192f3a1-0000-7000-8000-000000000001",
+        "chain_hash": "fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d",
+        "created_at_ms": 1790000000000,
+        "entry_count": 42,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "range": {
+          "start_entry_id": "e-0000",
+          "end_entry_id": "e-0041"
+        },
+        "signing_key_id": "3fb85abc3e8bae42952ee9194ae1f615",
+        "subject": "agent-actions",
+        "verified_through": 42,
+        "signature": "SIGNATURE_MUST_NOT_APPEAR_IN_CANONICAL_BYTES"
+      },
+      "canonical_bytes": "{\"anchor_id\":\"anchor_0192f3a1-0000-7000-8000-000000000001\",\"chain_hash\":\"fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d\",\"created_at_ms\":1790000000000,\"entry_count\":42,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"range\":{\"end_entry_id\":\"e-0041\",\"start_entry_id\":\"e-0000\"},\"signing_key_id\":\"3fb85abc3e8bae42952ee9194ae1f615\",\"subject\":\"agent-actions\",\"verified_through\":42,\"version\":6}",
+      "canonical_sha512": "b7bf49bb037bfcd618c37e304402b5e5996a914cbcbd96ef288a3c41dc9eb4974448f0398f4164394681bb906d491948e1f24dc76b97f46b267166acc7992806"
+    },
+    {
+      "name": "html_escaping_in_subject",
+      "anchor": {
+        "version": 6,
+        "anchor_id": "anchor_0192f3a1-0000-7000-8000-000000000001",
+        "chain_hash": "fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d",
+        "created_at_ms": 1790000000000,
+        "entry_count": 42,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "range": {
+          "start_entry_id": "e-0000",
+          "end_entry_id": "e-0041"
+        },
+        "signing_key_id": "3fb85abc3e8bae42952ee9194ae1f615",
+        "subject": "a<b>&c",
+        "verified_through": 42,
+        "signature": "SIGNATURE_MUST_NOT_APPEAR_IN_CANONICAL_BYTES"
+      },
+      "canonical_bytes": "{\"anchor_id\":\"anchor_0192f3a1-0000-7000-8000-000000000001\",\"chain_hash\":\"fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d\",\"created_at_ms\":1790000000000,\"entry_count\":42,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"range\":{\"end_entry_id\":\"e-0041\",\"start_entry_id\":\"e-0000\"},\"signing_key_id\":\"3fb85abc3e8bae42952ee9194ae1f615\",\"subject\":\"a\\u003cb\\u003e\\u0026c\",\"verified_through\":42,\"version\":6}",
+      "canonical_sha512": "5b329ba3eec445e14c3e5d81d74695d6ea97df7ca2962f0d1203f61854dfebb1f3d296f4aa1895dfc041479b76cdef88558db7376270b3ebbe12a3afd926109b"
+    },
+    {
+      "name": "non_ascii_subject",
+      "anchor": {
+        "version": 6,
+        "anchor_id": "anchor_0192f3a1-0000-7000-8000-000000000001",
+        "chain_hash": "fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d",
+        "created_at_ms": 1790000000000,
+        "entry_count": 42,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "range": {
+          "start_entry_id": "e-0000",
+          "end_entry_id": "e-0041"
+        },
+        "signing_key_id": "3fb85abc3e8bae42952ee9194ae1f615",
+        "subject": "sübjeçt-ü-€",
+        "verified_through": 42,
+        "signature": "SIGNATURE_MUST_NOT_APPEAR_IN_CANONICAL_BYTES"
+      },
+      "canonical_bytes": "{\"anchor_id\":\"anchor_0192f3a1-0000-7000-8000-000000000001\",\"chain_hash\":\"fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d\",\"created_at_ms\":1790000000000,\"entry_count\":42,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"range\":{\"end_entry_id\":\"e-0041\",\"start_entry_id\":\"e-0000\"},\"signing_key_id\":\"3fb85abc3e8bae42952ee9194ae1f615\",\"subject\":\"sübjeçt-ü-€\",\"verified_through\":42,\"version\":6}",
+      "canonical_sha512": "27a54015a79a36d8078a80f2082b3366ec767bc5cdec283e0172c1e06890361b7be6e96f2b9659fc2350d4784806e0260d408ca72670c0f45a4580bd91844be3"
+    },
+    {
+      "name": "line_separator_in_subject",
+      "anchor": {
+        "version": 6,
+        "anchor_id": "anchor_0192f3a1-0000-7000-8000-000000000001",
+        "chain_hash": "fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d",
+        "created_at_ms": 1790000000000,
+        "entry_count": 42,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "range": {
+          "start_entry_id": "e-0000",
+          "end_entry_id": "e-0041"
+        },
+        "signing_key_id": "3fb85abc3e8bae42952ee9194ae1f615",
+        "subject": "x y z",
+        "verified_through": 42,
+        "signature": "SIGNATURE_MUST_NOT_APPEAR_IN_CANONICAL_BYTES"
+      },
+      "canonical_bytes": "{\"anchor_id\":\"anchor_0192f3a1-0000-7000-8000-000000000001\",\"chain_hash\":\"fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d\",\"created_at_ms\":1790000000000,\"entry_count\":42,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"range\":{\"end_entry_id\":\"e-0041\",\"start_entry_id\":\"e-0000\"},\"signing_key_id\":\"3fb85abc3e8bae42952ee9194ae1f615\",\"subject\":\"x\\u2028y\\u2029z\",\"verified_through\":42,\"version\":6}",
+      "canonical_sha512": "b21f9d19767ba65b46ee217cc7767f80c2b62805ba4fb45ba0ae97efa2bffecb58595af68edbd2d60debaf3916880e0cb6400dc854ab9484c256f3a121d7f2a1"
+    },
+    {
+      "name": "quote_and_backslash_in_subject",
+      "anchor": {
+        "version": 6,
+        "anchor_id": "anchor_0192f3a1-0000-7000-8000-000000000001",
+        "chain_hash": "fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d",
+        "created_at_ms": 1790000000000,
+        "entry_count": 42,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "range": {
+          "start_entry_id": "e-0000",
+          "end_entry_id": "e-0041"
+        },
+        "signing_key_id": "3fb85abc3e8bae42952ee9194ae1f615",
+        "subject": "say \"hi\" \\ bye",
+        "verified_through": 42,
+        "signature": "SIGNATURE_MUST_NOT_APPEAR_IN_CANONICAL_BYTES"
+      },
+      "canonical_bytes": "{\"anchor_id\":\"anchor_0192f3a1-0000-7000-8000-000000000001\",\"chain_hash\":\"fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d\",\"created_at_ms\":1790000000000,\"entry_count\":42,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"range\":{\"end_entry_id\":\"e-0041\",\"start_entry_id\":\"e-0000\"},\"signing_key_id\":\"3fb85abc3e8bae42952ee9194ae1f615\",\"subject\":\"say \\\"hi\\\" \\\\ bye\",\"verified_through\":42,\"version\":6}",
+      "canonical_sha512": "4f4e4f3f993028cf2f039b1d4c21402940d71986dea9fe2151730adae35df2b09caa89d84d4d13b61ce941a187ac98aaeac923f11e85e93216066ba662162751"
+    }
+  ]
+}

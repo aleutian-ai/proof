@@ -39,7 +39,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 QUICK=0
 [[ "${1:-}" == "--quick" ]] && QUICK=1
 
-RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
+RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; BLUE=$'\033[0;34m'; YELLOW=$'\033[0;33m'; NC=$'\033[0m'
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 FAILED=0
 
@@ -47,7 +47,48 @@ step() { echo; echo "${BLUE}── $1${NC}"; }
 ok()   { echo "   ${GREEN}PASS${NC} $1"; }
 bad()  { echo "   ${RED}FAIL${NC} $1"; FAILED=$((FAILED+1)); }
 
+# detail prints what went wrong in a log, and CANNOT fail. Every pipeline ends
+# in `|| true`: under `set -euo pipefail`, a grep that matched nothing used to
+# abort the whole run while it was reporting a failure — no later steps, no
+# tally (2026-09-27). It shows FAIL/panic lines when there are any, and the
+# last lines of the log otherwise.
+detail() {
+    local hits
+    hits="$(grep -E "FAIL|panic" "$1" 2>/dev/null | head -5 || true)"
+    [[ -n "$hits" ]] || hits="$(tail -5 "$1" 2>/dev/null || true)"
+    printf '%s\n' "$hits" | sed 's/^/        /' || true
+}
+
+# Exit codes: 0 every check passed · 1 one or more checks failed ·
+#             2 environment problem (podman, pulls) — nothing was tested.
+
 command -v podman >/dev/null || { echo "${RED}podman not found${NC}" >&2; exit 2; }
+
+# ------------------------------------------------------------- 0. preflight
+# Can podman pull the base image at all? If not, nothing below could say
+# anything about proof: stop here with exit 2 rather than report environment
+# trouble as three product failures (which is what happened on 2026-09-27).
+step "preflight: podman can pull ${IMAGE}"
+if ! podman pull -q "$IMAGE" >"$WORK/pull.log" 2>&1; then
+    echo "   ${RED}ENVIRONMENT${NC} podman could not pull ${IMAGE}; nothing was tested."
+    if grep -qE "error getting credentials|docker-credential|gcloud" "$WORK/pull.log"; then
+        echo "   cause: a registry credential helper failed (see credHelpers in ~/.docker/config.json)."
+        echo "   fix:   gcloud auth login   — or point DOCKER_CONFIG and REGISTRY_AUTH_FILE"
+        echo "          at an empty '{}' config for public images."
+    else
+        detail "$WORK/pull.log"
+    fi
+    exit 2
+fi
+ok "base image available"
+
+# A self-test hook, used only to prove the reporting path: a failing step whose
+# log has NO FAIL line must still let the run reach its tally and exit 1.
+if [[ "${CONTAINER_CHECK_SELFTEST:-}" == "fail-without-match" ]]; then
+    step "self-test: a failing step whose log contains no FAIL line"
+    echo "unrelated output, nothing to match" >"$WORK/selftest.log"
+    bad "self-test failure (injected)"; detail "$WORK/selftest.log"
+fi
 
 # ---------------------------------------------------------------- 1. fixtures
 # Build a chain with the LOCAL code, then verify it with the PUBLISHED binary
@@ -79,10 +120,10 @@ import (
 
 func main() {
 	base := time.Date(2026, 9, 22, 9, 0, 0, 0, time.UTC)
-	// Two chains, deliberately. The PUBLISHED binary in check 2 predates v3 and
-	// can only read v2 — feeding it v3 would report a format change as a broken
-	// chain. Checking it against v2 also proves the compatibility promise: a
-	// released verifier keeps verifying the chains it always could.
+	// Two chains: v3, the format proof writes today, and v2, the legacy format
+	// existing chains use. Check 2 verifies BOTH through the published binary —
+	// v3 because it is what ships, v2 because a release must keep reading the
+	// chains it always could.
 	buildChain(base, "v2", linker.WithFormatV2())
 	buildChain(base, "")
 }
@@ -158,12 +199,18 @@ if proof verify /data/entries-tampered-v2.json >/dev/null 2>&1; then
     exit 1
 fi
 proof verify /data/entries-tampered-v2.json >/dev/null 2>&1 || [ $? -eq 1 ]
+proof verify /data/entries.json >/dev/null
+if proof verify /data/entries-tampered.json >/dev/null 2>&1; then
+    echo "TAMPERED v3 CHAIN VERIFIED AS INTACT" >&2
+    exit 1
+fi
 ' >"$WORK/log1" 2>&1; then
-    ok "both install lines work; a locally built v2 chain verifies on Linux"
-    ok "the RELEASED verifier still reads v2 — the compatibility promise holds"
-    ok "the tampered chain is rejected with exit 1"
+    ok "both install lines work"
+    ok "a locally built v3 chain verifies with the RELEASED binary on Linux"
+    ok "the released binary still reads v2 — existing chains stay verifiable"
+    ok "tampered v2 and v3 chains are both rejected"
 else
-    bad "quickstart or cross-platform verification failed:"; sed 's/^/        /' "$WORK/log1" | tail -5
+    bad "quickstart or cross-platform verification failed:"; detail "$WORK/log1"
 fi
 
 # ------------------------------------------------------------ 3. the image
@@ -179,6 +226,12 @@ step "container image (scratch + static binary)"
 podman rmi -f proof:check proof-mcp:check >/dev/null 2>&1 || true
 
 HEAD_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+# The image is built from the WORKING TREE but labelled with HEAD. With
+# uncommitted changes those differ. A warning, not a failure: this is a developer
+# check. The release gate (dist_06) is where it must refuse.
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]]; then
+    echo "   ${YELLOW}WARN${NC} uncommitted changes: the image is built from them but labelled ${HEAD_COMMIT:0:12}"
+fi
 # --label, not --build-arg: an ARG interpolated into a LABEL is not cache-keyed,
 # so a changed commit would silently keep the previous image's label.
 if podman build -t proof:check \
@@ -187,7 +240,7 @@ if podman build -t proof:check \
     ok "image builds"
     IMAGE_BUILT=1
 else
-    bad "image build failed:"; tail -5 "$WORK/build.log" | sed 's/^/        /'
+    bad "image build failed:"; detail "$WORK/build.log"
     IMAGE_BUILT=0
 fi
 
@@ -258,8 +311,44 @@ else
 
     if podman build --target proof-mcp -t proof-mcp:check "$REPO_ROOT" >"$WORK/mcpbuild.log" 2>&1; then
         ok "proof-mcp image builds"
+        MCP_BUILT=1
     else
-        bad "proof-mcp image build failed:"; tail -5 "$WORK/mcpbuild.log" | sed 's/^/        /'
+        bad "proof-mcp image build failed:"; detail "$WORK/mcpbuild.log"
+        MCP_BUILT=0
+    fi
+
+    # Drive the MCP server — the scratch image, as shipped — over a real stdio
+    # handshake, and check what it wrote with the proof image. Plain grep on the
+    # JSON-RPC output: no python or jq needed on the host.
+    if [[ "$MCP_BUILT" -eq 1 ]]; then
+        mkdir -p "$WORK/mcp" && chmod 777 "$WORK/mcp"   # the images run as uid 65532
+        {
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"container-check","version":"1"}}}'
+          printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+          printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+          printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"commit","arguments":{"chain":"c","entries":[{"content":"one"},{"content":"two"}]}}}'
+          sleep 3
+        } | podman run --rm -i -v "$WORK/mcp:/data" proof-mcp:check --db /data/e.db --chains c \
+            >"$WORK/mcp.out" 2>"$WORK/mcp.err" || true
+
+        writers="$(grep -o '"readOnlyHint":false' "$WORK/mcp.out" | wc -l | tr -d ' ')"
+        if [[ "$writers" -eq 1 ]] && grep -q '"name":"commit"' "$WORK/mcp.out"; then
+            ok "proof-mcp over stdio: commit is the only tool that writes"
+        else
+            bad "proof-mcp: expected exactly one writing tool (commit), found $writers"; detail "$WORK/mcp.err"
+        fi
+        if grep -q '"committed":2' "$WORK/mcp.out" && ! grep -q '"nonce":' "$WORK/mcp.out" \
+           && [[ -f "$WORK/mcp/e.db.nonces" ]]; then
+            ok "proof-mcp committed 2 entries, returned no nonce, kept nonces in e.db.nonces"
+        else
+            bad "proof-mcp commit did not behave as specified:"; detail "$WORK/mcp.out"
+        fi
+        if podman run --rm -v "$WORK/mcp:/data" proof:check export --db /data/e.db --chain c --out /data/c.json >/dev/null 2>&1 \
+           && podman run --rm -v "$WORK/mcp:/data:ro" proof:check verify /data/c.json >/dev/null 2>&1; then
+            ok "the chain proof-mcp wrote verifies with the proof image"
+        else
+            bad "the chain proof-mcp wrote does not verify"
+        fi
     fi
 fi
 
@@ -273,7 +362,7 @@ cd /work/cmd/proof-mcp && go test ./... -count=1 >/tmp/m.log 2>&1 || { cat /tmp/
 ' >"$WORK/log2" 2>&1; then
     ok "library + MCP module pass on linux"
 else
-    bad "test suite failed on linux:"; grep -E "FAIL|panic" "$WORK/log2" | head -5 | sed 's/^/        /'
+    bad "test suite failed on linux:"; detail "$WORK/log2"
 fi
 
 # ---------------------------------------------------- 5. full suite, amd64
@@ -291,7 +380,7 @@ go test ./... -count=1 -timeout 900s >/tmp/a.log 2>&1 || { cat /tmp/a.log; exit 
 ' >"$WORK/log3" 2>&1; then
         ok "the full suite passes on amd64"
     else
-        bad "amd64 run failed:"; grep -E "FAIL|panic" "$WORK/log3" | head -5 | sed 's/^/        /'
+        bad "amd64 run failed:"; detail "$WORK/log3"
     fi
 fi
 
@@ -308,7 +397,7 @@ go test ./xwing/ ./mlkem/ ./keywrap/ ./chainformat/ ./mldsa/ -count=1 >/tmp/f.lo
 ' >"$WORK/log4" 2>&1; then
     ok "fips140=on: the KEM and format packages pass"
 else
-    bad "fips140=on failed:"; grep -E "FAIL|panic" "$WORK/log4" | head -5 | sed 's/^/        /'
+    bad "fips140=on failed:"; detail "$WORK/log4"
 fi
 
 # X-Wing CANNOT run under fips140=only: the standard library refuses X25519
@@ -325,8 +414,7 @@ if [[ "$rc" -ne 0 ]] && grep -q "X25519 is not allowed in FIPS 140-only mode" "$
 elif [[ "$rc" -eq 0 ]]; then
     bad "fips140=only: X-Wing PASSED, but the README says it cannot run there"
 else
-    bad "fips140=only: X-Wing failed for an unexpected reason:"
-    tail -3 "$WORK/log5" | sed 's/^/        /'
+    bad "fips140=only: X-Wing failed for an unexpected reason:"; detail "$WORK/log5"
 fi
 
 echo
@@ -337,9 +425,9 @@ fi
 echo "${GREEN}All container checks passed.${NC}"
 echo
 echo "Not covered here:"
-echo "  - glibc. Every run above is Alpine (musl). The shipped image is FROM"
-echo "    scratch with a static binary, so libc is not linked at all — but a"
+echo "  - glibc. Every run above is Alpine (musl). The shipped images are FROM"
+echo "    scratch with static binaries, so libc is not linked at all — but a"
 echo "    caller building their own image on a glibc base is untested."
-echo "  - cross-LANGUAGE agreement. Every vector in this repo is generated by"
-echo "    the code that validates it, which pins against drift and establishes"
-echo "    nothing about another implementation. That needs a second one."
+echo "  - the SDKs. Cross-language agreement is held by fixtures/ vectors computed"
+echo "    independently of every implementation; the Python and JS SDKs still"
+echo "    compare some v3/v6 values against copied constants (ticket _66)."

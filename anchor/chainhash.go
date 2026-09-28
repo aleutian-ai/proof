@@ -41,7 +41,7 @@ var (
 
 // chainHashFields names the five inputs in preimage order, for error reporting.
 var chainHashFields = [5]string{
-	"previousAnchorHash", "companyID", "startEntryID", "endEntryID", "tipChainHash",
+	"previousAnchorHash", "subject", "startEntryID", "endEntryID", "tipChainHash",
 }
 
 // ValidateChainHashDelimiters rejects a '|' in any ChainHash input.
@@ -49,7 +49,7 @@ var chainHashFields = [5]string{
 // # Description
 //
 // The preimage is '|'-delimited and NOT self-delimiting. Three of the five
-// fields — companyID, startEntryID, endEntryID — are adjacent and
+// fields — subject, startEntryID, endEntryID — are adjacent and
 // variable-length, so a '|' inside any of them shifts a field boundary without
 // changing the preimage. Two different tuples then produce the same digest:
 //
@@ -58,7 +58,7 @@ var chainHashFields = [5]string{
 //
 // Two results worth stating because both are easy to get backwards:
 //
-//  1. Validating companyID does NOT close this. The collision above uses a
+//  1. Validating subject does NOT close this. The collision above uses a
 //     well-formed company id; the ambiguity is between the two entry IDs.
 //  2. Banning '|' is NECESSARY AND SUFFICIENT. With no pipe in any field,
 //     splitting the preimage on '|' recovers the tuple uniquely, so the encoding
@@ -74,7 +74,7 @@ var chainHashFields = [5]string{
 //
 // # Inputs
 //
-//   - previousAnchorHash, companyID, startEntryID, endEntryID, tipChainHash:
+//   - previousAnchorHash, subject, startEntryID, endEntryID, tipChainHash:
 //     the five ChainHash inputs, in preimage order
 //
 // # Outputs
@@ -95,9 +95,9 @@ var chainHashFields = [5]string{
 //
 //   - The caller fails closed on a non-nil error
 func ValidateChainHashDelimiters(
-	previousAnchorHash, companyID, startEntryID, endEntryID, tipChainHash string,
+	previousAnchorHash, subject, startEntryID, endEntryID, tipChainHash string,
 ) error {
-	values := [5]string{previousAnchorHash, companyID, startEntryID, endEntryID, tipChainHash}
+	values := [5]string{previousAnchorHash, subject, startEntryID, endEntryID, tipChainHash}
 	for i, v := range values {
 		if strings.ContainsRune(v, '|') {
 			// Never echo the value: an error that repeats attacker-supplied
@@ -108,6 +108,12 @@ func ValidateChainHashDelimiters(
 	return nil
 }
 
+// ValidateChainHashInputs checks inputs against the HOSTED PLATFORM's id shapes
+// ("comp_" + ULID tenant ids, UUID entry ids). These are NOT the format's rules:
+// the format accepts any subject and any entry id free of "|" (see
+// docs/format-spec.md §9.4, and ChainHash, which is what proof itself uses).
+// Nothing in proof calls this; it would reject proof's own ids.
+//
 // ValidateChainHashInputs fully validates the shape of every ChainHash input.
 //
 // # Description
@@ -171,7 +177,7 @@ func ValidateChainHashInputs(
 // entry-chain head:
 //
 //	SHA-512( "aleutian.anchor.v2:"
-//	         ‖ previousAnchorHash ‖ "|" ‖ companyID    ‖ "|"
+//	         ‖ previousAnchorHash ‖ "|" ‖ subject    ‖ "|"
 //	         ‖ startEntryID       ‖ "|" ‖ endEntryID   ‖ "|"
 //	         ‖ tipChainHash )
 //
@@ -185,7 +191,7 @@ func ValidateChainHashInputs(
 // # Inputs
 //
 //   - previousAnchorHash: prior anchor's chain hash, or SeedAnchorHash for genesis
-//   - companyID: the anchor's tenant
+//   - subject: the anchor's tenant
 //   - startEntryID, endEntryID: the anchor's inclusive range bounds
 //   - tipChainHash: the entry chain's hash at endEntryID, as RECOMPUTED by
 //     walking the chain — not the stored value, when verifying untrusted data
@@ -197,7 +203,7 @@ func ValidateChainHashInputs(
 //
 // # Example
 //
-//	h, err := anchor.ChainHash(prevHash, companyID, startID, endID, walkedHead)
+//	h, err := anchor.ChainHash(prevHash, subject, startID, endID, walkedHead)
 //	if err != nil {
 //	    return err
 //	}
@@ -213,14 +219,14 @@ func ValidateChainHashInputs(
 //
 //   - All inputs are valid UTF-8
 func ChainHash(
-	previousAnchorHash, companyID, startEntryID, endEntryID, tipChainHash string,
+	previousAnchorHash, subject, startEntryID, endEntryID, tipChainHash string,
 ) (string, error) {
 	if err := ValidateChainHashDelimiters(
-		previousAnchorHash, companyID, startEntryID, endEntryID, tipChainHash); err != nil {
+		previousAnchorHash, subject, startEntryID, endEntryID, tipChainHash); err != nil {
 		return "", err
 	}
 	return ChainHashUnchecked(
-		previousAnchorHash, companyID, startEntryID, endEntryID, tipChainHash), nil
+		previousAnchorHash, subject, startEntryID, endEntryID, tipChainHash), nil
 }
 
 // ChainHashUnchecked computes the digest with NO validation.
@@ -252,13 +258,13 @@ func ChainHash(
 //
 //   - The caller has already established that the inputs are pipe-free
 func ChainHashUnchecked(
-	previousAnchorHash, companyID, startEntryID, endEntryID, tipChainHash string,
+	previousAnchorHash, subject, startEntryID, endEntryID, tipChainHash string,
 ) string {
 	h := sha512.New()
 	h.Write([]byte(ChainDomainV2))
 	h.Write([]byte(previousAnchorHash))
 	h.Write([]byte("|"))
-	h.Write([]byte(companyID))
+	h.Write([]byte(subject))
 	h.Write([]byte("|"))
 	h.Write([]byte(startEntryID))
 	h.Write([]byte("|"))

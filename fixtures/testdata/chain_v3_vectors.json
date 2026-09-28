@@ -1,0 +1,85 @@
+{
+  "_comment": "Chain hash v3: SHA-512(\"aleutian.chain.v3:\" || previous_hash || \"|\" || global_seq || \"|\" || timestamp || \"|\" || content_hash). global_seq is decimal ASCII, carried here as a STRING because JSON numbers lose precision above 2^53. Expected values computed in Python (scripts/independent-vectors.py), independently of any implementation under test. 'vectors' MUST reproduce; every 'reject' case MUST be refused. See docs/format-spec.md section 2.",
+  "domain": "aleutian.chain.v3:",
+  "vectors": [
+    {
+      "name": "first_entry",
+      "previous_hash": "",
+      "global_seq": "0",
+      "timestamp": "2026-09-28T12:00:00.000000Z",
+      "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+      "expected_hash": "5ce4f6167a14c7f216966c23e1687bb0adecf630f631996ed1a9b155f4842b25837c672992d4055b89df4fc3a5f6674b5577bc67b496e9f9b5fdacf9b383c8f8"
+    },
+    {
+      "name": "linked_entry",
+      "previous_hash": "5ce4f6167a14c7f216966c23e1687bb0adecf630f631996ed1a9b155f4842b25837c672992d4055b89df4fc3a5f6674b5577bc67b496e9f9b5fdacf9b383c8f8",
+      "global_seq": "1",
+      "timestamp": "2026-09-28T12:00:01.000000Z",
+      "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+      "expected_hash": "13b3264c93af8b0b4b275467402c66287f5e505d6b98edf5ca82bfcff18904ab981be92b47b906fea450f4d58dd0ebe630c39c99106b135b03bd67112207269c"
+    },
+    {
+      "name": "global_seq_above_2_pow_53",
+      "previous_hash": "5ce4f6167a14c7f216966c23e1687bb0adecf630f631996ed1a9b155f4842b25837c672992d4055b89df4fc3a5f6674b5577bc67b496e9f9b5fdacf9b383c8f8",
+      "global_seq": "9007199254740993",
+      "timestamp": "2026-09-28T12:00:02.000000Z",
+      "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+      "expected_hash": "fe0966cf941fac5e793a829d211be0305c7dc47e0bb8897ce764618111e9e9961e4e4d1a02910be28d4a507edc8c5fa1000be88caf35d706dcb40ba5212fd1ad"
+    },
+    {
+      "name": "global_seq_max_int64",
+      "previous_hash": "5ce4f6167a14c7f216966c23e1687bb0adecf630f631996ed1a9b155f4842b25837c672992d4055b89df4fc3a5f6674b5577bc67b496e9f9b5fdacf9b383c8f8",
+      "global_seq": "9223372036854775807",
+      "timestamp": "2026-09-28T12:00:03.000000Z",
+      "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+      "expected_hash": "ad9d082ee822fe79426db722585c08533f46950b94bdf18010c785b9252f2c66ab5f12e43f60da9c8df161afbbe86fd95fda72ddda8c764a61a3b6596075f4aa"
+    },
+    {
+      "name": "tombstone_content_hash",
+      "previous_hash": "5ce4f6167a14c7f216966c23e1687bb0adecf630f631996ed1a9b155f4842b25837c672992d4055b89df4fc3a5f6674b5577bc67b496e9f9b5fdacf9b383c8f8",
+      "global_seq": "2",
+      "timestamp": "2026-09-28T12:00:04.000000Z",
+      "content_hash": "TOMBSTONE:c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+      "expected_hash": "6fbeea41947e4dd8b82365dd50ed6760e674a1959165ed5cadb1956289b039cc41f0239cfa210129610132c8b0e0216ceea10bc20c7f37e92beda0f2fc737f31"
+    },
+    {
+      "name": "sub_microsecond_input_is_truncated",
+      "previous_hash": "5ce4f6167a14c7f216966c23e1687bb0adecf630f631996ed1a9b155f4842b25837c672992d4055b89df4fc3a5f6674b5577bc67b496e9f9b5fdacf9b383c8f8",
+      "global_seq": "3",
+      "timestamp_input": "2026-09-28T12:00:05.123456789Z",
+      "timestamp": "2026-09-28T12:00:05.123456Z",
+      "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+      "expected_hash": "14721a53e216e4669b85195b713530d78ac0ea1e1c04f0d0372a084dd6aaa075438c3741b5fe401f3be066a6a373004df1ff0b60f62e8e60e7317ee0992d5f81"
+    }
+  ],
+  "reject": [
+    {
+      "name": "negative_global_seq",
+      "previous_hash": "5ce4f6167a14c7f216966c23e1687bb0adecf630f631996ed1a9b155f4842b25837c672992d4055b89df4fc3a5f6674b5577bc67b496e9f9b5fdacf9b383c8f8",
+      "global_seq": "-1",
+      "timestamp": "2026-09-28T12:00:00.000000Z",
+      "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f"
+    },
+    {
+      "name": "uppercase_previous_hash",
+      "previous_hash": "5CE4F6167A14C7F216966C23E1687BB0ADECF630F631996ED1A9B155F4842B25837C672992D4055B89DF4FC3A5F6674B5577BC67B496E9F9B5FDACF9B383C8F8",
+      "global_seq": "1",
+      "timestamp": "2026-09-28T12:00:00.000000Z",
+      "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f"
+    },
+    {
+      "name": "delimiter_in_previous_hash",
+      "previous_hash": "5ce4f6167a14c7f216966c23e1687bb0adecf630f631996ed1a9b155f4842b25837c672992d4055b89df4fc3a5f6674b5577bc67b496e9f9b5fdacf9b383c8f|",
+      "global_seq": "1",
+      "timestamp": "2026-09-28T12:00:00.000000Z",
+      "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f"
+    },
+    {
+      "name": "short_content_hash",
+      "previous_hash": "5ce4f6167a14c7f216966c23e1687bb0adecf630f631996ed1a9b155f4842b25837c672992d4055b89df4fc3a5f6674b5577bc67b496e9f9b5fdacf9b383c8f8",
+      "global_seq": "1",
+      "timestamp": "2026-09-28T12:00:00.000000Z",
+      "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327"
+    }
+  ]
+}

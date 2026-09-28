@@ -23,9 +23,12 @@ import (
 // and all of them are written inside one transaction.
 var (
 	bucketEntries = []byte("entries") // chainID ‖ 0x00 ‖ BE(seq) → Entry
-	bucketByID    = []byte("by_id")   // entryID                  → chainID ‖ 0x00 ‖ BE(seq)
-	bucketState   = []byte("state")   // chainID                  → State
-	bucketLeases  = []byte("leases")  // chainID                  → token
+	// bucketByIDLegacy is the file-wide entry-id index that versions up to
+	// v0.3.0 kept. It collided across chains and nothing used it, so it was
+	// removed; Open deletes it from existing files.
+	bucketByIDLegacy = []byte("by_id")
+	bucketState      = []byte("state")  // chainID                  → State
+	bucketLeases     = []byte("leases") // chainID                  → token
 )
 
 // keySep separates the chain id from the sequence number in a composite key.
@@ -164,7 +167,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 		return nil, fmt.Errorf("bolt: open %s: %w", path, err)
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketEntries, bucketByID, bucketState, bucketLeases} {
+		for _, b := range [][]byte{bucketEntries, bucketState, bucketLeases} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return fmt.Errorf("create bucket %s: %w", b, err)
 			}
@@ -177,6 +180,11 @@ func Open(path string, opts ...Option) (*Store, error) {
 		// Clearing is safe because nothing depends on the dead writer's progress:
 		// WriteBatch is one atomic transaction, and the next append reads the
 		// tail from the entries actually stored (ReadTail), never from saved state.
+		// Drop the removed entry-id index from files written before it went.
+		// It is derived data, so nothing is lost.
+		if err := tx.DeleteBucket(bucketByIDLegacy); err != nil && !errors.Is(err, bolt.ErrBucketNotFound) {
+			return fmt.Errorf("remove legacy id index: %w", err)
+		}
 		if err := tx.DeleteBucket(bucketLeases); err != nil {
 			return fmt.Errorf("clear stale leases: %w", err)
 		}
@@ -214,9 +222,7 @@ func chainPrefix(chainID string) []byte {
 
 // WriteBatch appends entries atomically.
 //
-// All index buckets are updated inside ONE bolt transaction, so an entry and its
-// id index commit together or not at all. A partially applied batch would leave
-// an entry that ByID cannot find.
+// One bolt transaction: the batch commits together or not at all.
 func (s *Store) WriteBatch(ctx context.Context, entries []store.Entry) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -241,7 +247,6 @@ func (s *Store) WriteBatch(ctx context.Context, entries []store.Entry) error {
 
 	return s.db.Update(func(tx *bolt.Tx) error {
 		be := tx.Bucket(bucketEntries)
-		bi := tx.Bucket(bucketByID)
 		for _, e := range entries {
 			raw, err := json.Marshal(e)
 			if err != nil {
@@ -249,31 +254,13 @@ func (s *Store) WriteBatch(ctx context.Context, entries []store.Entry) error {
 			}
 			key := entryKey(e.ChainID, e.GlobalSeq)
 
-			// A write at an occupied position REPLACES it. If the replacement
-			// carries a different id — which erasure does, swapping entry_* for
-			// tomb_* — the old id must be dropped from the index.
-			//
-			// Leaving it would let anyone holding the original id look it up and
-			// receive the tombstone, confirming that THAT specific entry was
-			// erased. The tombstone's content hash is random precisely to prevent
-			// that correlation, so a dangling id would undo the design.
-			if existing := be.Get(key); existing != nil {
-				var prior store.Entry
-				if err := json.Unmarshal(existing, &prior); err != nil {
-					return fmt.Errorf("decode entry being replaced at seq %d: %w", e.GlobalSeq, err)
-				}
-				if prior.EntryID != e.EntryID {
-					if err := bi.Delete([]byte(prior.EntryID)); err != nil {
-						return fmt.Errorf("drop stale id %s: %w", prior.EntryID, err)
-					}
-				}
-			}
-
+			// A write at an occupied position REPLACES it — which is how erasure
+			// swaps an entry for its tombstone. Entries are keyed by chain and
+			// position only, so the replaced entry's id is gone from both key and
+			// value: there is no index in which it could still resolve
+			// (format-spec §5.4).
 			if err := be.Put(key, raw); err != nil {
 				return fmt.Errorf("put entry %s: %w", e.EntryID, err)
-			}
-			if err := bi.Put([]byte(e.EntryID), key); err != nil {
-				return fmt.Errorf("index entry %s: %w", e.EntryID, err)
 			}
 		}
 		return nil
@@ -313,36 +300,6 @@ func (s *Store) ReadTail(ctx context.Context, chainID string) (string, int64, er
 		return "", 0, store.ErrEmptyChain
 	}
 	return e.ChainHash, e.GlobalSeq, nil
-}
-
-// ByID returns the entry with the given id.
-func (s *Store) ByID(ctx context.Context, entryID string) (*store.Entry, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	var e store.Entry
-	found := false
-	err := s.db.View(func(tx *bolt.Tx) error {
-		key := tx.Bucket(bucketByID).Get([]byte(entryID))
-		if key == nil {
-			return nil
-		}
-		raw := tx.Bucket(bucketEntries).Get(key)
-		if raw == nil {
-			// The id index points at a missing entry: the two buckets are written
-			// in one transaction, so this means the file was damaged externally.
-			return fmt.Errorf("id index points at a missing entry (database may be corrupt)")
-		}
-		found = true
-		return json.Unmarshal(raw, &e)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("bolt: by id: %w", err)
-	}
-	if !found {
-		return nil, store.ErrNotFound
-	}
-	return &e, nil
 }
 
 // Predecessor returns the entry immediately before startSeq.

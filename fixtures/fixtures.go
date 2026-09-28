@@ -150,3 +150,37 @@ var commitmentVectors []byte
 //	    t.Fatalf("decode commitment vectors: %v", err)
 //	}
 func CommitmentVectors() []byte { return commitmentVectors }
+
+// chainV3Vectors, anchorV6Vectors and keyIDVectors were computed independently
+// in Python by scripts/independent-vectors.py, from docs/format-spec.md alone.
+//
+//go:embed testdata/chain_v3_vectors.json
+var chainV3Vectors []byte
+
+//go:embed testdata/anchor_v6_canonical_vectors.json
+var anchorV6Vectors []byte
+
+//go:embed testdata/keyid_vectors.json
+var keyIDVectors []byte
+
+// ChainV3Vectors returns the chain hash v3 vectors as raw JSON: cases that must
+// reproduce, and cases that must be refused. global_seq is a decimal STRING.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+func ChainV3Vectors() []byte { return chainV3Vectors }
+
+// AnchorV6Vectors returns the anchor v6 canonical-form vectors as raw JSON.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+func AnchorV6Vectors() []byte { return anchorV6Vectors }
+
+// KeyIDVectors returns the key-id vectors as raw JSON.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+func KeyIDVectors() []byte { return keyIDVectors }

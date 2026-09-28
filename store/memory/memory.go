@@ -45,9 +45,6 @@ type Store struct {
 	// is paid for once.
 	entries map[string][]store.Entry
 
-	// byID indexes every entry by its id, for ByID.
-	byID map[string]store.Entry
-
 	// state is chainID → head state.
 	state map[string]store.State
 
@@ -69,7 +66,6 @@ var _ store.Store = (*Store)(nil)
 func New() *Store {
 	return &Store{
 		entries: make(map[string][]store.Entry),
-		byID:    make(map[string]store.Entry),
 		state:   make(map[string]store.State),
 		leases:  make(map[string]string),
 	}
@@ -111,11 +107,6 @@ func (s *Store) WriteBatch(ctx context.Context, entries []store.Entry) error {
 		replaced := false
 		for i := range s.entries[e.ChainID] {
 			if s.entries[e.ChainID][i].GlobalSeq == e.GlobalSeq {
-				// The id index may now point at a stale id — an erasure changes
-				// EntryID from entry_* to tomb_* — so drop the old one.
-				if old := s.entries[e.ChainID][i].EntryID; old != e.EntryID {
-					delete(s.byID, old)
-				}
 				s.entries[e.ChainID][i] = e
 				replaced = true
 				break
@@ -124,7 +115,6 @@ func (s *Store) WriteBatch(ctx context.Context, entries []store.Entry) error {
 		if !replaced {
 			s.entries[e.ChainID] = append(s.entries[e.ChainID], e)
 		}
-		s.byID[e.EntryID] = e
 	}
 	for chainID := range s.entries {
 		sort.Slice(s.entries[chainID], func(i, j int) bool {
@@ -148,21 +138,6 @@ func (s *Store) ReadTail(ctx context.Context, chainID string) (string, int64, er
 	}
 	last := es[len(es)-1]
 	return last.ChainHash, last.GlobalSeq, nil
-}
-
-// ByID returns the entry with the given id.
-func (s *Store) ByID(ctx context.Context, entryID string) (*store.Entry, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	e, ok := s.byID[entryID]
-	if !ok {
-		return nil, store.ErrNotFound
-	}
-	return &e, nil // a copy: callers must not be able to mutate stored state
 }
 
 // Predecessor returns the entry immediately before startSeq.

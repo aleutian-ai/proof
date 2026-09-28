@@ -150,8 +150,6 @@ type Writer interface {
 
 // Reader retrieves entries.
 type Reader interface {
-	// ByID returns the entry with the given id, or ErrNotFound.
-	ByID(ctx context.Context, entryID string) (*Entry, error)
 
 	// Predecessor returns the entry immediately before startSeq in the chain.
 	//

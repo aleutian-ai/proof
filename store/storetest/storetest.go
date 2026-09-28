@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("RangeIsAscending", func(t *testing.T) { testRangeIsAscending(t, newStore(t)) })
 	t.Run("RangeOrderingTorture", func(t *testing.T) { testRangeOrderingTorture(t, newStore(t)) })
 	t.Run("Bounds", func(t *testing.T) { testBounds(t, newStore(t)) })
-	t.Run("ByID", func(t *testing.T) { testByID(t, newStore(t)) })
+	t.Run("EntryIDsArePerChain", func(t *testing.T) { testEntryIDsArePerChain(t, newStore(t)) })
 	t.Run("Predecessor", func(t *testing.T) { testPredecessor(t, newStore(t)) })
 	t.Run("State", func(t *testing.T) { testState(t, newStore(t)) })
 	t.Run("Lease", func(t *testing.T) { testLease(t, newStore(t)) })
@@ -148,23 +149,20 @@ func testWriteIsUpsert(t *testing.T, s store.Store) {
 		t.Errorf("rewriting one entry disturbed its neighbours")
 	}
 
-	// The replacement is reachable by its NEW id.
-	if _, err := s.ByID(ctx, revised.EntryID); err != nil {
-		t.Errorf("ByID(%s) after the rewrite: %v", revised.EntryID, err)
-	}
-
-	// And the OLD id must be gone.
+	// The OLD id must be gone, and the new one present at the same position.
 	//
-	// Erasure swaps entry_* for a fresh tomb_* id. If the old id still resolved,
-	// anyone holding it could look it up, receive the tombstone, and confirm that
-	// THAT specific entry was erased. The tombstone's content hash is random
-	// precisely to prevent that correlation, so a surviving id would undo the
-	// design — an anti-correlation property enforced in the index, not just the
-	// hash.
-	if _, err := s.ByID(ctx, original[1].EntryID); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("ByID(%s) after that id was replaced = %v, want ErrNotFound — a "+
-			"stale id lets a holder confirm which entry was erased",
-			original[1].EntryID, err)
+	// Erasure swaps entry_* for a fresh tomb_* id. If the old id could still be
+	// found, anyone holding it could confirm that THAT specific entry was erased
+	// (format-spec §5.4). There is no id index to leak it; this pins that no
+	// stored entry still carries it either.
+	if got[1].EntryID != revised.EntryID {
+		t.Errorf("position 1 has id %q, want the replacement's %q", got[1].EntryID, revised.EntryID)
+	}
+	for _, e := range got {
+		if e.EntryID == original[1].EntryID {
+			t.Errorf("the replaced id %s is still stored at seq %d — a stale id lets a "+
+				"holder confirm which entry was erased", original[1].EntryID, e.GlobalSeq)
+		}
 	}
 }
 
@@ -181,8 +179,8 @@ func testEmptyChain(t *testing.T, s store.Store) {
 	if _, err := s.GetState(ctx, testChain); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("GetState with no state = %v, want ErrNotFound", err)
 	}
-	if _, err := s.ByID(ctx, "nope"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("ByID for a missing entry = %v, want ErrNotFound", err)
+	if got, err := s.Range(ctx, testChain, 0, 100, 0); err != nil || len(got) != 0 {
+		t.Errorf("Range on an empty chain = %d entries, %v; want none, no error", len(got), err)
 	}
 }
 
@@ -320,22 +318,39 @@ func testBounds(t *testing.T, s store.Store) {
 	}
 }
 
-func testByID(t *testing.T, s store.Store) {
+// testEntryIDsArePerChain: the same entry id in two chains is two entries.
+//
+// Upstream tools reuse ids per topic, and proof keeps one chain per topic, so
+// equal ids across chains are normal. Versions up to v0.3.0 kept a file-wide id
+// index that silently re-pointed on the second write; it was removed rather
+// than repaired. This pins that each chain keeps its own entry.
+func testEntryIDsArePerChain(t *testing.T, s store.Store) {
 	ctx := context.Background()
-	entries := chainOf(3)
-	if err := s.WriteBatch(ctx, entries); err != nil {
-		t.Fatalf("WriteBatch: %v", err)
+	const other = "comp_01HZX9K2M3N4P5Q6R7S8T9V0WB"
+
+	a := entryAt(0, "")
+	b := a
+	b.ChainID = other
+	b.ContentHash = strings.Repeat("b", 128)
+	b.ChainHash = strings.Repeat("c", 128)
+	if err := s.WriteBatch(ctx, []store.Entry{a}); err != nil {
+		t.Fatalf("WriteBatch a: %v", err)
+	}
+	if err := s.WriteBatch(ctx, []store.Entry{b}); err != nil {
+		t.Fatalf("WriteBatch b: %v", err)
 	}
 
-	got, err := s.ByID(ctx, entries[1].EntryID)
-	if err != nil {
-		t.Fatalf("ByID: %v", err)
-	}
-	if got.GlobalSeq != entries[1].GlobalSeq || got.ChainHash != entries[1].ChainHash {
-		t.Errorf("ByID returned the wrong entry")
-	}
-	if _, err := s.ByID(ctx, "entry_does_not_exist"); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("ByID for a missing entry = %v, want ErrNotFound", err)
+	for _, tc := range []struct {
+		chain string
+		want  store.Entry
+	}{{testChain, a}, {other, b}} {
+		got, err := s.Range(ctx, tc.chain, 0, 10, 0)
+		if err != nil {
+			t.Fatalf("Range %s: %v", tc.chain, err)
+		}
+		if len(got) != 1 || got[0].EntryID != tc.want.EntryID || got[0].ContentHash != tc.want.ContentHash {
+			t.Errorf("chain %s does not hold its own entry %s: %+v", tc.chain, tc.want.EntryID, got)
+		}
 	}
 }
 
@@ -439,10 +454,11 @@ func testTimestampFidelity(t *testing.T, s store.Store) {
 		t.Fatalf("WriteBatch: %v", err)
 	}
 
-	got, err := s.ByID(ctx, e.EntryID)
-	if err != nil {
-		t.Fatalf("ByID: %v", err)
+	rows, err := s.Range(ctx, e.ChainID, e.GlobalSeq, e.GlobalSeq, 0)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("Range read-back: %d rows, %v", len(rows), err)
 	}
+	got := rows[0]
 
 	rederived := chainformat.ComputeChainHashUnchecked(
 		got.PreviousHash, got.RunID, got.SequenceNum, got.Timestamp, got.ContentHash)

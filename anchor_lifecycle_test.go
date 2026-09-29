@@ -114,11 +114,6 @@ func anchorOver(t *testing.T, entries []anchoredEntry, previousAnchorHash string
 	}
 	first, last := entries[0], entries[len(entries)-1]
 
-	// Producer-side: strict validation before minting.
-	if err := anchor.ValidateChainHashInputs(
-		previousAnchorHash, anchorTestCompanyID, first.EntryID, last.EntryID, head); err != nil {
-		t.Fatalf("producer guard rejected well-formed inputs: %v", err)
-	}
 	chainHash, err := anchor.ChainHash(
 		previousAnchorHash, anchorTestCompanyID, first.EntryID, last.EntryID, head)
 	if err != nil {

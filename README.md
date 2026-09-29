@@ -522,6 +522,7 @@ cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
 
 examples/       composition, not features — encrypted-artifact; integrations/topicsink
                 (one chain per key from a keyed stream) and the tools that feed it
+                (integrations/nats: its own module)
 ```
 
 ---

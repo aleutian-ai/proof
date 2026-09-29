@@ -45,3 +45,5 @@ node_modules/
 # `git add .` then stages — the MCP binary below was caught the same way.
 /proof
 /cmd/proof-mcp/proof-mcp
+/examples/integrations/nats/nats
+/examples/integrations/nats/nats-sink

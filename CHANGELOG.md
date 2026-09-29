@@ -9,6 +9,12 @@ change is called out here.
 
 ### Removed
 
+- **`anchor.ValidateChainHashInputs`.** *(Breaking; no known users.)* It checked
+  the hosted platform's id shapes (`comp_` + ULID, UUID entry ids), which are not
+  the format's rules and would reject proof's own ids. Nothing called it. The
+  format's only rule on anchor chain-hash inputs, no `|`, stays in
+  `ValidateChainHashDelimiters`, which `ChainHash` applies. (`chainformat` has an
+  unrelated function of the same name; it is unchanged.)
 - **`store.Reader.ByID` and the entry-id index behind it.** *(Breaking; no
   known users.)* The index covered the whole file, so the same entry id in two
   chains silently re-pointed it at the second chain. Nothing in proof called
@@ -42,6 +48,16 @@ change is called out here.
   missing. Keys that are not valid chain ids, such as email addresses, are
   refused, never transformed. The package is what the service examples import;
   `topic-sink` is its command.
+- **`topicsink` commits are idempotent by source.** `Record.Source` carries a
+  record's upstream position (a stream sequence, an offset). The sink records
+  where each sourced record will land before appending, so a redelivered record
+  is skipped, not committed twice. That holds across crashes, and after erasure.
+- **`examples/integrations/nats`: NATS JetStream → proof.** A consumer commits
+  `evidence.<key>` messages to the chain `<key>` and acknowledges only after the
+  commit. `run.sh` crashes it between commit and ack against a real
+  `nats-server`: all six messages are redelivered and recognised, and none is
+  committed twice. It is its own module, so the NATS client stays out of proof's
+  `go.mod`.
 - `store/bolt.Store.Chains` lists every chain in a file, from the store itself.
   Not part of the store port.
 
@@ -62,8 +78,7 @@ change is called out here.
   - Uncommitted changes print a warning.
 - `anchor.ChainHash` and friends name the anchor field `subject`, not
   `companyID`. The value and its position are unchanged.
-  `anchor.ValidateChainHashInputs` still checks the hosted platform's id shapes;
-  its doc now says so, and that proof does not use it.
+
 
 ## v0.3.0 — 2026-09-28
 

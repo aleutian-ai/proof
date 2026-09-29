@@ -66,6 +66,7 @@ import (
 	"github.com/aleutian-ai/proof/commitment"
 	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/linker"
+	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
 )
@@ -112,12 +113,26 @@ type Record struct {
 	Key string
 	// Content is the event's exact bytes. They are what gets committed.
 	Content []byte
+	// Source, if set, is where the record sat upstream: a stream name and
+	// sequence, a topic/partition/offset. It makes Commit idempotent: a record
+	// whose Source is already committed on its chain is skipped, not committed
+	// again. It is stored permanently, so it is a position, NEVER content or
+	// anything identifying a person. At most MaxSourceBytes.
+	//
+	// A Source must NEVER be reused for a different record: a reused one is
+	// taken as already committed, and the new record is dropped. Include
+	// whatever makes a position unique for good. For a stream that can be
+	// deleted and recreated, that means its incarnation, not just its sequence.
+	Source string
 }
 
-// Committed reports how many records one chain received.
+// Committed reports what one chain received.
 type Committed struct {
 	Chain   string `json:"chain"`
-	Entries int    `json:"entries"`
+	Entries int    `json:"entries"` // newly committed
+	// Duplicates were records whose Source was already committed on this chain,
+	// or repeated within the batch. They were skipped.
+	Duplicates int `json:"duplicates,omitempty"`
 }
 
 // Checkpointed reports one checkpoint written.
@@ -264,6 +279,13 @@ func (s *Sink) anchorDir(chain string) string { return filepath.Join(s.dir, "anc
 //
 // Entry ids and timestamps are assigned here, never taken from the records.
 //
+// A record with a Source is committed at most once per chain, across calls and
+// crashes: its position is recorded (in evidence.db.sources) before the append,
+// and checked against the chain on every later Commit of that Source. A crash
+// between the two leaves a recorded position that is not on the chain, and the
+// record is then committed normally. This is what lets a streaming consumer
+// acknowledge after committing without committing a redelivery twice.
+//
 // # Inputs
 //
 //   - ctx: honoured by the append
@@ -281,6 +303,7 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 	}
 	var order []string
 	groups := map[string][]Record{}
+	sourced := false
 	for i, r := range records {
 		chain, err := ChainFor(r.Key)
 		if err != nil {
@@ -292,6 +315,13 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 		if len(r.Content) > MaxContentBytes {
 			return nil, fmt.Errorf("record %d: content is %d bytes, over the %d byte limit",
 				i, len(r.Content), MaxContentBytes)
+		}
+		if len(r.Source) > MaxSourceBytes {
+			return nil, fmt.Errorf("record %d: source is %d bytes, over the %d byte limit",
+				i, len(r.Source), MaxSourceBytes)
+		}
+		if r.Source != "" {
+			sourced = true
 		}
 		if _, seen := groups[chain]; !seen {
 			order = append(order, chain)
@@ -307,6 +337,15 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 	}
 	defer st.Close()
 	defer ns.Close()
+	// Opened only when needed, so a sink that never sees a Source has no
+	// sources file. Always after the other two: one lock order everywhere.
+	var src *sourcesStore
+	if sourced {
+		if src, err = openSources(s.sourcesPath()); err != nil {
+			return nil, err
+		}
+		defer src.Close()
+	}
 	l, err := linker.New(st)
 	if err != nil {
 		return nil, fmt.Errorf("topicsink: prepare the chains: %w", err)
@@ -314,21 +353,91 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 
 	var done []Committed
 	for _, chain := range order {
-		if err := s.commitChain(ctx, l, ns, chain, groups[chain]); err != nil {
+		c, err := s.commitChain(ctx, l, st, ns, src, chain, groups[chain])
+		if err != nil {
 			return done, fmt.Errorf("topicsink: chain %s: %w (chains before it in this batch were committed)",
 				chain, err)
 		}
-		done = append(done, Committed{Chain: chain, Entries: len(groups[chain])})
+		done = append(done, c)
 	}
 	return done, nil
 }
 
+func (s *Sink) sourcesPath() string { return s.DBPath() + ".sources" }
+
+// dropDuplicates removes records whose Source is already committed on the
+// chain, or repeated earlier in the batch.
+func dropDuplicates(ctx context.Context, st *boltstore.Store, src *sourcesStore, chain string,
+	recs []Record) ([]Record, int, error) {
+	if src == nil {
+		return recs, 0, nil
+	}
+	keep := make([]Record, 0, len(recs))
+	inBatch := map[string]bool{}
+	dups := 0
+	for _, r := range recs {
+		if r.Source == "" {
+			keep = append(keep, r)
+			continue
+		}
+		if inBatch[r.Source] {
+			dups++
+			continue
+		}
+		inBatch[r.Source] = true
+		p, found, err := src.get(chain, r.Source)
+		if err != nil {
+			return nil, 0, err
+		}
+		if found {
+			// Recorded. Committed only if the chain holds that entry at that
+			// position; otherwise the earlier attempt stopped before its append.
+			rows, err := st.Range(ctx, chain, p.seq, p.seq, 1)
+			if err != nil {
+				return nil, 0, fmt.Errorf("check source position: %w", err)
+			}
+			if len(rows) == 1 && rows[0].EntryID == p.entryID {
+				dups++
+				continue
+			}
+		}
+		keep = append(keep, r)
+	}
+	return keep, dups, nil
+}
+
 // commitChain appends one chain's records in a single atomic append.
-func (s *Sink) commitChain(ctx context.Context, l *linker.Linker, ns *noncestore.Store,
-	chain string, recs []Record) error {
+func (s *Sink) commitChain(ctx context.Context, l *linker.Linker, st *boltstore.Store,
+	ns *noncestore.Store, src *sourcesStore, chain string, recs []Record) (Committed, error) {
+	recs, dups, err := dropDuplicates(ctx, st, src, chain, recs)
+	if err != nil {
+		return Committed{}, err
+	}
+	out := Committed{Chain: chain, Entries: len(recs), Duplicates: dups}
+	if len(recs) == 0 {
+		return out, nil
+	}
+	if err := s.appendChain(ctx, l, st, ns, src, chain, recs); err != nil {
+		return Committed{}, err
+	}
+	return out, nil
+}
+
+// appendChain writes content, nonces and source positions, then appends.
+func (s *Sink) appendChain(ctx context.Context, l *linker.Linker, st *boltstore.Store,
+	ns *noncestore.Store, src *sourcesStore, chain string, recs []Record) error {
 	if err := os.MkdirAll(filepath.Join(s.dir, "content", chain), 0o700); err != nil {
 		return fmt.Errorf("create content folder: %w", err)
 	}
+	// The sequence the first entry will get. Nothing else can append meanwhile:
+	// this process holds Sink.mu and the evidence file's lock.
+	next := int64(0)
+	if _, tail, err := st.ReadTail(ctx, chain); err == nil {
+		next = tail + 1
+	} else if !errors.Is(err, store.ErrEmptyChain) {
+		return fmt.Errorf("read chain tail: %w", err)
+	}
+	positions := map[string]position{}
 	// Stamped now, one microsecond apart: the linker orders a batch by arrival
 	// and hashes timestamps at microsecond precision. The chain's sequence, not
 	// these, is the authoritative order.
@@ -368,18 +477,47 @@ func (s *Sink) commitChain(ctx context.Context, l *linker.Linker, ns *noncestore
 		stamp := now.Add(time.Duration(i) * time.Microsecond)
 		inputs[i] = linker.Input{EntryID: id, EntryType: EntryTypeEvent,
 			Timestamp: stamp, ContentHash: c, IngestedAt: stamp}
+		if r.Source != "" {
+			// Strictly increasing stamps keep the linker's arrival order equal to
+			// this order, so entry i lands at next+i.
+			positions[r.Source] = position{entryID: id, seq: next + int64(i)}
+		}
 	}
 	if err := ns.PutBatch(chain, nonces); err != nil {
 		cleanup()
 		return fmt.Errorf("store nonces: %w", err)
 	}
-	_, err := l.Append(ctx, chain, inputs)
+	// Positions go down BEFORE the append. A position with no entry behind it is
+	// harmless: the next Commit of that source sees it is not on the chain. An
+	// entry with no position is the duplicate this exists to prevent.
+	if len(positions) > 0 {
+		if err := src.putBatch(chain, positions); err != nil {
+			cleanup()
+			return fmt.Errorf("record sources: %w", err)
+		}
+	}
+	res, err := l.Append(ctx, chain, inputs)
 	if err != nil && !errors.Is(err, linker.ErrHeadStateStale) {
 		// ErrHeadStateStale means the entries ARE written; only the saved head
 		// record lags, and the next append repairs it. Anything else: nothing was
 		// written, so nothing may be left behind.
 		cleanup()
 		return fmt.Errorf("append: %w", err)
+	}
+	if len(positions) > 0 && res.FirstSeq != next {
+		// Cannot happen while this process holds the file. If it ever does, the
+		// entries ARE committed, so this must not look like a failure (the caller
+		// would retry and commit twice). Re-record the positions from the actual
+		// sequence instead: the batch order is kept, so entry i is at FirstSeq+i.
+		for i, r := range recs {
+			if r.Source != "" {
+				positions[r.Source] = position{entryID: inputs[i].EntryID, seq: res.FirstSeq + int64(i)}
+			}
+		}
+		if err := src.putBatch(chain, positions); err != nil {
+			return fmt.Errorf("committed, but correcting the source positions failed: %w; "+
+				"a redelivery of this batch may be committed again", err)
+		}
 	}
 	return nil
 }

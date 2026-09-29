@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -99,11 +100,8 @@ func TestChainHash_DelimiterCollisionIsReal(t *testing.T) {
 		t.Fatalf("expected the shifted-boundary tuples to collide:\n  %s\n  %s", a, b)
 	}
 
-	// The result that is easy to get backwards: a VALID company id does not help.
-	// The ambiguity is between the two entry IDs.
-	if !companyIDRe.MatchString(chCompanyID) {
-		t.Fatalf("the collision must use a well-formed company id, but %q is not", chCompanyID)
-	}
+	// Easy to get backwards: the collision holds with an ordinary, well-formed
+	// subject. The ambiguity is between the two entry IDs.
 }
 
 // TestChainHash_RejectsPipeInEveryField pins the guard on all five positions.
@@ -193,58 +191,6 @@ func TestChainHash_VerifierGuardAcceptsNonUUIDEntryIDs(t *testing.T) {
 	}
 }
 
-// TestValidateChainHashInputs covers the producer-side guard.
-func TestValidateChainHashInputs(t *testing.T) {
-	prev, tip := hash128("a"), hash128("b")
-
-	tests := []struct {
-		name                          string
-		prev, company, start, end, ti string
-		wantErr                       bool
-	}{
-		{"all valid", prev, chCompanyID, chStartID, chEndID, tip, false},
-		{"seed hash as prev", SeedAnchorHash, chCompanyID, chStartID, chEndID, tip, false},
-		{"tombstone entry id", prev, chCompanyID, "tomb_" + chStartID, chEndID, tip, false},
-		{"short prev", prev[:127], chCompanyID, chStartID, chEndID, tip, true},
-		{"uppercase prev", strings.ToUpper(prev), chCompanyID, chStartID, chEndID, tip, true},
-		{"empty tip", prev, chCompanyID, chStartID, chEndID, "", true},
-		{"malformed company", prev, "acme-corp", chStartID, chEndID, tip, true},
-		{"lowercase ulid", prev, "comp_01hzx9k2m3n4p5q6r7s8t9v0wa", chStartID, chEndID, tip, true},
-		{"legacy entry id", prev, chCompanyID, "legacy-entry-0001", chEndID, tip, true},
-		{"pipe in end id", prev, chCompanyID, chStartID, "a|b", tip, true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateChainHashInputs(tc.prev, tc.company, tc.start, tc.end, tc.ti)
-			if tc.wantErr && err == nil {
-				t.Fatal("expected rejection")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("expected acceptance, got %v", err)
-			}
-		})
-	}
-}
-
-// TestValidateChainHashInputs_SubsumesDelimiters pins the documented
-// relationship: anything the producer guard accepts is pipe-free, so a producer
-// cannot mint an ambiguous anchor while believing it had validated.
-func TestValidateChainHashInputs_SubsumesDelimiters(t *testing.T) {
-	prev, tip := hash128("a"), hash128("b")
-	cases := [][5]string{
-		{prev, chCompanyID, chStartID, chEndID, tip},
-		{SeedAnchorHash, chCompanyID, "tomb_" + chStartID, chEndID, tip},
-	}
-	for _, c := range cases {
-		if err := ValidateChainHashInputs(c[0], c[1], c[2], c[3], c[4]); err != nil {
-			continue
-		}
-		if err := ValidateChainHashDelimiters(c[0], c[1], c[2], c[3], c[4]); err != nil {
-			t.Errorf("strict validation accepted a tuple the delimiter guard rejects: %v", err)
-		}
-	}
-}
-
 // FuzzChainHash_NeverPanicsAndAlwaysGuards asserts the guard holds for arbitrary
 // input, and that a returned digest is always well-formed.
 func FuzzChainHash_NeverPanicsAndAlwaysGuards(f *testing.F) {
@@ -265,7 +211,7 @@ func FuzzChainHash_NeverPanicsAndAlwaysGuards(f *testing.F) {
 		if len(got) != 128 {
 			t.Fatalf("digest length %d, want 128", len(got))
 		}
-		if !hash128Re.MatchString(got) {
+		if !regexp.MustCompile(`^[0-9a-f]{128}$`).MatchString(got) {
 			t.Fatalf("digest is not lowercase hex: %s", got)
 		}
 	})

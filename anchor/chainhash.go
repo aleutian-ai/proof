@@ -7,7 +7,6 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
-	"regexp"
 	"strings"
 )
 
@@ -24,20 +23,6 @@ const SeedAnchorHash = "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5
 
 // SeedAnchorID is the sentinel PreviousAnchorID marking a genesis anchor.
 const SeedAnchorID = "anchor_00000000-0000-0000-0000-000000000000"
-
-var (
-	// hash128Re matches a SHA-512 digest in lowercase hex.
-	hash128Re = regexp.MustCompile(`^[0-9a-f]{128}$`)
-
-	// entryIDRe matches an entry id as minted by the producer: a bare UUID, or
-	// a tombstone's "tomb_" + UUID.
-	entryIDRe = regexp.MustCompile(
-		`^(tomb_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-
-	// companyIDRe matches the canonical tenant id: "comp_" + 26-char ULID
-	// (Crockford base32, uppercase).
-	companyIDRe = regexp.MustCompile(`^comp_[0-9A-HJKMNP-TV-Z]{26}$`)
-)
 
 // chainHashFields names the five inputs in preimage order, for error reporting.
 var chainHashFields = [5]string{
@@ -64,13 +49,11 @@ var chainHashFields = [5]string{
 //     splitting the preimage on '|' recovers the tuple uniquely, so the encoding
 //     is injective.
 //
-// # Why this is separate from ValidateChainHashInputs
+// # Why only delimiters
 //
-// This is the VERIFICATION-side guard, and it is deliberately weaker. A verifier
-// examines anchors signed long ago; applying strict shape validation to those
-// would flip historical anchors from passing to broken — reporting a valid chain
-// as invalid. Pipe rejection cannot do that, because no UUID and no canonical
-// company id can contain a pipe.
+// The format accepts any subject and any entry id free of '|' (format-spec
+// §9.4). Checking shapes beyond that would reject valid anchors, including
+// historical ones signed long ago.
 //
 // # Inputs
 //
@@ -104,67 +87,6 @@ func ValidateChainHashDelimiters(
 			// content back is a confirmation oracle. The field name is enough.
 			return fmt.Errorf("anchor chain hash: %s must not contain '|'", chainHashFields[i])
 		}
-	}
-	return nil
-}
-
-// ValidateChainHashInputs checks inputs against the HOSTED PLATFORM's id shapes
-// ("comp_" + ULID tenant ids, UUID entry ids). These are NOT the format's rules:
-// the format accepts any subject and any entry id free of "|" (see
-// docs/format-spec.md §9.4, and ChainHash, which is what proof itself uses).
-// Nothing in proof calls this; it would reject proof's own ids.
-//
-// ValidateChainHashInputs fully validates the shape of every ChainHash input.
-//
-// # Description
-//
-// The PRODUCER-side guard, for callers minting a new anchor over inputs they
-// control. Strictly stronger than ValidateChainHashDelimiters: every accepted
-// shape is pipe-free by construction.
-//
-// Verifiers should NOT use this — see ValidateChainHashDelimiters for why.
-//
-// # Inputs
-//
-//   - previousAnchorHash: 128 lowercase hex (SeedAnchorHash qualifies)
-//   - companyID: "comp_" + 26-char ULID
-//   - startEntryID, endEntryID: UUID, or "tomb_" + UUID
-//   - tipChainHash: 128 lowercase hex
-//
-// # Outputs
-//
-//   - error: non-nil naming the first failing field, without echoing its value
-//
-// # Example
-//
-//	if err := anchor.ValidateChainHashInputs(prev, cid, s, e, tip); err != nil {
-//	    return fmt.Errorf("refusing to anchor: %w", err)
-//	}
-//
-// # Limitations
-//
-//   - Shape only; does not check that the entries exist or the hashes are correct
-//
-// # Assumptions
-//
-//   - Entry IDs are producer-minted UUIDs
-func ValidateChainHashInputs(
-	previousAnchorHash, companyID, startEntryID, endEntryID, tipChainHash string,
-) error {
-	if !hash128Re.MatchString(previousAnchorHash) {
-		return fmt.Errorf("anchor chain hash: previousAnchorHash must be 128 lowercase hex chars")
-	}
-	if !hash128Re.MatchString(tipChainHash) {
-		return fmt.Errorf("anchor chain hash: tipChainHash must be 128 lowercase hex chars")
-	}
-	if !companyIDRe.MatchString(companyID) {
-		return fmt.Errorf("anchor chain hash: companyID must be \"comp_\" + 26-char ULID")
-	}
-	if !entryIDRe.MatchString(startEntryID) {
-		return fmt.Errorf("anchor chain hash: startEntryID must be a UUID or \"tomb_\" + UUID")
-	}
-	if !entryIDRe.MatchString(endEntryID) {
-		return fmt.Errorf("anchor chain hash: endEntryID must be a UUID or \"tomb_\" + UUID")
 	}
 	return nil
 }
@@ -211,9 +133,7 @@ func ValidateChainHashInputs(
 //
 // # Limitations
 //
-//   - Applies the delimiter guard, not full shape validation, so it is safe for
-//     historical anchors. Producers should additionally call
-//     ValidateChainHashInputs.
+//   - Applies the delimiter guard only: the format has no other shape rules.
 //
 // # Assumptions
 //

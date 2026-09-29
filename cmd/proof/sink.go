@@ -24,7 +24,7 @@ import (
 const sinkMaxLine = 1 << 20
 
 const sinkUsage = `usage:
-  proof sink commit     [--dir D] --chain-field FIELD   < events.jsonl
+  proof sink commit     [--dir D] --class NAME --subject-field FIELD   < events.jsonl
   proof sink checkpoint [--dir D] --key <ml-dsa-65 private.pem> [--trust <public.pem>]…
   proof sink verify     [--dir D] --key <ml-dsa-65 public.pem>
   proof sink erase      [--dir D] --chain ID
@@ -51,11 +51,12 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("sink "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", "sink-data", "the sink folder")
-	var chainField, key, chain *string
+	var class, subjectField, key, chain *string
 	var trust multiFlag
 	switch verb {
 	case "commit":
-		chainField = fs.String("chain-field", "", "the JSON field whose value is the chain id")
+		class = fs.String("class", "", "the evidence class of every event: payments, auth, events… (never a person)")
+		subjectField = fs.String("subject-field", "", "the JSON field whose value is the subject (a pseudonym)")
 	case "checkpoint":
 		key = fs.String("key", "", "ML-DSA-65 private key (PEM), from `proof keygen --alg ml-dsa-65`")
 		fs.Var(&trust, "trust", "an earlier ML-DSA-65 public key (PEM) existing checkpoints may be signed with; repeatable")
@@ -77,7 +78,7 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintf(stderr, "proof sink %s: unexpected argument %q\n", verb, fs.Arg(0))
 		return exitUsage
 	}
-	for name, v := range map[string]*string{"--chain-field": chainField, "--key": key, "--chain": chain} {
+	for name, v := range map[string]*string{"--class": class, "--subject-field": subjectField, "--key": key, "--chain": chain} {
 		if v != nil && *v == "" {
 			fmt.Fprintf(stderr, "proof sink %s: %s is required\n", verb, name)
 			return exitUsage
@@ -93,7 +94,7 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	var failed bool
 	switch verb {
 	case "commit":
-		err = sinkCommit(c, s, *chainField, os.Stdin, stdout)
+		err = sinkCommit(c, s, *class, *subjectField, os.Stdin, stdout)
 	case "checkpoint":
 		failed, err = sinkCheckpoint(c, s, *key, trust, stdout)
 	case "verify":
@@ -119,10 +120,11 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 // Every line of a batch is parsed before the batch is committed, so a bad line
 // stops the run with the batches before it committed and nothing after. Totals
 // are printed however the run ends.
-func sinkCommit(c ctx.Context, s *sink.Sink, field string, in io.Reader, out io.Writer) error {
+func sinkCommit(c ctx.Context, s *sink.Sink, class, field string, in io.Reader, out io.Writer) error {
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 64<<10), sinkMaxLine)
 	totals := map[string]int{}
+	subjectOf := map[string]string{}
 	var order []string
 	var batch []sink.Record
 	lines := 0
@@ -137,13 +139,16 @@ func sinkCommit(c ctx.Context, s *sink.Sink, field string, in io.Reader, out io.
 				order = append(order, d.Chain)
 			}
 			totals[d.Chain] += d.Entries
+			subjectOf[d.Chain] = d.Subject
 		}
 		batch = batch[:0]
 		return err
 	}
 	defer func() {
+		// The subject is the operator's own input; the chain is where it went.
+		// The chain id is opaque: the subject is only in the secret index.
 		for _, ch := range order {
-			fmt.Fprintf(out, "committed %4d → chain %s\n", totals[ch], ch)
+			fmt.Fprintf(out, "committed %4d for %s → chain %s\n", totals[ch], subjectOf[ch], ch)
 		}
 	}()
 
@@ -157,7 +162,8 @@ func sinkCommit(c ctx.Context, s *sink.Sink, field string, in io.Reader, out io.
 		if err != nil {
 			return fmt.Errorf("line %d: %w", lines, err)
 		}
-		if _, err := sink.ChainFor(r.Key); err != nil {
+		r.Class = class
+		if err := r.Validate(); err != nil {
 			return fmt.Errorf("line %d: %w", lines, err)
 		}
 		batch = append(batch, r)

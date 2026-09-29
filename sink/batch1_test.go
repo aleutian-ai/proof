@@ -37,23 +37,23 @@ func TestSymlinkedContentDir_OutsideTheSink(t *testing.T) {
 	if err := os.WriteFile(victim, []byte("not the sink's"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(s.dir, "content", "u-81")
+	dir := filepath.Join(s.dir, "content", cid(t, s, "u-81"))
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Erase(context.Background(), "u-81"); err == nil {
+	if _, err := s.Erase(context.Background(), cid(t, s, "u-81")); err == nil {
 		t.Fatal("Erase went ahead through a symlinked content folder")
 	}
 	if _, err := os.Stat(victim); err != nil {
 		t.Fatalf("Erase deleted a file outside the sink: %v", err)
 	}
-	if n := len(entryIDs(t, s, "u-81")); n != 3 {
+	if n := len(entryIDs(t, s, cid(t, s, "u-81"))); n != 3 {
 		t.Fatalf("a refused Erase still appended an erasure entry (%d entries)", n)
 	}
-	if p := problems(t, s, ring, "u-81"); !strings.Contains(p, "not a real directory") {
+	if p := problems(t, s, ring, cid(t, s, "u-81")); !strings.Contains(p, "not a real directory") {
 		t.Fatalf("Verify did not report the symlinked folder: %q", p)
 	}
 	if _, err := s.Commit(context.Background(), events("u-81", 1)); err == nil {
@@ -63,18 +63,18 @@ func TestSymlinkedContentDir_OutsideTheSink(t *testing.T) {
 
 func TestSymlinkedContentDir_InsideTheSink(t *testing.T) {
 	s, _, _ := setup(t)
-	before, _ := os.ReadDir(filepath.Join(s.dir, "content", "u-82"))
-	dir := filepath.Join(s.dir, "content", "u-81")
+	before, _ := os.ReadDir(filepath.Join(s.dir, "content", cid(t, s, "u-82")))
+	dir := filepath.Join(s.dir, "content", cid(t, s, "u-81"))
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(s.dir, "content", "u-82"), dir); err != nil {
+	if err := os.Symlink(filepath.Join(s.dir, "content", cid(t, s, "u-82")), dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Erase(context.Background(), "u-81"); err == nil {
+	if _, err := s.Erase(context.Background(), cid(t, s, "u-81")); err == nil {
 		t.Fatal("erasing u-81 went ahead through a link to u-82's folder")
 	}
-	after, _ := os.ReadDir(filepath.Join(s.dir, "content", "u-82"))
+	after, _ := os.ReadDir(filepath.Join(s.dir, "content", cid(t, s, "u-82")))
 	if len(after) != len(before) {
 		t.Fatal("erasing u-81 deleted u-82's content")
 	}
@@ -110,10 +110,10 @@ func TestAnchors_StrayFileAndGap(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, signer, ring := setup(t)
-			if err := tamper(s.anchorDir("u-81")); err != nil {
+			if err := tamper(s.anchorDir(cid(t, s, "u-81"))); err != nil {
 				t.Fatal(err)
 			}
-			if p := problems(t, s, ring, "u-81"); p == "" {
+			if p := problems(t, s, ring, cid(t, s, "u-81")); p == "" {
 				t.Fatal("Verify accepted the malformed series")
 			}
 			if _, err := s.Commit(context.Background(), events("u-81", 1)); err != nil {
@@ -123,7 +123,7 @@ func TestAnchors_StrayFileAndGap(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if problemFor(done, "u-81") == "" {
+			if problemFor(done, cid(t, s, "u-81")) == "" {
 				t.Fatalf("Checkpoint added to a malformed series: %+v", done)
 			}
 		})
@@ -133,8 +133,8 @@ func TestAnchors_StrayFileAndGap(t *testing.T) {
 // A FIFO in place of a file would hang a plain open; /dev/zero would never end.
 func TestFIFOsDoNotHang(t *testing.T) {
 	s, _, ring := setup(t)
-	content := s.contentPath("u-82", entryIDs(t, s, "u-82")[0])
-	anchorFile := filepath.Join(s.anchorDir("u-90"), "0001.json")
+	content := s.contentPath(cid(t, s, "u-82"), entryIDs(t, s, cid(t, s, "u-82"))[0])
+	anchorFile := filepath.Join(s.anchorDir(cid(t, s, "u-90")), "0001.json")
 	for _, p := range []string{content, anchorFile} {
 		if err := os.Remove(p); err != nil {
 			t.Fatal(err)
@@ -144,7 +144,9 @@ func TestFIFOsDoNotHang(t *testing.T) {
 		}
 	}
 	done := make(chan string, 1)
-	go func() { done <- problems(t, s, ring, "u-82") + " | " + problems(t, s, ring, "u-90") }()
+	go func() {
+		done <- problems(t, s, ring, cid(t, s, "u-82")) + " | " + problems(t, s, ring, cid(t, s, "u-90"))
+	}()
 	select {
 	case p := <-done:
 		if strings.Count(p, "not a regular file") != 2 {
@@ -188,7 +190,7 @@ func TestReadVerbsCreateNothing(t *testing.T) {
 	if _, err := s.Checkpoint(context.Background(), signer, nil); err == nil {
 		t.Fatal("Checkpoint of a folder that does not exist succeeded")
 	}
-	if _, err := s.Erase(context.Background(), "u-1"); err == nil {
+	if _, err := s.Erase(context.Background(), testClass+"."+strings.Repeat("0", 32)); err == nil {
 		t.Fatal("Erase of a folder that does not exist succeeded")
 	}
 	if _, err := os.Stat(typo); !os.IsNotExist(err) {
@@ -202,7 +204,7 @@ func TestReadVerbsCreateNothing(t *testing.T) {
 	if err := os.Remove(np); err != nil {
 		t.Fatal(err)
 	}
-	if p := problems(t, s2, ring2, "u-82"); !strings.Contains(p, "nonce is gone") {
+	if p := problems(t, s2, ring2, cid(t, s2, "u-82")); !strings.Contains(p, "nonce is gone") {
 		t.Fatalf("missing nonce file not reported: %q", p)
 	}
 	if _, err := os.Stat(np); !os.IsNotExist(err) {
@@ -236,7 +238,7 @@ func TestCheckpointSeriesMustGrowAndLink(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			series, _, err := f.readAnchors("u-81")
+			series, _, err := f.readAnchors(cid(t, s, "u-81"))
 			f.Close()
 			if err != nil {
 				t.Fatal(err)
@@ -245,7 +247,7 @@ func TestCheckpointSeriesMustGrowAndLink(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			entries, err := readChain(ctx, st, "u-81")
+			entries, err := readChain(ctx, st, cid(t, s, "u-81"))
 			st.Close()
 			if err != nil {
 				t.Fatal(err)
@@ -253,7 +255,7 @@ func TestCheckpointSeriesMustGrowAndLink(t *testing.T) {
 			prev := series[0]
 			// A valid, signed successor over the SAME entries: the chain and
 			// signature checks pass; only the series rules can object.
-			next, err := build.Anchor(ctx, build.Input{Subject: "u-81", Entries: entries, Previous: &prev})
+			next, err := build.Anchor(ctx, build.Input{Subject: cid(t, s, "u-81"), Entries: entries, Previous: &prev})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -263,10 +265,10 @@ func TestCheckpointSeriesMustGrowAndLink(t *testing.T) {
 				t.Fatal(err)
 			}
 			raw, _ := json.MarshalIndent(signed, "", "  ")
-			if err := os.WriteFile(filepath.Join(s.anchorDir("u-81"), "0002.json"), raw, 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(s.anchorDir(cid(t, s, "u-81")), "0002.json"), raw, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			if p := problems(t, s, ring, "u-81"); !strings.Contains(p, "checkpoint 0002") {
+			if p := problems(t, s, ring, cid(t, s, "u-81")); !strings.Contains(p, "checkpoint 0002") {
 				t.Fatalf("Verify accepted it: %q", p)
 			}
 		})
@@ -277,7 +279,7 @@ func TestCheckpointSeriesMustGrowAndLink(t *testing.T) {
 // swapped for a FIFO before the open. The check on the open handle catches it.
 func TestReadSmall_SwapAfterCheck(t *testing.T) {
 	s, _, ring := setup(t)
-	target := contentName("u-82", entryIDs(t, s, "u-82")[0])
+	target := contentName(cid(t, s, "u-82"), entryIDs(t, s, cid(t, s, "u-82"))[0])
 	afterLstat = func(name string) {
 		if name != target {
 			return
@@ -290,7 +292,7 @@ func TestReadSmall_SwapAfterCheck(t *testing.T) {
 	}
 	defer func() { afterLstat = nil }()
 	done := make(chan string, 1)
-	go func() { done <- problems(t, s, ring, "u-82") }()
+	go func() { done <- problems(t, s, ring, cid(t, s, "u-82")) }()
 	select {
 	case p := <-done:
 		if !strings.Contains(p, "not a regular file") {
@@ -306,16 +308,16 @@ func TestReadSmall_SwapAfterCheck(t *testing.T) {
 // is appended, so retries do not pile up erasure entries.
 func TestErase_PreflightRefusesBeforeRecording(t *testing.T) {
 	s, _, _ := setup(t)
-	if err := os.Mkdir(filepath.Join(s.dir, "content", "u-81", "stuck"), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(s.dir, "content", cid(t, s, "u-81"), "stuck"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := s.Erase(context.Background(), "u-81"); err == nil ||
+		if _, err := s.Erase(context.Background(), cid(t, s, "u-81")); err == nil ||
 			!strings.Contains(err.Error(), "Nothing was erased") {
 			t.Fatalf("attempt %d: %v", i, err)
 		}
 	}
-	if n := len(entryIDs(t, s, "u-81")); n != 3 {
+	if n := len(entryIDs(t, s, cid(t, s, "u-81"))); n != 3 {
 		t.Fatalf("refused erasures appended entries: %d, want 3", n)
 	}
 }

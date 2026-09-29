@@ -136,7 +136,7 @@ func (s *loggingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Co
 	}
 	var ok []sink.Record
 	for _, r := range recs {
-		if r.Key != s.fail {
+		if r.Subject != s.fail {
 			ok = append(ok, r)
 		}
 	}
@@ -166,7 +166,7 @@ func newSink(t *testing.T) *sink.Sink {
 }
 
 func opts() options {
-	return options{stream: "evidence", sourcePrefix: "evidence@t1", batch: 100, claimIdle: time.Minute}
+	return options{stream: "evidence", class: "events", sourcePrefix: "evidence@t1", batch: 100, claimIdle: time.Minute}
 }
 
 // ---------------------------------------------------------------------------
@@ -409,5 +409,39 @@ func TestSourceFits(t *testing.T) {
 	}
 	if err := sourceFits(strings.Repeat("s", 250) + "@0123456789abcdef"); err == nil {
 		t.Fatal("a stream name that overflows every position was accepted")
+	}
+}
+
+// misreportingSink commits, then reports its results under the wrong subject,
+// so the consumer can match none of them to entries and acks nothing.
+type misreportingSink struct{ inner *sink.Sink }
+
+func (m misreportingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Committed, error) {
+	done, err := m.inner.Commit(ctx, recs)
+	for i := range done {
+		done[i].Subject = "someone-else"
+	}
+	return done, err
+}
+
+// TestPendingThatNeverAcksStops: if a recovery pass acknowledges nothing, the
+// consumer stops with an error instead of re-reading the same entries forever.
+func TestPendingThatNeverAcksStops(t *testing.T) {
+	g := newGroup(sixEvents()...)
+	if _, err := (as{g, "sink-1"}).readGroup(context.Background(), ">", 6, -1); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := consume(context.Background(), as{g, "sink-1"}, misreportingSink{newSink(t)}, opts(), &bytes.Buffer{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "without being acknowledged") {
+			t.Fatalf("consume = %v; want it to stop and say why", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("consume looped over pending entries it could not acknowledge")
 	}
 }

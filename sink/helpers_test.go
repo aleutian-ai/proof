@@ -44,7 +44,7 @@ func newSigner(t *testing.T) (*anchor.MLDSA65Signer, *anchor.KeyRing) {
 func events(key string, n int) []Record {
 	out := make([]Record, n)
 	for i := range out {
-		out[i] = Record{Key: key, Content: []byte(fmt.Sprintf(`{"user":%q,"i":%d}`, key, i))}
+		out[i] = Record{Class: testClass, Subject: key, Content: []byte(fmt.Sprintf(`{"user":%q,"i":%d}`, key, i))}
 	}
 	return out
 }
@@ -86,9 +86,16 @@ func setup(t *testing.T) (*Sink, *anchor.MLDSA65Signer, *anchor.KeyRing) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Committed{{Chain: "u-81", Entries: 3}, {Chain: "u-82", Entries: 2}, {Chain: "u-90", Entries: 1}}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("Commit = %v, want %v (grouped, in order of first appearance)", got, want)
+	// Grouped per subject, in order of first appearance, each on its own
+	// opaque chain.
+	want := []string{"u-81 3", "u-82 2", "u-90 1"}
+	for i, c := range got {
+		if i >= len(want) || fmt.Sprintf("%s %d", c.Subject, c.Entries) != want[i] || !ValidChainID(c.Chain) {
+			t.Fatalf("Commit = %v, want subjects and counts %v on opaque chains", got, want)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Commit = %v, want %d chains", got, len(want))
 	}
 	if _, err := s.Checkpoint(context.Background(), signer, nil); err != nil {
 		t.Fatal(err)
@@ -164,4 +171,45 @@ func readChain(ctx context.Context, st *boltstore.Store, chain string) ([]verify
 	var out []verify.Entry
 	err := forEachEntry(ctx, st, chain, func(e store.Entry) { out = append(out, toVerifyEntry(e)) })
 	return out, err
+}
+
+// testClass is the evidence class the tests commit under.
+const testClass = "events"
+
+// cid returns the opaque chain id holding a subject's testClass evidence, as
+// the subject index records it. Tests name subjects; the sink names chains.
+func cid(t *testing.T, s *Sink, subject string) string {
+	t.Helper()
+	subj, err := openSubjects(s.subjectsPath(), DefaultLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subj.Close()
+	chain, ok, err := subj.lookup(subject, testClass)
+	if err != nil || !ok {
+		t.Fatalf("no chain for subject %s: %v", subject, err)
+	}
+	return chain
+}
+
+// bindChain performs Commit's first step alone for a subject: mint its chain
+// and write the index rows, with no entry appended. That is exactly the state a
+// crash right after step 1 leaves.
+func bindChain(t *testing.T, s *Sink, subject string) string {
+	t.Helper()
+	st, err := s.openStore(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	subj, err := openSubjects(s.subjectsPath(), DefaultLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subj.Close()
+	chain, err := s.resolveChain(context.Background(), st, subj, testClass, subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return chain
 }

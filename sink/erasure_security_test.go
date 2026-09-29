@@ -24,11 +24,11 @@ import (
 func TestErase_ForgedErasureIsRejected(t *testing.T) {
 	ctx := context.Background()
 	s, _, ring := setup(t) // u-81 has 3 events, all checkpointed
-	ids := entryIDs(t, s, "u-81")
+	ids := entryIDs(t, s, cid(t, s, "u-81"))
 	victim, forged := ids[0], ids[1]
 
 	// The writer knows event k's content and nonce (it wrote them).
-	content, err := os.ReadFile(s.contentPath("u-81", forged))
+	content, err := os.ReadFile(s.contentPath(cid(t, s, "u-81"), forged))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestErase_ForgedErasureIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	nonce, err := ns.Get("u-81", forged)
+	nonce, err := ns.Get(cid(t, s, "u-81"), forged)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestErase_ForgedErasureIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := st.Range(ctx, "u-81", 0, 1<<62, 0)
+	rows, err := st.Range(ctx, cid(t, s, "u-81"), 0, 1<<62, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,13 +59,13 @@ func TestErase_ForgedErasureIsRejected(t *testing.T) {
 	st.Close()
 
 	// k's content becomes the preimage; the victim before it is deleted by hand.
-	if err := os.WriteFile(s.contentPath("u-81", forged), preimage, 0o600); err != nil {
+	if err := os.WriteFile(s.contentPath(cid(t, s, "u-81"), forged), preimage, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(s.contentPath("u-81", victim)); err != nil {
+	if err := os.Remove(s.contentPath(cid(t, s, "u-81"), victim)); err != nil {
 		t.Fatal(err)
 	}
-	if err := ns.Delete("u-81", victim); err != nil {
+	if err := ns.Delete(cid(t, s, "u-81"), victim); err != nil {
 		t.Fatal(err)
 	}
 	ns.Close()
@@ -74,7 +74,7 @@ func TestErase_ForgedErasureIsRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := chainReport(t, r, "u-81")
+	c := chainReport(t, r, cid(t, s, "u-81"))
 	if len(c.Problems) == 0 {
 		t.Fatalf("a forged erasure verified: %+v — the deleted event passes as ERASED", c)
 	}
@@ -105,9 +105,9 @@ func TestErase_RemovesNoncesFromTheFile(t *testing.T) {
 		}
 		return out
 	}
-	erased, kept := nonces("u-81"), nonces("u-82")
+	erased, kept := nonces(cid(t, s, "u-81")), nonces(cid(t, s, "u-82"))
 
-	if _, err := s.Erase(ctx, "u-81"); err != nil {
+	if _, err := s.Erase(ctx, cid(t, s, "u-81")); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(noncestore.PathFor(s.DBPath()))
@@ -141,7 +141,7 @@ func TestErase_DeletesSourcesAndForgetsThem(t *testing.T) {
 	if _, err := s.Commit(ctx, append(recs, sourced("u-2", 1, 950)...)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Erase(ctx, "u-1"); err != nil {
+	if _, err := s.Erase(ctx, cid(t, s, "u-1")); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(s.sourcesPath())
@@ -161,7 +161,7 @@ func TestErase_DeletesSourcesAndForgetsThem(t *testing.T) {
 	if err != nil || got[0].Entries != 2 || got[0].Duplicates != 0 {
 		t.Fatalf("redelivery after erasure: %v, %v; want committed again (decision (a))", got, err)
 	}
-	if n := len(entryIDs(t, s, "u-1")); n != 5 { // 2 events + erasure + 2 re-committed
+	if n := len(entryIDs(t, s, cid(t, s, "u-1"))); n != 5 { // 2 events + erasure + 2 re-committed
 		t.Fatalf("u-1 holds %d entries, want 5", n)
 	}
 }
@@ -191,25 +191,25 @@ func relabel(t *testing.T, s *Sink, chain string, index int, entryType string) s
 // entry's content_hash is an event commitment, never the hash of a record.
 func TestErase_ForgedErasureWithTheRightRecord(t *testing.T) {
 	s, _, ring := setup(t)
-	ids := entryIDs(t, s, "u-81")
+	ids := entryIDs(t, s, cid(t, s, "u-81"))
 	st, err := boltstore.Open(s.DBPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := st.Range(context.Background(), "u-81", 0, 1<<62, 0)
+	rows, err := st.Range(context.Background(), cid(t, s, "u-81"), 0, 1<<62, 0)
 	st.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	relabel(t, s, "u-81", 1, EntryTypeErasure)
-	if err := os.WriteFile(s.contentPath("u-81", ids[1]), erasureRecord(rows[0].GlobalSeq), 0o600); err != nil {
+	relabel(t, s, cid(t, s, "u-81"), 1, EntryTypeErasure)
+	if err := os.WriteFile(s.contentPath(cid(t, s, "u-81"), ids[1]), erasureRecord(rows[0].GlobalSeq), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	r, err := s.Verify(context.Background(), ring)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := chainReport(t, r, "u-81"); !strings.Contains(strings.Join(c.Problems, "; "), "erasure record") {
+	if c := chainReport(t, r, cid(t, s, "u-81")); !strings.Contains(strings.Join(c.Problems, "; "), "erasure record") {
 		t.Fatalf("a relabelled event with the right record verified: %+v", c)
 	}
 }
@@ -218,12 +218,12 @@ func TestErase_ForgedErasureWithTheRightRecord(t *testing.T) {
 // erase, and no predecessor sequence to rebuild the record from.
 func TestErase_ErasureCannotBeFirst(t *testing.T) {
 	s, _, ring := setup(t)
-	relabel(t, s, "u-90", 0, EntryTypeErasure)
+	relabel(t, s, cid(t, s, "u-90"), 0, EntryTypeErasure)
 	r, err := s.Verify(context.Background(), ring)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := chainReport(t, r, "u-90"); !strings.Contains(strings.Join(c.Problems, "; "), "first entry") {
+	if c := chainReport(t, r, cid(t, s, "u-90")); !strings.Contains(strings.Join(c.Problems, "; "), "first entry") {
 		t.Fatalf("an erasure as the first entry verified: %+v", c)
 	}
 }

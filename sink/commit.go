@@ -53,21 +53,22 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 	if n := len(records); n == 0 || n > MaxBatch {
 		return nil, fmt.Errorf("sink: commit 1 to %d records, got %d", MaxBatch, n)
 	}
-	var order []string
-	groups := map[string][]Record{}
+	type pair struct{ class, subject string }
+	var order []pair
+	groups := map[pair][]Record{}
 	sourced := false
 	for i, r := range records {
 		if err := r.Validate(); err != nil {
 			return nil, &RecordError{Index: i, Err: err}
 		}
-		chain := r.Key
+		p := pair{r.Class, r.Subject}
 		if r.Source != "" {
 			sourced = true
 		}
-		if _, seen := groups[chain]; !seen {
-			order = append(order, chain)
+		if _, seen := groups[p]; !seen {
+			order = append(order, p)
 		}
-		groups[chain] = append(groups[chain], r)
+		groups[p] = append(groups[p], r)
 	}
 
 	s.mu.Lock()
@@ -93,21 +94,72 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 		}
 		defer src.Close()
 	}
+	// The subject index: last in the lock order (evidence → nonces → sources →
+	// subjects), as everywhere.
+	subj, err := openSubjects(s.subjectsPath(), s.lockTimeout)
+	if err != nil {
+		return nil, err
+	}
+	defer subj.Close()
 	l, err := linker.New(st)
 	if err != nil {
 		return nil, fmt.Errorf("sink: prepare the chains: %w", err)
 	}
 
 	var done []Committed
-	for _, chain := range order {
-		c, err := s.commitChain(ctx, l, st, ns, src, f, chain, groups[chain])
+	for _, p := range order {
+		chain, err := s.resolveChain(ctx, st, subj, p.class, p.subject)
+		if err != nil {
+			return done, err
+		}
+		c, err := s.commitChain(ctx, l, st, ns, src, f, chain, groups[p])
 		if err != nil {
 			return done, fmt.Errorf("sink: chain %s: %w (chains before it in this batch were committed)",
 				chain, err)
 		}
+		c.Class, c.Subject = p.class, p.subject
 		done = append(done, c)
 	}
 	return done, nil
+}
+
+// resolveChain returns the chain of a (class, subject) pair, minting one when
+// the pair is new.
+//
+// A new pair's index rows are written HERE, before its chain has any entry:
+// so a chain never exists without its row, and erasing the subject always finds
+// it. A crash after this and before the append leaves a row with no chain, which
+// is harmless: the next commit of the pair reuses it, and erasing the subject
+// cleans it up.
+func (s *Sink) resolveChain(ctx context.Context, st *boltstore.Store, subj *subjectsStore,
+	class, subject string) (string, error) {
+	chain, ok, err := subj.lookup(subject, class)
+	if err != nil || ok {
+		return chain, err
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		if chain, err = s.mintChainID(class); err != nil {
+			return "", err
+		}
+		// 128 random bits do not collide in practice, but a collision would
+		// merge two subjects' histories, so it is checked, not assumed: the id
+		// must be unused both in the store and in the index.
+		_, _, terr := st.ReadTail(ctx, chain)
+		if terr == nil {
+			continue // the id has entries already: taken
+		}
+		if !errors.Is(terr, store.ErrEmptyChain) {
+			return "", fmt.Errorf("sink: check a new chain id is unused: %w", terr)
+		}
+		if _, _, taken, err := subj.owner(chain); err != nil || taken {
+			continue
+		}
+		if err := subj.bind(subject, class, chain); err != nil {
+			return "", err
+		}
+		return chain, nil
+	}
+	return "", errors.New("sink: could not mint an unused chain id; the random source is suspect")
 }
 
 // dropDuplicates removes records whose Source is already committed on the

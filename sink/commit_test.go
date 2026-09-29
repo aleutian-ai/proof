@@ -26,7 +26,7 @@ func TestLifecycle(t *testing.T) {
 		t.Fatalf("want 3 chains, got %+v", r.Chains)
 	}
 	for chain, n := range map[string]int{"u-81": 3, "u-82": 2, "u-90": 1} {
-		c := chainReport(t, r, chain)
+		c := chainReport(t, r, cid(t, s, chain))
 		if c.Entries != n || c.Opened != n || c.Checkpoints != 1 || c.Unanchored != 0 {
 			t.Errorf("%s: %+v, want %d entries all opened, 1 checkpoint", chain, c, n)
 		}
@@ -41,15 +41,15 @@ func TestLifecycle(t *testing.T) {
 	if _, err := s.Commit(ctx, events("u-82", 2)); err != nil {
 		t.Fatal(err)
 	}
-	if c := chainReport(t, mustVerify(t, s, ring), "u-82"); c.Unanchored != 2 {
+	if c := chainReport(t, mustVerify(t, s, ring), cid(t, s, "u-82")); c.Unanchored != 2 {
 		t.Fatalf("u-82 before its checkpoint: %+v, want 2 unanchored", c)
 	}
 	cp, err := s.Checkpoint(ctx, signer, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cp) != 1 || cp[0].Chain != "u-82" || cp[0].Entries != 4 ||
-		cp[0].File != filepath.Join("anchors", "u-82", "0002.json") {
+	if len(cp) != 1 || cp[0].Chain != cid(t, s, "u-82") || cp[0].Entries != 4 ||
+		cp[0].File != filepath.Join("anchors", cid(t, s, "u-82"), "0002.json") {
 		t.Fatalf("checkpoint = %+v, want only u-82's 0002 over 4 entries", cp)
 	}
 	mustVerify(t, s, ring)
@@ -58,13 +58,13 @@ func TestLifecycle(t *testing.T) {
 // TestCommit_ValidatesBeforeWriting: one bad record refuses the whole call, and
 // no file is created.
 func TestCommit_ValidatesBeforeWriting(t *testing.T) {
-	good := Record{Key: "u-1", Content: []byte("{}")}
+	good := Record{Class: testClass, Subject: "u-1", Content: []byte("{}")}
 	cases := map[string][]Record{
 		"no records":      nil,
 		"over the cap":    make([]Record, MaxBatch+1),
-		"invalid key":     {good, {Key: "jo@example.com", Content: []byte("{}")}},
-		"empty content":   {good, {Key: "u-2"}},
-		"content too big": {good, {Key: "u-2", Content: make([]byte, MaxContentBytes+1)}},
+		"invalid key":     {good, {Class: testClass, Subject: "jo@example.com", Content: []byte("{}")}},
+		"empty content":   {good, {Class: testClass, Subject: "u-2"}},
+		"content too big": {good, {Class: testClass, Subject: "u-2", Content: make([]byte, MaxContentBytes+1)}},
 	}
 	for name, recs := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -106,15 +106,19 @@ func TestCommit_CancelledContextWritesNothing(t *testing.T) {
 	if _, err := s.Commit(ctx, events("u-1", 3)); err == nil {
 		t.Fatal("a cancelled context must fail the append")
 	}
-	left, err := os.ReadDir(filepath.Join(s.dir, "content", "u-1"))
+	// The context was cancelled before any chain was bound, so nothing exists:
+	// no content folder at all, no chain in the evidence file.
+	if left, err := os.ReadDir(filepath.Join(s.dir, "content")); err == nil && len(left) != 0 {
+		t.Fatalf("content left behind by a cancelled commit: %v", left)
+	}
+	st, err := s.openStore(true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(left) != 0 {
-		t.Fatalf("content left behind by a failed append: %v", left)
-	}
-	if ids := entryIDs(t, s, "u-1"); len(ids) != 0 {
-		t.Fatalf("entries written by a failed append: %v", ids)
+	chains, err := st.Chains(context.Background())
+	st.Close()
+	if err != nil || len(chains) != 0 {
+		t.Fatalf("chains written by a cancelled commit: %v, %v", chains, err)
 	}
 	// Nonce file: the only keys were for this batch, so nothing for u-1 can remain.
 	raw, err := bolt.Open(noncestore.PathFor(s.DBPath()), 0o600, &bolt.Options{Timeout: DefaultLockTimeout})

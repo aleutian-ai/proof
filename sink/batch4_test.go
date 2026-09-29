@@ -18,23 +18,23 @@ import (
 
 // 4.2 / 4.3: one validation authority, typed errors that say which record.
 func TestValidateAndRecordError(t *testing.T) {
-	ok := Record{Key: "u-1", Content: []byte("{}"), Source: "S@1:1"}
+	ok := Record{Class: testClass, Subject: "u-1", Content: []byte("{}"), Source: "S@1:1"}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("valid record refused: %v", err)
 	}
 	cases := map[string]struct {
-		r   Record
-		key bool
+		r       Record
+		subject bool
 	}{
-		"bad key":       {Record{Key: "Jo-Smith", Content: []byte("{}")}, true},
-		"empty content": {Record{Key: "u-1"}, false},
-		"large content": {Record{Key: "u-1", Content: make([]byte, MaxContentBytes+1)}, false},
-		"large source":  {Record{Key: "u-1", Content: []byte("{}"), Source: strings.Repeat("s", MaxSourceBytes+1)}, false},
+		"bad subject":   {Record{Class: testClass, Subject: "Jo-Smith", Content: []byte("{}")}, true},
+		"empty content": {Record{Class: testClass, Subject: "u-1"}, false},
+		"large content": {Record{Class: testClass, Subject: "u-1", Content: make([]byte, MaxContentBytes+1)}, false},
+		"large source":  {Record{Class: testClass, Subject: "u-1", Content: []byte("{}"), Source: strings.Repeat("s", MaxSourceBytes+1)}, false},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			err := c.r.Validate()
-			if !errors.Is(err, ErrInvalidRecord) || errors.Is(err, ErrInvalidKey) != c.key {
+			if !errors.Is(err, ErrInvalidRecord) || errors.Is(err, ErrInvalidSubject) != c.subject {
 				t.Fatalf("Validate = %v", err)
 			}
 			if strings.Contains(err.Error(), "Jo-Smith") {
@@ -48,7 +48,7 @@ func TestValidateAndRecordError(t *testing.T) {
 			}
 		})
 	}
-	if !ValidChainID("u-1") || ValidChainID("jo@example.com") {
+	if !ValidSubject("u-1") || ValidSubject("jo@example.com") || ValidChainID("u-1") {
 		t.Fatal("ValidChainID disagrees with the rule")
 	}
 }
@@ -75,7 +75,7 @@ func TestCheckpoint_ContinuesPastABadChain(t *testing.T) {
 	ctx := context.Background()
 	s, signer, _ := setup(t)
 	// u-81 (first in order) gets a malformed series; u-82 and u-90 get new entries.
-	if err := os.WriteFile(filepath.Join(s.anchorDir("u-81"), "stray.json"), []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(s.anchorDir(cid(t, s, "u-81")), "stray.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []string{"u-81", "u-82", "u-90"} {
@@ -87,11 +87,11 @@ func TestCheckpoint_ContinuesPastABadChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if problemFor(done, "u-81") == "" {
+	if problemFor(done, cid(t, s, "u-81")) == "" {
 		t.Fatalf("the bad chain was not reported: %+v", done)
 	}
 	for _, c := range []string{"u-82", "u-90"} {
-		if _, err := os.Stat(filepath.Join(s.anchorDir(c), "0002.json")); err != nil {
+		if _, err := os.Stat(filepath.Join(s.anchorDir(cid(t, s, c)), "0002.json")); err != nil {
 			t.Fatalf("%s was not checkpointed after a bad chain before it: %v", c, err)
 		}
 	}
@@ -123,16 +123,16 @@ func TestCheckpoint_KeyRotation(t *testing.T) {
 	}
 	// Without trusting the old key: refused, as a problem, not an error.
 	done, err := s.Checkpoint(ctx, newSigner, nil)
-	if err != nil || problemFor(done, "u-81") == "" {
+	if err != nil || problemFor(done, cid(t, s, "u-81")) == "" {
 		t.Fatalf("new key alone: %+v, %v", done, err)
 	}
 	// Trusting both: the new key signs 0002 on top of the old key's 0001.
 	both := ring(oldSigner, newSigner)
 	done, err = s.Checkpoint(ctx, newSigner, both)
-	if err != nil || problemFor(done, "u-81") != "" {
+	if err != nil || problemFor(done, cid(t, s, "u-81")) != "" {
 		t.Fatalf("rotation: %+v, %v", done, err)
 	}
-	if c := chainReport(t, mustVerify(t, s, both), "u-81"); c.Checkpoints != 2 {
+	if c := chainReport(t, mustVerify(t, s, both), cid(t, s, "u-81")); c.Checkpoints != 2 {
 		t.Fatalf("after rotation: %+v", c)
 	}
 }
@@ -140,18 +140,19 @@ func TestCheckpoint_KeyRotation(t *testing.T) {
 // 4.7: anomalies carry a kind, and the chain id stays raw.
 func TestAnomaly(t *testing.T) {
 	s, _, ring := setup(t)
-	if err := os.MkdirAll(filepath.Join(s.dir, "anchors", "u-77"), 0o755); err != nil {
+	orphan := testClass + "." + strings.Repeat("7", 32) // a chain id no subject is bound to
+	if err := os.MkdirAll(filepath.Join(s.dir, "anchors", orphan), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	r, err := s.Verify(context.Background(), ring)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := chainReport(t, r, "u-77")
+	c := chainReport(t, r, orphan)
 	if c.Anomaly != "removed" {
 		t.Fatalf("anomaly = %q, want removed", c.Anomaly)
 	}
-	if c := chainReport(t, r, "u-81"); c.Anomaly != "" {
+	if c := chainReport(t, r, cid(t, s, "u-81")); c.Anomaly != "" {
 		t.Fatalf("an ordinary chain has an anomaly: %q", c.Anomaly)
 	}
 }

@@ -433,30 +433,40 @@ printf "%s\n" \
   "{\"user\":\"u-81\",\"event\":\"login\"}" "{\"user\":\"u-82\",\"event\":\"login\"}" \
   "{\"user\":\"u-81\",\"event\":\"export\"}" "{\"user\":\"u-90\",\"event\":\"reset\"}" \
   "{\"user\":\"u-81\",\"event\":\"logout\"}" > events.jsonl
-proof sink commit --chain-field user < events.jsonl
+proof sink commit --class events --subject-field user < events.jsonl > commit.out
+chain_of() { sed -n "s/.*for $1 → chain \([^ ]*\).*/\1/p" commit.out; }
+c81=$(chain_of u-81); c82=$(chain_of u-82)
+[ -n "$c81" ] && [ -n "$c82" ] && [ "$c81" != "$c82" ] || { cat commit.out >&2; exit 1; }
 proof sink checkpoint --key keys/ml-dsa-65-private.pem
 proof sink verify --key keys/ml-dsa-65-public.pem | grep -q "all 3 chains verify"
+# Chain ids are opaque: no subject in the evidence file or any checkpoint.
+for subj in u-81 u-82 u-90; do
+  if grep -rq "$subj" sink-data/evidence.db sink-data/anchors; then
+    echo "SUBJECT $subj FOUND IN A SHAREABLE ARTIFACT" >&2; exit 1
+  fi
+done
 # The plain chain verbs verify a sink chain and its checkpoint on their own.
-proof export --db sink-data/evidence.db --chain u-82 --out u-82.json
-proof verify u-82.json --anchor sink-data/anchors/u-82/0001.json --key keys/ml-dsa-65-public.pem >/dev/null
-proof sink erase --chain u-81 >/dev/null
+proof export --db sink-data/evidence.db --chain "$c82" --out c82.json
+proof verify c82.json --anchor "sink-data/anchors/$c82/0001.json" --key keys/ml-dsa-65-public.pem >/dev/null
+proof sink erase --chain "$c81" >/dev/null
 out=$(proof sink verify --key keys/ml-dsa-65-public.pem)
 echo "$out" | grep -q "all 3 chains verify"
-echo "$out" | grep "chain u-81" | grep -q "0 opened, 3 erased"
-if echo "{\"user\":\"jo@example.com\"}" | proof sink commit --chain-field user 2>/dev/null; then
-    echo "AN EMAIL WAS ACCEPTED AS A CHAIN ID" >&2; exit 1
+echo "$out" | grep "chain $c81" | grep -q "0 opened, 3 erased"
+if echo "{\"user\":\"jo@example.com\"}" | proof sink commit --class events --subject-field user 2>/dev/null; then
+    echo "AN EMAIL WAS ACCEPTED AS A SUBJECT" >&2; exit 1
 fi
-f=$(ls sink-data/content/u-82 | head -1)
-echo "{\"user\":\"u-82\",\"event\":\"edited\"}" > "sink-data/content/u-82/$f"
+f=$(ls "sink-data/content/$c82" | head -1)
+echo "{\"user\":\"u-82\",\"event\":\"edited\"}" > "sink-data/content/$c82/$f"
 rc=0; out=$(proof sink verify --key keys/ml-dsa-65-public.pem) || rc=$?
 [ "$rc" -eq 1 ] || { echo "EDITED EVENT VERIFIED (exit $rc)" >&2; exit 1; }
-[ "$(echo "$out" | grep -c FAILS)" -eq 1 ] && echo "$out" | grep "chain u-82" | grep -q FAILS \
+[ "$(echo "$out" | grep -c FAILS)" -eq 1 ] && echo "$out" | grep "chain $c82" | grep -q FAILS \
   || { echo "$out" >&2; exit 1; }
 ' >"$WORK/log6" 2>&1; then
-    ok "three keys → three chains, each checkpointed and verified on its own"
+    ok "three subjects → three opaque chains, each checkpointed and verified on its own"
+    ok "no subject appears in the evidence file or any checkpoint"
     ok "proof export + proof verify check a sink chain and its checkpoint independently"
     ok "erasing one user leaves every chain verifying, that user's events erased"
-    ok "an email is refused as a key; an edited event fails only its own chain"
+    ok "an email is refused as a subject; an edited event fails only its own chain"
 else
     bad "proof sink failed:"; detail "$WORK/log6"
 fi

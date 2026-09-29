@@ -40,15 +40,18 @@ type committer interface {
 // more. NATS splits subjects on '.', so "evidence.jo@example.com" arrives as
 // three tokens. Taking the last would route it to a chain named "com". Refusing
 // every other shape means a key is used whole or not at all.
-type router struct{ prefix string }
+type router struct {
+	prefix string
+	class  string // the evidence class every message is committed under
+}
 
 func (r router) chain(subject string) (string, bool) {
 	key, ok := strings.CutPrefix(subject, r.prefix+".")
 	if !ok || key == "" || strings.Contains(key, ".") {
 		return "", false
 	}
-	chain, err := sink.ChainFor(key)
-	return chain, err == nil
+	// The key is the record's subject; the sink maps it to an opaque chain.
+	return key, sink.ValidSubject(key)
 }
 
 // stats is what one batch did.
@@ -122,7 +125,7 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 		// refuses a whole batch for one bad record, and a message that can never
 		// be committed would come back forever and stall every message behind it.
 		// (The error never contains the key or the payload.)
-		rec := sink.Record{Key: chain, Content: m.Data(), Source: pos}
+		rec := sink.Record{Class: r.class, Subject: chain, Content: m.Data(), Source: pos}
 		if err := rec.Validate(); err != nil {
 			fmt.Fprintf(log, "refused %s: %v. Terminated.\n", pos, err)
 			_ = m.Term()
@@ -143,14 +146,16 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 	for _, c := range done {
 		st.committed += c.Entries
 		st.duplicates += c.Duplicates
-		for _, m := range byChain[c.Chain] {
+		// Messages were grouped by subject; the sink reports the subject it
+		// committed for each (opaque) chain.
+		for _, m := range byChain[c.Subject] {
 			// An ack that fails is not lost evidence: the message comes back and
 			// is recognised as a duplicate.
 			if aerr := m.Ack(); aerr != nil {
 				fmt.Fprintf(log, "ack failed (%v): it will be redelivered and recognised\n", aerr)
 			}
 		}
-		delete(byChain, c.Chain)
+		delete(byChain, c.Subject)
 	}
 	if err != nil {
 		for _, ms := range byChain {

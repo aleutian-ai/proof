@@ -86,7 +86,7 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 		if err := ctx.Err(); err != nil {
 			return rep, err
 		}
-		if !idPattern.MatchString(chain) {
+		if !ValidChainID(chain) {
 			// Never build a path from it: it could be "../../somewhere".
 			rep.Chains = append(rep.Chains, ChainReport{Chain: chain, Anomaly: "invalid-id",
 				Problems: []string{"the evidence file holds a chain id this sink never writes; it was not read"}})

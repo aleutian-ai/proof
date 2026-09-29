@@ -35,7 +35,7 @@ func TestStreaming_AcrossPages(t *testing.T) {
 			t.Fatalf("checkpoint: %+v, %v", done, err)
 		}
 	}
-	c := chainReport(t, mustVerify(t, s, ring), "u-1")
+	c := chainReport(t, mustVerify(t, s, ring), cid(t, s, "u-1"))
 	if c.Entries != 2503 || c.Opened != 2503 || c.Checkpoints != 4 || c.Unanchored != 0 {
 		t.Fatalf("across pages: %+v", c)
 	}
@@ -45,7 +45,7 @@ func TestStreaming_AcrossPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := st.Range(ctx, "u-1", 1500, 1500, 1)
+	rows, err := st.Range(ctx, cid(t, s, "u-1"), 1500, 1500, 1)
 	if err != nil || len(rows) != 1 {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestStreaming_AcrossPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c = chainReport(t, r, "u-1")
+	c = chainReport(t, r, cid(t, s, "u-1"))
 	p := strings.Join(c.Problems, "; ")
 	if c.Checkpoints != 2 || !strings.Contains(p, "links BROKEN at entry 1500") ||
 		!strings.Contains(p, "checkpoint 0003") {
@@ -75,7 +75,7 @@ func TestStreaming_CheckpointBeyondTheChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	series, _, err := f.readAnchors("u-81")
+	series, _, err := f.readAnchors(cid(t, s, "u-81"))
 	f.Close()
 	if err != nil {
 		t.Fatal(err)
@@ -84,12 +84,12 @@ func TestStreaming_CheckpointBeyondTheChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := readChain(ctx, st, "u-81")
+	entries, err := readChain(ctx, st, cid(t, s, "u-81"))
 	st.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := build.Anchor(ctx, build.Input{Subject: "u-81", Entries: entries, Previous: &series[0]})
+	next, err := build.Anchor(ctx, build.Input{Subject: cid(t, s, "u-81"), Entries: entries, Previous: &series[0]})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,10 +100,10 @@ func TestStreaming_CheckpointBeyondTheChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.MarshalIndent(signed, "", "  ")
-	if err := os.WriteFile(filepath.Join(s.anchorDir("u-81"), "0002.json"), raw, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(s.anchorDir(cid(t, s, "u-81")), "0002.json"), raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if p := problems(t, s, ring, "u-81"); !strings.Contains(p, "checkpoint 0002 claims 8 entries; the chain has 3") {
+	if p := problems(t, s, ring, cid(t, s, "u-81")); !strings.Contains(p, "checkpoint 0002 claims 8 entries; the chain has 3") {
 		t.Fatalf("problems: %q", p)
 	}
 }

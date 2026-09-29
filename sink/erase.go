@@ -63,8 +63,8 @@ import (
 //     The erasure entry itself is a signed record that this chain was erased,
 //     and when.
 func (s *Sink) Erase(ctx context.Context, chain string) (EraseResult, error) {
-	if _, err := ChainFor(chain); err != nil {
-		return EraseResult{}, err
+	if !ValidChainID(chain) {
+		return EraseResult{}, fmt.Errorf("sink: %q is not a chain id this sink mints", chain)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

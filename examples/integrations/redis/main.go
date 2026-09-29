@@ -76,6 +76,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	addr := fs.String("addr", "127.0.0.1:6379", "Redis or Valkey server")
 	stream := fs.String("stream", "evidence", "stream name")
 	key := fs.String("key", "", "add: the JSON field whose value becomes the entry's key")
+	class := fs.String("class", "events", "consume: the evidence class every entry is committed under")
 	dir := fs.String("dir", "sink-data", "consume: the sink folder")
 	consumer := fs.String("consumer", "sink-1", "consume: this consumer's name in the group; reuse it across restarts")
 	claimIdle := fs.Duration("claim-idle", 60*time.Second, "consume: claim entries another consumer left pending this long")
@@ -126,7 +127,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if dst, err = sink.Open(*dir); err != nil {
 			break
 		}
-		o := options{stream: *stream, sourcePrefix: *stream + "@" + incarnation, batch: batch,
+		o := options{stream: *stream, class: *class, sourcePrefix: *stream + "@" + incarnation, batch: batch,
 			claimIdle: *claimIdle, follow: *follow}
 		if err = sourceFits(o.sourcePrefix); err != nil {
 			break
@@ -221,7 +222,7 @@ func add(ctx context.Context, rdb *redis.Client, stream, field string, in io.Rea
 		// Auto ids ("*"): time-based and increasing. The consumer's idempotency
 		// relies on an id never being reused; never set ids by hand here.
 		if err := rdb.XAdd(ctx, &redis.XAddArgs{
-			Stream: stream, ID: "*", Values: []string{"key", r.Key, "data", string(r.Content)},
+			Stream: stream, ID: "*", Values: []string{"key", r.Subject, "data", string(r.Content)},
 		}).Err(); err != nil {
 			return fmt.Errorf("line %d: XADD: %w", line, err)
 		}

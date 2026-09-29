@@ -18,12 +18,13 @@ import (
 // fixture opens a sink's files the way Commit does, for calling appendChain
 // directly with one dependency swapped for a failing one.
 type fixture struct {
-	s   *Sink
-	f   *folder
-	st  *boltstore.Store
-	ns  *noncestore.Store
-	src *sourcesStore
-	l   *linker.Linker
+	s     *Sink
+	chain string // the chain bound to (testClass, "u-1") in the subject index
+	f     *folder
+	st    *boltstore.Store
+	ns    *noncestore.Store
+	src   *sourcesStore
+	l     *linker.Linker
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -43,6 +44,15 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	if fx.l, err = linker.New(fx.st); err != nil {
+		t.Fatal(err)
+	}
+	subj, err := openSubjects(s.subjectsPath(), DefaultLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx.chain, err = s.resolveChain(context.Background(), fx.st, subj, testClass, "u-1")
+	subj.Close()
+	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(fx.close)
@@ -148,14 +158,14 @@ func TestAppendChain_FailuresLeaveNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fx := newFixture(t)
 			ns, src, l, rn := deps(fx)
-			err := fx.s.appendChain(context.Background(), l, fx.st, ns, src, fx.f, "u-1", sourced("u-1", 3, 1))
+			err := fx.s.appendChain(context.Background(), l, fx.st, ns, src, fx.f, fx.chain, sourced("u-1", 3, 1))
 			if err == nil {
 				t.Fatal("the injected failure was not reported")
 			}
 			if len(rn.ids) == 0 && name != "nonce store fails" {
 				t.Fatal("test setup: no nonces were stored before the failure")
 			}
-			fx.nothingLeft(t, "u-1", rn)
+			fx.nothingLeft(t, fx.chain, rn)
 		})
 	}
 }
@@ -166,18 +176,18 @@ func TestAppendChain_HeadStateStaleKeepsEverything(t *testing.T) {
 	fx := newFixture(t)
 	rn := &recordingNonces{Store: fx.ns}
 	l := appendThen{real: fx.l, committed: true, err: linker.ErrHeadStateStale}
-	if err := fx.s.appendChain(context.Background(), l, fx.st, rn, fx.src, fx.f, "u-1", sourced("u-1", 2, 1)); err != nil {
+	if err := fx.s.appendChain(context.Background(), l, fx.st, rn, fx.src, fx.f, fx.chain, sourced("u-1", 2, 1)); err != nil {
 		t.Fatalf("a committed append with a stale head record was reported as a failure: %v", err)
 	}
-	rows, _ := fx.st.Range(context.Background(), "u-1", 0, 1<<62, 0)
+	rows, _ := fx.st.Range(context.Background(), fx.chain, 0, 1<<62, 0)
 	if len(rows) != 2 {
 		t.Fatalf("%d entries, want 2", len(rows))
 	}
 	for _, r := range rows {
-		if _, err := os.Stat(fx.s.contentPath("u-1", r.EntryID)); err != nil {
+		if _, err := os.Stat(fx.s.contentPath(fx.chain, r.EntryID)); err != nil {
 			t.Fatalf("content of a committed entry was removed: %v", err)
 		}
-		if _, err := fx.ns.Get("u-1", r.EntryID); err != nil {
+		if _, err := fx.ns.Get(fx.chain, r.EntryID); err != nil {
 			t.Fatalf("nonce of a committed entry was removed: %v", err)
 		}
 	}
@@ -200,7 +210,7 @@ func (i interloper) Append(ctx context.Context, chain string, in []linker.Input)
 func TestAppendChain_MispredictedSequenceIsRepaired(t *testing.T) {
 	fx := newFixture(t)
 	recs := sourced("u-1", 2, 40)
-	if err := fx.s.appendChain(context.Background(), interloper{real: fx.l}, fx.st, fx.ns, fx.src, fx.f, "u-1", recs); err != nil {
+	if err := fx.s.appendChain(context.Background(), interloper{real: fx.l}, fx.st, fx.ns, fx.src, fx.f, fx.chain, recs); err != nil {
 		t.Fatalf("a committed batch at a mispredicted sequence must not fail: %v", err)
 	}
 	fx.close()

@@ -63,6 +63,7 @@ func (s *stats) add(o stats) {
 // options configure consume.
 type options struct {
 	stream string
+	class  string // the evidence class every entry is committed under
 	// sourcePrefix begins every record's sink Source: "<stream>@<incarnation>".
 	// The incarnation changes whenever the consumer group is created afresh,
 	// which is also when a deleted stream comes back. Entry ids restart then,
@@ -104,6 +105,9 @@ func consume(ctx context.Context, c streamClient, dst committer, o options, log 
 	var total stats
 
 	// 1. Own pending entries. Each pass acks what it read, so the list shrinks.
+	// If it does not (a pass acked nothing), stop: re-reading the same entries
+	// forever would spin without end.
+	lastFirst := ""
 	for {
 		es, err := c.readGroup(ctx, "0", o.batch, -1)
 		if err != nil {
@@ -112,6 +116,11 @@ func consume(ctx context.Context, c streamClient, dst committer, o options, log 
 		if len(es) == 0 {
 			break
 		}
+		if es[0].id == lastFirst {
+			return total, fmt.Errorf("pending entry %s:%s was read again without being "+
+				"acknowledged; stopping rather than looping", o.stream, lastFirst)
+		}
+		lastFirst = es[0].id
 		st, err := processBatch(ctx, c, dst, o, es, log)
 		st.recovered = len(es)
 		total.add(st)
@@ -235,7 +244,7 @@ func processBatch(ctx context.Context, c streamClient, dst committer, o options,
 		}
 		// The sink's own rule, applied here so one bad entry never fails (and
 		// stalls) its whole batch. The error never contains the key or the data.
-		rec := sink.Record{Key: e.key, Content: e.data, Source: o.sourcePrefix + ":" + e.id}
+		rec := sink.Record{Class: o.class, Subject: e.key, Content: e.data, Source: o.sourcePrefix + ":" + e.id}
 		if err := rec.Validate(); err != nil {
 			fmt.Fprintf(log, "refused %s: %v. Acked; it stays in the stream.\n", pos, err)
 			refused = append(refused, e.id)
@@ -262,7 +271,9 @@ func processBatch(ctx context.Context, c streamClient, dst committer, o options,
 	for _, d := range done {
 		st.committed += d.Entries
 		st.duplicates += d.Duplicates
-		ack = append(ack, idsByChain[d.Chain]...)
+		// Entries were grouped by subject; the sink reports the subject it
+		// committed for each (opaque) chain.
+		ack = append(ack, idsByChain[d.Subject]...)
 	}
 	if len(ack) > 0 {
 		if aerr := c.ack(ctx, ack...); aerr != nil {

@@ -120,8 +120,14 @@ func WithLockTimeout(d time.Duration) Option {
 
 // Record is one event to commit.
 type Record struct {
-	// Key routes the record: it names the chain. It must pass ChainFor.
-	Key string
+	// Class is the kind of evidence: payments, auth, events. It is in the clear
+	// in chain ids, so it must never identify a person. It must pass ValidClass.
+	Class string
+	// Subject is who the record is about: a pseudonym, never a name or an email
+	// (ValidSubject checks characters only). It is stored ONLY in the secret
+	// subject index, never in the evidence file or a checkpoint: a subject's
+	// chains have opaque ids, and erasing the subject deletes the index rows.
+	Subject string
 	// Content is the event's exact bytes. They are what gets committed.
 	Content []byte
 	// Source, if set, is where the record sat upstream: a stream name and
@@ -137,9 +143,11 @@ type Record struct {
 	Source string
 }
 
-// Committed reports what one chain received.
+// Committed reports what one (class, subject) pair's chain received.
 type Committed struct {
-	Chain   string `json:"chain"`
+	Chain   string `json:"chain"` // the opaque chain id
+	Class   string `json:"class"`
+	Subject string `json:"subject"` // as the caller gave it; not stored in the chain
 	Entries int    `json:"entries"` // newly committed
 	// Duplicates were records whose Source was already committed on this chain,
 	// or repeated within the batch. They were skipped.
@@ -216,6 +224,9 @@ type Sink struct {
 	dir         string
 	lockTimeout time.Duration
 	mu          sync.Mutex
+	// mintChainID mints a new chain id: newChainID, always, outside tests. A
+	// field (not a package variable) so a test can force a collision on one Sink.
+	mintChainID func(class string) (string, error)
 }
 
 // Open opens a sink folder, creating it if needed.
@@ -243,7 +254,7 @@ type Sink struct {
 //	if err != nil {
 //	    return err
 //	}
-//	done, err := s.Commit(ctx, []sink.Record{{Key: "u-81", Content: event}})
+//	done, err := s.Commit(ctx, []sink.Record{{Class: "events", Subject: "u-81", Content: event}})
 //
 // # Limitations
 //
@@ -252,7 +263,7 @@ func Open(dir string, opts ...Option) (*Sink, error) {
 	if dir == "" {
 		return nil, errors.New("sink: a folder is required")
 	}
-	s := &Sink{dir: dir, lockTimeout: DefaultLockTimeout}
+	s := &Sink{dir: dir, lockTimeout: DefaultLockTimeout, mintChainID: newChainID}
 	for _, o := range opts {
 		o(s)
 	}
@@ -276,5 +287,7 @@ func (s *Sink) contentPath(chain, entryID string) string {
 }
 
 func (s *Sink) anchorDir(chain string) string { return filepath.Join(s.dir, "anchors", chain) }
+
+func (s *Sink) subjectsPath() string { return s.DBPath() + ".subjects" }
 
 func (s *Sink) sourcesPath() string { return s.DBPath() + ".sources" }

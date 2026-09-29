@@ -51,7 +51,7 @@ func (s *loggingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Co
 	if s.fail != "" {
 		var ok []sink.Record
 		for _, r := range recs {
-			if r.Key != s.fail {
+			if r.Subject != s.fail {
 				ok = append(ok, r)
 			}
 		}
@@ -91,20 +91,20 @@ func asMessages(ms ...*fakeMsg) []message {
 	return out
 }
 
-var r = router{prefix: "evidence"}
+var r = router{prefix: "evidence", class: "events"}
 
 func TestRouter(t *testing.T) {
 	cases := map[string]string{
-		"evidence.u-81":                       "u-81",
-		"evidence.orders_eu":                  "orders_eu",
-		"evidence.jo@example.com":             "", // three tokens: never "com"
-		"evidence.U-81":                       "", // not a valid chain id
-		"evidence.":                           "",
-		"evidence":                            "",
-		"other.u-81":                          "",
-		"evidencex.u-81":                      "",
-		"evidence.a.b":                        "",
-		"evidence." + strings.Repeat("a", 65): "",
+		"evidence.u-81":                        "u-81",
+		"evidence.orders_eu":                   "orders_eu",
+		"evidence.jo@example.com":              "", // three tokens: never "com"
+		"evidence.U-81":                        "", // not a valid chain id
+		"evidence.":                            "",
+		"evidence":                             "",
+		"other.u-81":                           "",
+		"evidencex.u-81":                       "",
+		"evidence.a.b":                         "",
+		"evidence." + strings.Repeat("a", 129): "",
 	}
 	for subject, want := range cases {
 		got, ok := r.chain(subject)

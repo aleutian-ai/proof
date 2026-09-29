@@ -75,6 +75,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	url := fs.String("url", nats.DefaultURL, "NATS server")
 	prefix := fs.String("prefix", "evidence", "subject prefix: messages are <prefix>.<key>")
 	key := fs.String("key", "", "publish: the JSON field whose value becomes the subject's key")
+	class := fs.String("class", "events", "consume: the evidence class every message is committed under")
 	dir := fs.String("dir", "sink-data", "consume: the sink folder")
 	follow := fs.Bool("follow", false, "consume: keep running instead of exiting when drained")
 	ackWait := fs.Duration("ack-wait", 30*time.Second, "consume: how long JetStream waits for an ack before redelivering")
@@ -125,7 +126,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				crash()
 			}
 		}
-		err = consume(ctx, js, stream, router{prefix: *prefix}, *dir, *ackWait, *follow, afterCommit, stdout, stderr)
+		err = consume(ctx, js, stream, router{prefix: *prefix, class: *class}, *dir, *ackWait, *follow, afterCommit, stdout, stderr)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "nats-sink %s: %v\n", cmd, err)
@@ -159,7 +160,7 @@ func publish(ctx context.Context, js jetstream.JetStream, prefix, field string, 
 			return fmt.Errorf("line %d: %w", line, err)
 		}
 		msgID := hex.EncodeToString(run) + "-" + strconv.Itoa(line)
-		if _, err := js.Publish(ctx, prefix+"."+r.Key, r.Content, jetstream.WithMsgID(msgID)); err != nil {
+		if _, err := js.Publish(ctx, prefix+"."+r.Subject, r.Content, jetstream.WithMsgID(msgID)); err != nil {
 			// Never echo the subject: it holds the key.
 			if errors.Is(err, jetstream.ErrNoStreamResponse) || errors.Is(err, nats.ErrNoResponders) {
 				return fmt.Errorf("line %d: no stream accepts that subject (the key must be one "+

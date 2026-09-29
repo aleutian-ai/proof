@@ -30,12 +30,18 @@ func TestSource_RedeliveryIsNotCommittedTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Committed{{Chain: "u-1", Entries: 1, Duplicates: 3}, {Chain: "u-2", Entries: 0, Duplicates: 2}}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Fatalf("redelivery: %v, want %v", got, want)
+	summary := func(cs []Committed) string {
+		out := ""
+		for _, c := range cs {
+			out += fmt.Sprintf("%s:%d+%d ", c.Subject, c.Entries, c.Duplicates)
+		}
+		return out
+	}
+	if got, want := summary(got), "u-1:1+3 u-2:0+2 "; got != want {
+		t.Fatalf("redelivery: %s, want %s (subject:new+duplicates)", got, want)
 	}
 	r := mustVerify(t, s, ring)
-	if a, b := chainReport(t, r, "u-1"), chainReport(t, r, "u-2"); a.Entries != 4 || b.Entries != 2 {
+	if a, b := chainReport(t, r, cid(t, s, "u-1")), chainReport(t, r, cid(t, s, "u-2")); a.Entries != 4 || b.Entries != 2 {
 		t.Fatalf("chains hold %d and %d entries, want 4 and 2", a.Entries, b.Entries)
 	}
 }
@@ -73,7 +79,7 @@ func TestSource_RecordedButNotAppended(t *testing.T) {
 		"EVIDENCE:1": {entryID: "sink-" + strings.Repeat("a", 32), seq: 1}, // past the tail
 		"EVIDENCE:2": {entryID: "sink-" + strings.Repeat("b", 32), seq: 0}, // another entry sits there
 	}
-	if err := src.putBatch("u-1", stale); err != nil {
+	if err := src.putBatch(cid(t, s, "u-1"), stale); err != nil {
 		t.Fatal(err)
 	}
 	src.Close()
@@ -87,7 +93,7 @@ func TestSource_RecordedButNotAppended(t *testing.T) {
 	if err != nil || got[0].Entries != 0 || got[0].Duplicates != 2 {
 		t.Fatalf("after commit: %v, %v; want both recognised", got, err)
 	}
-	if n := len(entryIDs(t, s, "u-1")); n != 3 {
+	if n := len(entryIDs(t, s, cid(t, s, "u-1"))); n != 3 {
 		t.Fatalf("u-1 holds %d entries, want 3", n)
 	}
 }
@@ -146,7 +152,7 @@ func TestSource_MixedBatchOnANonEmptyChain(t *testing.T) {
 	if err != nil || got[0].Entries != 0 || got[0].Duplicates != 2 {
 		t.Fatalf("redelivery of the sourced records: %v, %v; want 2 duplicates", got, err)
 	}
-	if n := len(entryIDs(t, s, "u-1")); n != 7 {
+	if n := len(entryIDs(t, s, cid(t, s, "u-1"))); n != 7 {
 		t.Fatalf("u-1 holds %d entries, want 7", n)
 	}
 }

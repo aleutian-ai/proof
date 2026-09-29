@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -62,14 +63,15 @@ func sinkKeys(t *testing.T) (priv, pub string) {
 func TestSink_Usage(t *testing.T) {
 	dir := t.TempDir()
 	for name, args := range map[string][]string{
-		"no verb":                nil,
-		"unknown verb":           {"append", "--dir", dir},
-		"commit, no chain-field": {"commit", "--dir", dir},
-		"checkpoint, no key":     {"checkpoint", "--dir", dir},
-		"verify, no key":         {"verify", "--dir", dir},
-		"erase, no chain":        {"erase", "--dir", dir},
-		"stray argument":         {"erase", "--dir", dir, "--chain", "u-1", "extra"},
-		"wrong verb's flag":      {"commit", "--dir", dir, "--chain", "u-1"},
+		"no verb":            nil,
+		"unknown verb":       {"append", "--dir", dir},
+		"commit, no class":   {"commit", "--dir", dir, "--subject-field", "user"},
+		"commit, no subject": {"commit", "--dir", dir, "--class", "events"},
+		"checkpoint, no key": {"checkpoint", "--dir", dir},
+		"verify, no key":     {"verify", "--dir", dir},
+		"erase, no chain":    {"erase", "--dir", dir},
+		"stray argument":     {"erase", "--dir", dir, "--chain", "events.00000000000000000000000000000000", "extra"},
+		"wrong verb's flag":  {"commit", "--dir", dir, "--chain", "events.00000000000000000000000000000000"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _, _ := sinkRun(t, "", args...); code != exitUsage {
@@ -91,9 +93,14 @@ func TestSink_EndToEnd(t *testing.T) {
 
 {"user":"u-81","event":"export","rows":120}
 `
-	code, out, errs := sinkRun(t, events, "commit", "--dir", dir, "--chain-field", "user")
-	if code != exitOK || !strings.Contains(out, "   2 → chain u-81") || !strings.Contains(out, "   1 → chain u-82") {
+	code, out, errs := sinkRun(t, events, "commit", "--dir", dir, "--class", "events", "--subject-field", "user")
+	if code != exitOK || !strings.Contains(out, "committed    2 for u-81 → chain events.") ||
+		!strings.Contains(out, "committed    1 for u-82 → chain events.") {
 		t.Fatalf("commit: exit %d\n%s%s", code, out, errs)
+	}
+	c81, c82 := chainOf(t, out, "u-81"), chainOf(t, out, "u-82")
+	if c81 == c82 || strings.Contains(c81, "u-81") {
+		t.Fatalf("chains must be distinct and opaque: %s, %s", c81, c82)
 	}
 	if code, out, errs = sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv); code != exitOK ||
 		strings.Count(out, "checkpoint anchors/") != 2 {
@@ -103,8 +110,8 @@ func TestSink_EndToEnd(t *testing.T) {
 		!strings.Contains(out, "all 2 chains verify") {
 		t.Fatalf("verify: exit %d\n%s%s", code, out, errs)
 	}
-	if code, out, errs = sinkRun(t, "", "erase", "--dir", dir, "--chain", "u-81"); code != exitOK ||
-		!strings.Contains(out, "erased 2 events on chain u-81") || !strings.Contains(out, "entry sink-") {
+	if code, out, errs = sinkRun(t, "", "erase", "--dir", dir, "--chain", c81); code != exitOK ||
+		!strings.Contains(out, "erased 2 events on chain "+c81) || !strings.Contains(out, "entry sink-") {
 		t.Fatalf("erase: exit %d\n%s%s", code, out, errs)
 	}
 	code, out, errs = sinkRun(t, "", "verify", "--dir", dir, "--key", pub)
@@ -113,15 +120,15 @@ func TestSink_EndToEnd(t *testing.T) {
 	}
 
 	// Tampering: verify exits 1 (a finding, like a broken chain), naming the chain.
-	files, err := os.ReadDir(filepath.Join(dir, "content", "u-82"))
+	files, err := os.ReadDir(filepath.Join(dir, "content", c82))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("u-82 content: %v %v", files, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "content", "u-82", files[0].Name()), []byte(`{"user":"u-82"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "content", c82, files[0].Name()), []byte(`{"user":"u-82"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code, out, _ = sinkRun(t, "", "verify", "--dir", dir, "--key", pub)
-	if code != exitBroken || !strings.Contains(out, "chain u-82") || !strings.Contains(out, "MODIFIED") {
+	if code != exitBroken || !strings.Contains(out, "chain "+c82) || !strings.Contains(out, "MODIFIED") {
 		t.Fatalf("verify after tampering: exit %d\n%s", code, out)
 	}
 }
@@ -136,7 +143,7 @@ func TestSink_CommitBadLine(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			code, _, errs := sinkRun(t, `{"user":"u-1"}`+"\n"+line+"\n", "commit", "--dir", dir, "--chain-field", "user")
+			code, _, errs := sinkRun(t, `{"user":"u-1"}`+"\n"+line+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user")
 			if code != exitIOError || !strings.Contains(errs, "line 2") {
 				t.Fatalf("exit %d, stderr %q; want exit %d naming line 2", code, errs, exitIOError)
 			}
@@ -158,9 +165,9 @@ func TestSink_CommitBatches(t *testing.T) {
 	for i := 0; i < n; i++ {
 		fmt.Fprintf(&in, `{"user":"u-%d","i":%d}`+"\n", i%2, i)
 	}
-	code, out, errs := sinkRun(t, in.String(), "commit", "--dir", t.TempDir(), "--chain-field", "user")
-	if code != exitOK || !strings.Contains(out, fmt.Sprintf("%4d → chain u-0", (n+1)/2)) ||
-		!strings.Contains(out, fmt.Sprintf("%4d → chain u-1", n/2)) {
+	code, out, errs := sinkRun(t, in.String(), "commit", "--dir", t.TempDir(), "--class", "events", "--subject-field", "user")
+	if code != exitOK || !strings.Contains(out, fmt.Sprintf("%4d for u-0 → chain", (n+1)/2)) ||
+		!strings.Contains(out, fmt.Sprintf("%4d for u-1 → chain", n/2)) {
 		t.Fatalf("exit %d\n%s%s", code, out, errs)
 	}
 
@@ -169,9 +176,9 @@ func TestSink_CommitBatches(t *testing.T) {
 		fmt.Fprintf(&in, `{"user":"u-1","i":%d}`+"\n", i)
 	}
 	in.WriteString(`{"user":"Not-Valid"}` + "\n")
-	code, out, errs = sinkRun(t, in.String(), "commit", "--dir", t.TempDir(), "--chain-field", "user")
+	code, out, errs = sinkRun(t, in.String(), "commit", "--dir", t.TempDir(), "--class", "events", "--subject-field", "user")
 	if code != exitIOError || !strings.Contains(errs, fmt.Sprintf("line %d", sink.MaxBatch+1)) ||
-		!strings.Contains(out, fmt.Sprintf("committed %4d → chain u-1", sink.MaxBatch)) {
+		!strings.Contains(out, fmt.Sprintf("committed %4d for u-1 → chain", sink.MaxBatch)) {
 		t.Fatalf("later bad line: exit %d\n%s%s", code, out, errs)
 	}
 }
@@ -196,22 +203,24 @@ func TestSink_CheckpointWrongKeyType(t *testing.T) {
 func TestSink_BusyAndRefusedExits(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sink")
 	priv, _ := sinkKeys(t)
-	if code, _, e := sinkRun(t, `{"user":"u-1"}`+"\n"+`{"user":"u-2"}`+"\n", "commit", "--dir", dir, "--chain-field", "user"); code != exitOK {
+	code, out, e := sinkRun(t, `{"user":"u-1"}`+"\n"+`{"user":"u-2"}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user")
+	if code != exitOK {
 		t.Fatalf("commit: %d %s", code, e)
 	}
+	c1, c2 := chainOf(t, out, "u-1"), chainOf(t, out, "u-2")
 	if code, _, e := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv); code != exitOK {
 		t.Fatalf("checkpoint: %d %s", code, e)
 	}
 	// u-1 gets a stray file in its checkpoint folder; both get a new event.
-	if err := os.WriteFile(filepath.Join(dir, "anchors", "u-1", "stray.json"), []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "anchors", c1, "stray.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, e := sinkRun(t, `{"user":"u-1","n":2}`+"\n"+`{"user":"u-2","n":2}`+"\n", "commit", "--dir", dir, "--chain-field", "user"); code != exitOK {
+	if code, _, e := sinkRun(t, `{"user":"u-1","n":2}`+"\n"+`{"user":"u-2","n":2}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user"); code != exitOK {
 		t.Fatalf("commit: %d %s", code, e)
 	}
-	code, out, _ := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv)
-	if code != exitBroken || !strings.Contains(out, "chain u-1 NOT checkpointed") ||
-		!strings.Contains(out, "anchors/u-2/0002.json") {
+	code, out, _ = sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv)
+	if code != exitBroken || !strings.Contains(out, "chain "+c1+" NOT checkpointed") ||
+		!strings.Contains(out, "anchors/"+c2+"/0002.json") {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 
@@ -220,7 +229,7 @@ func TestSink_BusyAndRefusedExits(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Close()
-	if code, _, _ := sinkRun(t, `{"user":"u-3"}`+"\n", "commit", "--dir", dir, "--chain-field", "user"); code != exitBusy {
+	if code, _, _ := sinkRun(t, `{"user":"u-3"}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user"); code != exitBusy {
 		t.Fatalf("commit on a held folder: exit %d, want %d", code, exitBusy)
 	}
 }
@@ -231,13 +240,13 @@ func TestSink_TrustAfterRotation(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sink")
 	oldPriv, oldPub := sinkKeys(t)
 	newPriv, newPub := sinkKeys(t)
-	if code, _, e := sinkRun(t, `{"user":"u-1"}`+"\n", "commit", "--dir", dir, "--chain-field", "user"); code != exitOK {
+	if code, _, e := sinkRun(t, `{"user":"u-1"}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user"); code != exitOK {
 		t.Fatalf("commit: %d %s", code, e)
 	}
 	if code, _, e := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", oldPriv); code != exitOK {
 		t.Fatalf("checkpoint: %d %s", code, e)
 	}
-	if code, _, e := sinkRun(t, `{"user":"u-1","n":2}`+"\n", "commit", "--dir", dir, "--chain-field", "user"); code != exitOK {
+	if code, _, e := sinkRun(t, `{"user":"u-1","n":2}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user"); code != exitOK {
 		t.Fatalf("commit: %d %s", code, e)
 	}
 	if code, out, _ := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", newPriv); code != exitBroken ||
@@ -249,4 +258,15 @@ func TestSink_TrustAfterRotation(t *testing.T) {
 		t.Fatalf("with --trust: exit %d\n%s%s", code, out, e)
 	}
 	_ = newPub
+}
+
+// chainOf reads the chain a subject was committed to from commit's output
+// ("committed N for <subject> → chain <id>").
+func chainOf(t *testing.T, out, subject string) string {
+	t.Helper()
+	m := regexp.MustCompile(`for ` + regexp.QuoteMeta(subject) + ` → chain (\S+)`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("no chain for %s in commit output:\n%s", subject, out)
+	}
+	return m[1]
 }

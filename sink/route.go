@@ -4,29 +4,53 @@
 package sink
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 )
 
-// ErrInvalidKey is returned for a routing key that is not a valid chain id.
-var ErrInvalidKey = errors.New("sink: key is not a valid chain id: lowercase letters, " +
-	"digits, . _ - (max 64), starting with a letter or digit. Keys must already be " +
-	"pseudonyms (a topic or an opaque id); this check cannot tell a name from one")
+// ErrInvalidClass is returned for an evidence class that breaks the class rule.
+var ErrInvalidClass = errors.New("sink: class is not valid: lowercase letters, digits, _ - " +
+	"(max 31), starting with a letter or digit, no dots. A class names a kind of evidence " +
+	"(payments, auth), never a person")
 
-// idPattern is the chain-id rule the MCP commit tool uses, so a chain written
-// here can also be written through proof-mcp.
-var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+// ErrInvalidSubject is returned for a subject that breaks the subject rule. The
+// subject is never echoed into an error: a refused one is often exactly the
+// personal data the rule keeps out.
+var ErrInvalidSubject = errors.New("sink: subject is not valid: lowercase letters, digits, . _ - " +
+	"(max 128), starting with a letter or digit. Subjects must already be pseudonyms " +
+	"(an opaque id); this check cannot tell a name from one")
+
+var (
+	// classPattern: a kind of evidence. No dots, so a chain id splits one way.
+	classPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,30}$`)
+	// subjectPattern: who the evidence is about. Characters only; it refuses an
+	// email address or anything upper-case, but cannot tell a name from a
+	// pseudonym.
+	subjectPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+	// chainIDPattern: the only chain id this sink mints, "<class>.<32 hex>".
+	chainIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,30}\.[0-9a-f]{32}$`)
+)
 
 // entryIDPattern is the only entry id this sink assigns. Ids read back from the
 // evidence file are checked against it before any path is built from them: the
 // file can be shared, so its contents are input, not trusted state.
 var entryIDPattern = regexp.MustCompile(`^sink-[0-9a-f]{32}$`)
 
-// ValidChainID reports whether id is a valid chain id (docs/sink-format.md §1).
-// It checks characters only; it cannot tell a pseudonym from a name.
-func ValidChainID(id string) bool { return idPattern.MatchString(id) }
+// ValidClass reports whether class is a valid evidence class.
+func ValidClass(class string) bool { return classPattern.MatchString(class) }
+
+// ValidSubject reports whether subject passes the subject rule. It checks
+// characters only.
+func ValidSubject(subject string) bool { return subjectPattern.MatchString(subject) }
+
+// ValidChainID reports whether id is a chain id this sink mints:
+// "<class>.<32 hex>". Chain ids are the sink's own; callers name a class and a
+// subject, never a chain.
+func ValidChainID(id string) bool { return chainIDPattern.MatchString(id) }
 
 // Validate reports whether a record can be committed at all.
 //
@@ -39,8 +63,9 @@ func ValidChainID(id string) bool { return idPattern.MatchString(id) }
 //
 // # Outputs
 //
-//   - error: nil, or an error wrapping ErrInvalidRecord (and ErrInvalidKey when
-//     the key is the problem). Never echoes the key.
+//   - error: nil, or an error wrapping ErrInvalidRecord, and ErrInvalidClass or
+//     ErrInvalidSubject when one of those is the problem. Never echoes the
+//     subject.
 //
 // # Example
 //
@@ -48,8 +73,11 @@ func ValidChainID(id string) bool { return idPattern.MatchString(id) }
 //	    msg.Term() // never committable: do not redeliver
 //	}
 func (r Record) Validate() error {
-	if !ValidChainID(r.Key) {
-		return fmt.Errorf("%w: %w", ErrInvalidRecord, ErrInvalidKey)
+	if !ValidClass(r.Class) {
+		return fmt.Errorf("%w: %w", ErrInvalidRecord, ErrInvalidClass)
+	}
+	if !ValidSubject(r.Subject) {
+		return fmt.Errorf("%w: %w", ErrInvalidRecord, ErrInvalidSubject)
 	}
 	switch n := len(r.Content); {
 	case n == 0:
@@ -63,35 +91,19 @@ func (r Record) Validate() error {
 	return nil
 }
 
-// ChainFor turns a routing key into a chain id, or refuses it.
-//
-// # Description
-//
-// This is the router the service examples share. A key is used as the chain id
-// unchanged, and only if it is already a valid one. Nothing is lowercased,
-// trimmed or hashed: a key that needs transforming is a key that has not been
-// pseudonymised yet, and that belongs upstream.
-//
-// # Outputs
-//
-//   - string: the chain id
-//   - error: ErrInvalidKey. The key is never echoed into the error, because a
-//     refused key is often exactly the personal data this rule keeps out.
-//
-// # Example
-//
-//	chain, err := sink.ChainFor(msg.Key)
-//	if err != nil {
-//	    // refuse the message upstream; do not lowercase, trim or hash it here
-//	}
-func ChainFor(key string) (string, error) {
-	if !ValidChainID(key) {
-		return "", ErrInvalidKey
+// newChainID mints a chain id for a class: the class, a dot, and 128 random
+// bits. NEVER derived from the subject, a source, the content or the time:
+// anything derived would be a correlator in the shareable artifacts.
+func newChainID(class string) (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("sink: draw chain id: %w", err)
 	}
-	return key, nil
+	return class + "." + hex.EncodeToString(b), nil
 }
 
-// RecordFromJSON makes a Record from one JSON object, keyed by one of its fields.
+// RecordFromJSON makes a Record from one JSON object, whose subject is one of
+// its fields. The caller sets the Record's Class.
 //
 // # Description
 //
@@ -100,13 +112,14 @@ func ChainFor(key string) (string, error) {
 //
 // # Outputs
 //
-//   - Record: the record, with Key not yet validated (Commit does that)
+//   - Record: the record with Subject and Content set; Class is the caller's to
+//     set, and nothing is validated yet (Validate or Commit does that)
 //   - error: the line is not a JSON object, or the field is absent or not a string
 //
 // # Example
 //
 //	r, err := sink.RecordFromJSON([]byte(`{"user":"u-81","event":"login"}`), "user")
-//	// r.Key == "u-81"; r.Content is the whole line
+//	// r.Subject == "u-81"; r.Content is the whole line; set r.Class
 //
 // # Limitations
 //
@@ -125,5 +138,5 @@ func RecordFromJSON(line []byte, field string) (Record, error) {
 	if len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &key) != nil {
 		return Record{}, fmt.Errorf("field %q is not a string", field)
 	}
-	return Record{Key: key, Content: append([]byte(nil), line...)}, nil
+	return Record{Subject: key, Content: append([]byte(nil), line...)}, nil
 }

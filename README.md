@@ -517,12 +517,13 @@ mlkem           ML-KEM-768/1024 encapsulate + decapsulate (FIPS 203)
 xwing           X-Wing hybrid KEM — ML-KEM-768 + X25519
 keywrap         versioned wrapped-key wire format
 
-cmd/proof       CLI — init · commit · export · import · anchor · verify · keygen · disclose · forget
+sink            one chain per key in a folder: idempotent commits, per-chain
+                checkpoints, verification, erasure (docs/sink-format.md)
+cmd/proof       CLI — init · commit · export · import · anchor · verify · keygen · disclose · forget · sink
 cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
 
-examples/       composition, not features — encrypted-artifact; integrations/topicsink
-                (one chain per key from a keyed stream) and the tools that feed it
-                (integrations/nats, integrations/redis: each its own module)
+examples/       composition, not features — encrypted-artifact; integrations/nats and
+                integrations/redis feed a sink (each its own module)
 ```
 
 ---

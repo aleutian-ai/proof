@@ -78,6 +78,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdDisclose(args[1:], stdout, stderr)
 	case "forget":
 		return cmdForget(args[1:], stdout, stderr)
+	case "sink":
+		return cmdSink(args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return exitOK
@@ -105,6 +107,7 @@ usage:
                [--name LABEL] [--op-vault VAULT] [--force]
   proof anchor --db <path> --chain <id> --subject <s> --key <private.pem>
                [--previous <anchor.json>] [--out <path>]
+  proof sink commit|checkpoint|verify|erase [--dir D] …   (proof sink help)
 
 exit: 0 ok · 1 chain broken · 2 usage · 3 io error · 4 chain busy
 
@@ -130,6 +133,10 @@ chain first and refuses to anchor a broken one, so the claim it makes is one it
 established. Pass --previous for any anchor after the first; without it the
 anchor is the first in its chain. Like keygen, this verb takes a key and is
 therefore never exposed over MCP.
+
+sink keeps one chain per key in a folder: commit a keyed JSONL stream, sign one
+checkpoint per chain, verify every chain on its own, and erase one chain's
+events while every chain still verifies. See docs/sink-format.md.
 `)
 }
 

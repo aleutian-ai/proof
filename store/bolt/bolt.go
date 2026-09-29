@@ -90,6 +90,7 @@ var ErrLocked = errors.New("bolt: database is locked by another process")
 // config holds Open's options.
 type config struct {
 	lockTimeout time.Duration
+	readOnly    bool
 }
 
 // Option configures Open.
@@ -126,6 +127,32 @@ func WithLockTimeout(d time.Duration) Option {
 	return func(c *config) { c.lockTimeout = d }
 }
 
+// WithReadOnly opens an existing database for reading only.
+//
+// # Description
+//
+// Takes a SHARED lock, so several readers may open the file at once, and
+// changes nothing: no buckets are created, no leases cleared, no legacy index
+// removed. A verifier must not modify the evidence it checks. Every write
+// method on the returned Store fails.
+//
+// # Outputs
+//
+//   - Option: to pass to [Open]
+//
+// # Example
+//
+//	s, err := bolt.Open(path, bolt.WithReadOnly())
+//
+// # Limitations
+//
+//   - The file must exist. A file without the chain buckets is refused rather
+//     than read, so a foreign bbolt file cannot panic a reader.
+//   - Waits for a writer holding the exclusive lock, like any open.
+func WithReadOnly() Option {
+	return func(c *config) { c.readOnly = true }
+}
+
 // Open opens or creates a chain database at path.
 //
 // # Inputs
@@ -157,7 +184,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 		o(&cfg)
 	}
 
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: cfg.lockTimeout})
+	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: cfg.lockTimeout, ReadOnly: cfg.readOnly})
 	if err != nil {
 		if errors.Is(err, bolt.ErrTimeout) {
 			return nil, fmt.Errorf("%w: %s is held by another process (waited %s). "+
@@ -165,6 +192,23 @@ func Open(path string, opts ...Option) (*Store, error) {
 				ErrLocked, path, cfg.lockTimeout)
 		}
 		return nil, fmt.Errorf("bolt: open %s: %w", path, err)
+	}
+	if cfg.readOnly {
+		// Every read method dereferences these buckets. Refuse a file that lacks
+		// them instead of letting the first read panic on a nil bucket.
+		err := db.View(func(tx *bolt.Tx) error {
+			for _, b := range [][]byte{bucketEntries, bucketState} {
+				if tx.Bucket(b) == nil {
+					return fmt.Errorf("no %s bucket: not a proof chain database", b)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			db.Close()
+			return nil, fmt.Errorf("bolt: open %s: %w", path, err)
+		}
+		return &Store{db: db}, nil
 	}
 	err = db.Update(func(tx *bolt.Tx) error {
 		for _, b := range [][]byte{bucketEntries, bucketState, bucketLeases} {

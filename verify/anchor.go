@@ -154,37 +154,46 @@ func BindAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string) (Bi
 		return BindResult{}, fmt.Errorf("verify: malformed anchor: %w", err)
 	}
 
+	head, brk, err := walkForHead(entries)
+	if err != nil {
+		return BindResult{}, err
+	}
+	return bindWithHead(a, entries[0].EntryID, entries[len(entries)-1].EntryID,
+		int64(len(entries)), head, brk, previousAnchorHash)
+}
+
+// bindWithHead is BindAnchor after the walk: the chain's first and last entry
+// ids, its length, its head (valid when brk < 0) and the index of its first
+// break (or -1) are already known. Shared with Walker.VerifyAnchor, so the two
+// paths cannot drift apart.
+func bindWithHead(a anchor.Anchor, firstID, lastID string, count int64, head string, brk int,
+	previousAnchorHash string) (BindResult, error) {
 	res := BindResult{
 		EntriesCovered: a.EntryCount,
 		Proven:         "the chain in front of you is the one this anchor committed to",
 		NotProven: "that the anchor is genuine — no signature was checked, so an " +
 			"adversary able to rewrite the chain could also have minted this anchor",
 	}
-
-	head, brk, err := walkForHead(entries)
-	if err != nil {
-		return BindResult{}, err
-	}
 	if brk >= 0 {
 		res.Outcome, res.Detail = BindChainBroken, fmt.Sprintf("linkage breaks at entry %d", brk)
 		return res, nil
 	}
 
-	if entries[0].EntryID != a.Range.StartEntryID {
+	if firstID != a.Range.StartEntryID {
 		res.Outcome = BindRangeStartMismatch
 		res.Detail = "the anchor's committed first entry is not this chain's first entry; " +
 			"entries were removed from the front"
 		return res, nil
 	}
-	if entries[len(entries)-1].EntryID != a.Range.EndEntryID {
+	if lastID != a.Range.EndEntryID {
 		res.Outcome = BindRangeEndMismatch
 		res.Detail = "the anchor's committed last entry is not this chain's last entry"
 		return res, nil
 	}
-	if int64(len(entries)) != a.EntryCount {
+	if count != a.EntryCount {
 		res.Outcome = BindHeightMismatch
 		res.Detail = fmt.Sprintf("chain has %d entries; the anchor committed to %d",
-			len(entries), a.EntryCount)
+			count, a.EntryCount)
 		return res, nil
 	}
 
@@ -194,7 +203,7 @@ func BindAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string) (Bi
 	// anchors signed long ago, and tightening it would flip historical anchors
 	// from passing to broken.
 	recomputed, err := anchor.ChainHash(
-		previousAnchorHash, a.Subject, a.Range.StartEntryID, a.Range.EndEntryID, head)
+		previousAnchorHash, a.Subject, firstID, lastID, head)
 	if err != nil {
 		return BindResult{}, fmt.Errorf("verify: %w", err)
 	}
@@ -261,7 +270,12 @@ func VerifyAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string, s
 	if err != nil {
 		return res, err
 	}
+	return withSignature(res, a, src)
+}
 
+// withSignature adds the signature check to a bind result. Shared by
+// VerifyAnchor and Walker.VerifyAnchor.
+func withSignature(res BindResult, a anchor.Anchor, src anchor.KeySource) (BindResult, error) {
 	// Verify the signature even when the bind failed: "the anchor is genuine but
 	// describes a different chain" and "the anchor is forged" are different
 	// situations and the caller needs to tell them apart.
@@ -416,4 +430,64 @@ func expectedChainHash(e Entry, previousHash string, ts time.Time) (string, erro
 		return "", fmt.Errorf("chain hash format version %d is not implemented by this build",
 			e.FormatVersion)
 	}
+}
+
+// VerifyAnchor binds an anchor to exactly the entries this walker has seen, and
+// verifies its signature: the same checks as the package-level VerifyAnchor over
+// those entries, without holding them.
+//
+// # Description
+//
+// Feed entries with Add until Count equals a.EntryCount, then call this. That
+// is how a series of checkpoints over one chain is verified in a single pass:
+// each is bound as the walk reaches the end of the prefix it covers. The head is
+// the walker's own, never one a caller supplies.
+//
+// # Inputs
+//
+//   - a: the anchor; it must cover exactly Count() entries
+//   - previousAnchorHash: the predecessor's chain hash, or anchor.SeedAnchorHash
+//   - src: key source; must not be nil
+//
+// # Outputs
+//
+//   - BindResult: as VerifyAnchor's. Count() != a.EntryCount is
+//     BindHeightMismatch; any break so far is BindChainBroken.
+//   - error: as VerifyAnchor's
+//
+// # Example
+//
+//	w := verify.NewWalker(verify.Options{})
+//	prev := anchor.SeedAnchorHash
+//	for _, e := range entries {          // or a page at a time from a store
+//	    w.Add(e)
+//	    for next < len(series) && int64(w.Count()) == series[next].EntryCount {
+//	        res, err := w.VerifyAnchor(series[next], prev, keys)
+//	        // …
+//	        prev = series[next].ChainHash
+//	        next++
+//	    }
+//	}
+//
+// # Limitations
+//
+//   - Uses Chain's rules (a sequence gap is a break, a tombstone is recognised
+//     by its type and id), which are stricter than BindAnchor's on malformed
+//     tombstones.
+func (w *Walker) VerifyAnchor(a anchor.Anchor, previousAnchorHash string, src anchor.KeySource) (BindResult, error) {
+	if w.Count() == 0 {
+		return BindResult{}, ErrNoEntries
+	}
+	if err := validatePreviousAnchorHash(previousAnchorHash); err != nil {
+		return BindResult{}, err
+	}
+	if err := anchor.ValidateVersionInvariants(a); err != nil {
+		return BindResult{}, fmt.Errorf("verify: malformed anchor: %w", err)
+	}
+	res, err := bindWithHead(a, w.first.EntryID, w.last.EntryID, int64(w.Count()),
+		w.last.ChainHash, w.res.FirstBreak, previousAnchorHash)
+	if err != nil {
+		return res, err
+	}
+	return withSignature(res, a, src)
 }

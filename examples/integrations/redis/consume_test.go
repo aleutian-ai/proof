@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aleutian-ai/proof/examples/integrations/topicsink"
+	"github.com/aleutian-ai/proof/sink"
 )
 
 // ---------------------------------------------------------------------------
@@ -124,17 +124,17 @@ func (g as) ack(_ context.Context, ids ...string) error {
 
 // loggingSink records each Commit on the group's event log, and can fail one chain.
 type loggingSink struct {
-	inner *topicsink.Sink
+	inner *sink.Sink
 	g     *fakeGroup
 	fail  string
 }
 
-func (s *loggingSink) Commit(ctx context.Context, recs []topicsink.Record) ([]topicsink.Committed, error) {
+func (s *loggingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Committed, error) {
 	s.g.events = append(s.g.events, "commit")
 	if s.fail == "" {
 		return s.inner.Commit(ctx, recs)
 	}
-	var ok []topicsink.Record
+	var ok []sink.Record
 	for _, r := range recs {
 		if r.Key != s.fail {
 			ok = append(ok, r)
@@ -156,9 +156,9 @@ func sixEvents() []entry {
 		ev("4-0", "u-90"), ev("5-0", "u-82"), ev("6-0", "u-81")}
 }
 
-func newSink(t *testing.T) *topicsink.Sink {
+func newSink(t *testing.T) *sink.Sink {
 	t.Helper()
-	s, err := topicsink.Open(t.TempDir())
+	s, err := sink.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,8 +173,8 @@ func opts() options {
 
 func TestAckAfterCommit(t *testing.T) {
 	g := newGroup(sixEvents()...)
-	sink := &loggingSink{inner: newSink(t), g: g}
-	st, err := consume(context.Background(), as{g, "sink-1"}, sink, opts(), &bytes.Buffer{})
+	dst := &loggingSink{inner: newSink(t), g: g}
+	st, err := consume(context.Background(), as{g, "sink-1"}, dst, opts(), &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestAckAfterCommit(t *testing.T) {
 // acks without committing twice.
 func TestCrashThenRestart(t *testing.T) {
 	g := newGroup(sixEvents()...)
-	sink := newSink(t)
+	dst := newSink(t)
 	o := opts()
 	o.afterCommit = func() { panic("crash-after-commit") }
 	func() {
@@ -200,7 +200,7 @@ func TestCrashThenRestart(t *testing.T) {
 				t.Fatal("the crash hook did not run")
 			}
 		}()
-		_, _ = consume(context.Background(), as{g, "sink-1"}, sink, o, &bytes.Buffer{})
+		_, _ = consume(context.Background(), as{g, "sink-1"}, dst, o, &bytes.Buffer{})
 	}()
 	if len(g.pending) != 6 {
 		t.Fatalf("%d pending after the crash, want 6: nothing may be acked before the commit returns", len(g.pending))
@@ -208,7 +208,7 @@ func TestCrashThenRestart(t *testing.T) {
 
 	// New work arrived meanwhile: recovery must still come first.
 	g.entries = append(g.entries, ev("7-0", "u-90"))
-	st, err := consume(context.Background(), as{g, "sink-1"}, sink, opts(), &bytes.Buffer{})
+	st, err := consume(context.Background(), as{g, "sink-1"}, dst, opts(), &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestClaimFromADeadConsumer(t *testing.T) {
 func TestRefused(t *testing.T) {
 	es := append(sixEvents(), ev("7-0", "Jo-Smith"), ev("8-0", "jo@example.com"),
 		entry{id: "9-0", key: "u-81"}, // no data (e.g. XDEL'd)
-		entry{id: "10-0", key: "u-81", data: make([]byte, topicsink.MaxContentBytes+1)})
+		entry{id: "10-0", key: "u-81", data: make([]byte, sink.MaxContentBytes+1)})
 	g := newGroup(es...)
 	var log bytes.Buffer
 	st, err := consume(context.Background(), as{g, "sink-1"}, newSink(t), opts(), &log)
@@ -276,8 +276,8 @@ func TestRefused(t *testing.T) {
 // the next run commits it.
 func TestCommitFailure(t *testing.T) {
 	g := newGroup(sixEvents()...)
-	sink := newSink(t)
-	_, err := consume(context.Background(), as{g, "sink-1"}, &loggingSink{inner: sink, g: g, fail: "u-82"},
+	dst := newSink(t)
+	_, err := consume(context.Background(), as{g, "sink-1"}, &loggingSink{inner: dst, g: g, fail: "u-82"},
 		opts(), &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("the commit failure was swallowed")
@@ -285,7 +285,7 @@ func TestCommitFailure(t *testing.T) {
 	if len(g.pending) != 2 || g.pending["2-0"] == nil || g.pending["5-0"] == nil {
 		t.Fatalf("pending %v: want exactly u-82's two entries", g.pending)
 	}
-	st, err := consume(context.Background(), as{g, "sink-1"}, sink, opts(), &bytes.Buffer{})
+	st, err := consume(context.Background(), as{g, "sink-1"}, dst, opts(), &bytes.Buffer{})
 	if err != nil || st.recovered != 2 || st.committed != 2 || len(g.pending) != 0 {
 		t.Fatalf("next run: %+v, %v", st, err)
 	}
@@ -294,13 +294,13 @@ func TestCommitFailure(t *testing.T) {
 // TestAckFailure: committed but not acked. The next run recognises them.
 func TestAckFailure(t *testing.T) {
 	g := newGroup(sixEvents()...)
-	sink := newSink(t)
+	dst := newSink(t)
 	g.ackErr = errors.New("connection reset")
-	if _, err := consume(context.Background(), as{g, "sink-1"}, sink, opts(), &bytes.Buffer{}); err == nil {
+	if _, err := consume(context.Background(), as{g, "sink-1"}, dst, opts(), &bytes.Buffer{}); err == nil {
 		t.Fatal("an ack failure was swallowed")
 	}
 	g.ackErr = nil
-	st, err := consume(context.Background(), as{g, "sink-1"}, sink, opts(), &bytes.Buffer{})
+	st, err := consume(context.Background(), as{g, "sink-1"}, dst, opts(), &bytes.Buffer{})
 	if err != nil || st.duplicates != 6 || st.committed != 0 || len(g.pending) != 0 {
 		t.Fatalf("next run: %+v, %v; want 6 recognised", st, err)
 	}
@@ -390,15 +390,24 @@ func TestFollowKeepsClaiming(t *testing.T) {
 // TestRecreatedStreamIsNotADuplicate: a recreated stream restarts its ids. With
 // a new incarnation in the Source, the new "1-0" is committed, not dropped.
 func TestRecreatedStreamIsNotADuplicate(t *testing.T) {
-	sink := newSink(t)
-	if _, err := consume(context.Background(), as{newGroup(ev("1-0", "u-81")), "sink-1"}, sink, opts(),
+	dst := newSink(t)
+	if _, err := consume(context.Background(), as{newGroup(ev("1-0", "u-81")), "sink-1"}, dst, opts(),
 		&bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
 	o := opts()
 	o.sourcePrefix = "evidence@t2"
-	st, err := consume(context.Background(), as{newGroup(ev("1-0", "u-81")), "sink-1"}, sink, o, &bytes.Buffer{})
+	st, err := consume(context.Background(), as{newGroup(ev("1-0", "u-81")), "sink-1"}, dst, o, &bytes.Buffer{})
 	if err != nil || st.committed != 1 || st.duplicates != 0 {
 		t.Fatalf("new stream, same id: %+v, %v; want committed", st, err)
+	}
+}
+
+func TestSourceFits(t *testing.T) {
+	if err := sourceFits("evidence@0123456789abcdef"); err != nil {
+		t.Fatalf("an ordinary stream name refused: %v", err)
+	}
+	if err := sourceFits(strings.Repeat("s", 250) + "@0123456789abcdef"); err == nil {
+		t.Fatal("a stream name that overflows every position was accepted")
 	}
 }

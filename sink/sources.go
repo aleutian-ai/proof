@@ -1,12 +1,14 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-package topicsink
+package sink
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -24,8 +26,10 @@ import (
 // attempt stopped before its append, and the record is committed now.
 //
 // Positions, not content: a source names where a message sat upstream (a stream
-// sequence, an offset), never what it said. So the file survives erasure, and a
-// redelivery after an erasure is still recognised.
+// sequence, an offset), never what it said. But a position maps the chain's
+// pseudonym to exact upstream messages, so Erase deletes the chain's rows and
+// rewrites the file. A redelivery arriving after an erasure is therefore
+// committed again, after the erasure entry, visibly.
 
 var sourcesBucket = []byte("sources")
 
@@ -41,17 +45,20 @@ type position struct {
 // sourcesStore is the open sources file.
 type sourcesStore struct{ db *bolt.DB }
 
-func openSources(path string) (*sourcesStore, error) {
+func openSources(path string, lockTimeout time.Duration) (*sourcesStore, error) {
+	if err := regularOrAbsent(path); err != nil {
+		return nil, fmt.Errorf("sink: %w", err)
+	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout})
 	if err != nil {
-		return nil, fmt.Errorf("topicsink: open %s: %w", path, err)
+		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
 		_, err := tx.CreateBucketIfNotExists(sourcesBucket)
 		return err
 	}); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("topicsink: initialise %s: %w", path, err)
+		return nil, fmt.Errorf("sink: initialise %s: %w", path, err)
 	}
 	return &sourcesStore{db: db}, nil
 }
@@ -75,7 +82,7 @@ func (s *sourcesStore) get(chain, source string) (position, bool, error) {
 			return nil
 		}
 		if len(v) < 8 {
-			return errors.New("topicsink: a sources record is truncated")
+			return errors.New("sink: a sources record is truncated")
 		}
 		found = true
 		p = position{entryID: string(v[:len(v)-8]), seq: int64(binary.BigEndian.Uint64(v[len(v)-8:]))}
@@ -93,9 +100,27 @@ func (s *sourcesStore) putBatch(chain string, positions map[string]position) err
 			v = append(v, p.entryID...)
 			v = binary.BigEndian.AppendUint64(v, uint64(p.seq))
 			if err := b.Put(sourceKey(chain, src), v); err != nil {
-				return fmt.Errorf("topicsink: record source: %w", err)
+				return fmt.Errorf("sink: record source: %w", err)
 			}
 		}
 		return nil
 	})
+}
+
+// deleteChain removes every recorded position of one chain, in one
+// transaction, and returns how many it removed.
+func (s *sourcesStore) deleteChain(chain string) (int, error) {
+	prefix := sourceKey(chain, "")
+	n := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		c := tx.Bucket(sourcesBucket).Cursor()
+		for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Seek(prefix) {
+			if err := c.Delete(); err != nil {
+				return fmt.Errorf("sink: delete source: %w", err)
+			}
+			n++
+		}
+		return nil
+	})
+	return n, err
 }

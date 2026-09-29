@@ -34,19 +34,22 @@ show() { printf '$ %s\n' "$*"; "$@"; }
 
 say "build (from this working tree)"
 mkdir -p "$BIN"
-(cd "$REPO" && go build -o "$BIN/proof" ./cmd/proof \
-             && go build -o "$BIN/topic-sink" ./examples/integrations/topicsink/cmd/topic-sink)
+(cd "$REPO" && go build -o "$BIN/proof" ./cmd/proof)
 (cd "$HERE" && go build -o "$BIN/redis-sink" .)
 export PATH="$BIN:$PATH"
 
 say "server: $IMAGE"
 podman rm -f "$NAME" >/dev/null 2>&1 || true
 podman run -d --rm --name "$NAME" -p "$PORT:6379" "$IMAGE" >/dev/null
+# Capture, then grep: with pipefail, `podman logs | grep -q` fails whenever grep
+# exits at its first match before podman has finished writing (SIGPIPE), which
+# a server with long start-up logs (redis:8 loads modules) triggers every time.
+ready() { local l; l="$(podman logs "$NAME" 2>&1)"; grep -q "Ready to accept connections" <<<"$l"; }
 for _ in $(seq 1 50); do
-    podman logs "$NAME" 2>&1 | grep -q "Ready to accept connections" && break
+    ready && break
     sleep 0.2
 done
-podman logs "$NAME" 2>&1 | grep -q "Ready to accept connections" || { echo "server did not start" >&2; exit 1; }
+ready || { echo "server did not start" >&2; exit 1; }
 ADDR="127.0.0.1:$PORT"
 
 cd "$WORK"
@@ -83,9 +86,9 @@ out="$(redis-sink pending -addr "$ADDR")"; printf '$ redis-sink pending\n%s\n' "
 echo "$out" | grep -q "^0 entries pending" || { echo "ENTRIES LEFT PENDING" >&2; exit 1; }
 
 say "checkpoint and verify: exactly 6 entries"
-show topic-sink checkpoint -dir sink-data -key-file keys/ml-dsa-65-private.pem
-out="$(topic-sink verify -dir sink-data -pub-file keys/ml-dsa-65-public.pem)"
-printf '$ topic-sink verify -dir sink-data -pub-file keys/ml-dsa-65-public.pem\n%s\n' "$out"
+show proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
+out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem)"
+printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem\n%s\n' "$out"
 echo "$out" | grep -q "all 3 chains verify" || exit 1
 entries() { echo "$1" | awk '/^chain /{for(i=1;i<=NF;i++) if ($(i+1) ~ /^entr/) {n+=$i; break}} END{print n+0}'; }
 total=$(entries "$out")
@@ -103,8 +106,8 @@ out="$(redis-sink consume -addr "$ADDR" -dir sink-data)"
 printf '$ redis-sink consume -addr %s -dir sink-data\n%s\n' "$ADDR" "$out"
 echo "$out" | grep -q "committed 1 · already committed 0" \
     || { echo "A NEW ENTRY WAS TAKEN FOR AN OLD ONE" >&2; exit 1; }
-out="$(topic-sink verify -dir sink-data -pub-file keys/ml-dsa-65-public.pem)"
-printf '$ topic-sink verify -dir sink-data -pub-file keys/ml-dsa-65-public.pem\n%s\n' "$out"
+out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem)"
+printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem\n%s\n' "$out"
 echo "$out" | grep -q "all 3 chains verify" || exit 1
 [ "$(entries "$out")" -eq 7 ] || { echo "expected 7 entries" >&2; exit 1; }
 

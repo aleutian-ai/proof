@@ -58,6 +58,26 @@ func Open(path string, lockTimeout time.Duration) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// OpenReadOnly opens an existing nonce file for reading only, under a shared
+// lock. Nothing is created or changed. A file without the nonce bucket is
+// refused rather than read.
+func OpenReadOnly(path string, lockTimeout time.Duration) (*Store, error) {
+	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
+	}
+	if err := db.View(func(tx *bolt.Tx) error {
+		if tx.Bucket(bucket) == nil {
+			return errors.New("no nonces bucket: not a nonce file")
+		}
+		return nil
+	}); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
+	}
+	return &Store{db: db}, nil
+}
+
 // Close releases the file.
 func (s *Store) Close() error { return s.db.Close() }
 

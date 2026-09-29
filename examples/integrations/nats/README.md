@@ -2,18 +2,18 @@
 
 NATS routes by **subject**. `nats-sink` reads a JetStream stream of
 `evidence.<key>` messages and commits each one to the proof chain named `<key>`,
-through [`topicsink`](../topicsink). It **acknowledges a message only after its
+through [`proof/sink`](../../../sink). It **acknowledges a message only after its
 commit succeeds**, so a crash never loses evidence. A message redelivered after a
 crash is recognised, and it is **never committed twice**.
 
 ```
-  publisher ──► stream EVIDENCE ──► durable consumer ──► topicsink ──► one chain per key
+  publisher ──► stream EVIDENCE ──► durable consumer ──► proof/sink ──► one chain per key
   evidence.u-81   (evidence.*)      commit, THEN ack
                                         │
                crash between commit and ack → redelivered → recognised → acked, not re-committed
 ```
 
-Checkpoint, verify and erase are `topic-sink`'s, run on the same folder.
+Checkpoint, verify and erase are `proof sink`'s, run on the same folder.
 
 ## Run it
 
@@ -64,11 +64,11 @@ committed 0 · already committed (redelivered) 6 · refused 0
 **Checkpoint and verify: exactly six entries**, one chain per user:
 
 ```
-$ topic-sink checkpoint -dir sink-data -key-file keys/ml-dsa-65-private.pem
+$ proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
 checkpoint anchors/u-81/0001.json signed over 3 entries
 checkpoint anchors/u-82/0001.json signed over 2 entries
 checkpoint anchors/u-90/0001.json signed over 1 entry
-$ topic-sink verify -dir sink-data -pub-file keys/ml-dsa-65-public.pem
+$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem
 chain u-81         verifies 3 entries: 3 opened, 0 erased · 1 checkpoint, 0 unanchored
 chain u-82         verifies 2 entries: 2 opened, 0 erased · 1 checkpoint, 0 unanchored
 chain u-90         verifies 1 entry: 1 opened, 0 erased · 1 checkpoint, 0 unanchored
@@ -77,7 +77,7 @@ all 3 chains verify
 
 ## How "never twice" works
 
-Each record carries its stream position as its topicsink `Source`:
+Each record carries its stream position as its sink `Source`:
 `EVIDENCE@<created>:42`. That is the stream, when this incarnation of it was
 created, and the sequence. The creation time matters. A deleted and recreated
 stream restarts at sequence 1, and without it a new message 1 would look like
@@ -90,9 +90,10 @@ its chain: the entry id and the sequence. It keeps this in
 - **It does not:** the earlier attempt stopped before its append. It is
   committed now.
 
-The check costs one lookup, not a scan. Positions are not personal data, so they
-survive erasure. A message redelivered after its user was erased is still
-recognised and not re-committed.
+The check costs one lookup, not a scan. Positions link a user's pseudonym to
+upstream messages, so they are deleted when that user is erased. A message
+redelivered after its user was erased is therefore committed again, visibly,
+after the erasure entry.
 
 ## What it proves, and what it doesn't
 
@@ -104,7 +105,7 @@ recognised and not re-committed.
   check for gaps in stream sequences later. That check is not built here.
 - **Doesn't prove the order across keys.** Each chain is ordered on its own.
 - **One checkpoint series per key.** Many keys means many signatures per
-  checkpoint run, the same limit as `topicsink`.
+  checkpoint run, the same limit as the sink.
 
 ## Notes
 
@@ -118,7 +119,7 @@ recognised and not re-committed.
   duplicate check caught every one, and the chain still held exactly 6 entries.
   But it was wasted work, and it is now refused.
 - **A message that can never be committed is terminated**, never retried: an
-  empty payload, one over topicsink's 64 KiB limit, or one with no stream
+  empty payload, one over the sink's 64 KiB limit, or one with no stream
   position. Retrying would redeliver it forever and stall every message
   behind it.
 - `-follow` keeps consuming instead of exiting once the stream is drained.

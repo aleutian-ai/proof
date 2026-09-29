@@ -9,7 +9,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/aleutian-ai/proof/examples/integrations/topicsink"
+	"github.com/aleutian-ai/proof/sink"
 )
 
 // message is the part of a JetStream message the consumer uses. The real one
@@ -19,7 +19,7 @@ type message interface {
 	Data() []byte
 	// Position names where the message sits: the stream, which INCARNATION of
 	// it (its creation time), and the sequence, e.g. "EVIDENCE@1727550000000000000:42".
-	// It is the record's topicsink Source, which makes redelivery idempotent.
+	// It is the record's sink Source, which makes redelivery idempotent.
 	// The creation time matters: a deleted and recreated stream restarts at
 	// sequence 1, and without it a new message would look like an old one and
 	// be dropped as a duplicate.
@@ -29,9 +29,9 @@ type message interface {
 	Term() error
 }
 
-// committer is the part of topicsink.Sink the consumer uses.
+// committer is the part of sink.Sink the consumer uses.
 type committer interface {
-	Commit(ctx context.Context, records []topicsink.Record) ([]topicsink.Committed, error)
+	Commit(ctx context.Context, records []sink.Record) ([]sink.Committed, error)
 }
 
 // router turns a subject into a chain id.
@@ -47,7 +47,7 @@ func (r router) chain(subject string) (string, bool) {
 	if !ok || key == "" || strings.Contains(key, ".") {
 		return "", false
 	}
-	chain, err := topicsink.ChainFor(key)
+	chain, err := sink.ChainFor(key)
 	return chain, err == nil
 }
 
@@ -69,7 +69,7 @@ type stats struct {
 //     TERMINATED: redelivering it would loop forever, and acking it would
 //     lose it without a trace. It is logged by stream position, NEVER by subject,
 //     since a refused key is often the personal data the rule keeps out.
-//  2. Commit the rest through topicsink, one atomic append per chain, each
+//  2. Commit the rest through sink, one atomic append per chain, each
 //     record carrying its stream position as its Source.
 //  3. Only then acknowledge them. A crash before this point means redelivery,
 //     and redelivered positions are recognised as already committed.
@@ -81,9 +81,9 @@ type stats struct {
 // # Inputs
 //
 //   - ctx: passed to Commit
-//   - sink: where records are committed
+//   - dst: where records are committed (a *sink.Sink in production)
 //   - r: the subject router
-//   - msgs: one fetched batch, at most topicsink.MaxBatch
+//   - msgs: one fetched batch, at most sink.MaxBatch
 //   - afterCommit: called between commit and ack; the demo's crash hook. nil
 //     for none.
 //   - log: operator log; receives stream positions and counts, never subjects
@@ -94,10 +94,10 @@ type stats struct {
 //
 //   - stats: what happened
 //   - error: a commit failed; the caller should stop
-func processBatch(ctx context.Context, sink committer, r router, msgs []message,
+func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 	afterCommit func(), log io.Writer) (stats, error) {
 	var st stats
-	var recs []topicsink.Record
+	var recs []sink.Record
 	byChain := map[string][]message{}
 
 	for _, m := range msgs {
@@ -118,24 +118,25 @@ func processBatch(ctx context.Context, sink committer, r router, msgs []message,
 			st.refused++
 			continue
 		}
-		// Checked here, not left to Commit: Commit refuses a whole batch for one
-		// bad record, and a message that can never be committed would come back
-		// forever and stall every message behind it.
-		if n := len(m.Data()); n == 0 || n > topicsink.MaxContentBytes {
-			fmt.Fprintf(log, "refused %s: its payload is %d bytes; it must be 1 to %d. Terminated.\n",
-				pos, n, topicsink.MaxContentBytes)
+		// Validated here with the sink's own rule, not left to Commit: Commit
+		// refuses a whole batch for one bad record, and a message that can never
+		// be committed would come back forever and stall every message behind it.
+		// (The error never contains the key or the payload.)
+		rec := sink.Record{Key: chain, Content: m.Data(), Source: pos}
+		if err := rec.Validate(); err != nil {
+			fmt.Fprintf(log, "refused %s: %v. Terminated.\n", pos, err)
 			_ = m.Term()
 			st.refused++
 			continue
 		}
-		recs = append(recs, topicsink.Record{Key: chain, Content: m.Data(), Source: pos})
+		recs = append(recs, rec)
 		byChain[chain] = append(byChain[chain], m)
 	}
 	if len(recs) == 0 {
 		return st, nil
 	}
 
-	done, err := sink.Commit(ctx, recs)
+	done, err := dst.Commit(ctx, recs)
 	if afterCommit != nil && len(done) > 0 {
 		afterCommit()
 	}

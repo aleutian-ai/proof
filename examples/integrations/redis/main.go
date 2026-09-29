@@ -9,12 +9,12 @@
 //
 // Entries on the stream (-stream, default "evidence") carry a "key" field that
 // names the chain and a "data" field that is committed. Checkpoint, verify and
-// erase the folder (-dir) with topic-sink.
+// erase the folder (-dir) with `proof sink`.
 //
 // An entry is acknowledged only after its commit succeeds. Redis never
 // redelivers, so consume first recovers entries left pending: its own, then any
 // idle past -claim-idle. Each record carries "<stream>:<entry id>" as its
-// topicsink Source, so an entry committed just before a crash is recognised and
+// sink Source, so an entry committed just before a crash is recognised and
 // acked, never committed twice. -crash-after-commit exits between the two.
 //
 // Works unchanged with Valkey, the Linux Foundation's BSD-licensed fork.
@@ -37,12 +37,12 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/aleutian-ai/proof/examples/integrations/topicsink"
+	"github.com/aleutian-ai/proof/sink"
 )
 
 const (
 	group   = "proof"
-	batch   = 100 // well under topicsink.MaxBatch
+	batch   = 100 // well under sink.MaxBatch
 	maxLine = 1 << 20
 
 	exitOK     = 0
@@ -76,7 +76,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	addr := fs.String("addr", "127.0.0.1:6379", "Redis or Valkey server")
 	stream := fs.String("stream", "evidence", "stream name")
 	key := fs.String("key", "", "add: the JSON field whose value becomes the entry's key")
-	dir := fs.String("dir", "sink-data", "consume: the topicsink folder")
+	dir := fs.String("dir", "sink-data", "consume: the sink folder")
 	consumer := fs.String("consumer", "sink-1", "consume: this consumer's name in the group; reuse it across restarts")
 	claimIdle := fs.Duration("claim-idle", 60*time.Second, "consume: claim entries another consumer left pending this long")
 	follow := fs.Bool("follow", false, "consume: keep running instead of exiting when drained")
@@ -122,12 +122,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "%d entries pending (read, not acknowledged) in group %s\n", p.Count, group)
 		}
 	case "consume":
-		var sink *topicsink.Sink
-		if sink, err = topicsink.Open(*dir); err != nil {
+		var dst *sink.Sink
+		if dst, err = sink.Open(*dir); err != nil {
 			break
 		}
 		o := options{stream: *stream, sourcePrefix: *stream + "@" + incarnation, batch: batch,
 			claimIdle: *claimIdle, follow: *follow}
+		if err = sourceFits(o.sourcePrefix); err != nil {
+			break
+		}
 		if *crashAfter {
 			o.afterCommit = func() {
 				fmt.Fprintln(stderr, "redis-sink: -crash-after-commit: exiting after the commit, before any ack")
@@ -136,7 +139,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		c := redisClient{rdb: rdb, stream: *stream, consumer: *consumer}
 		var st stats
-		st, err = consume(ctx, c, sink, o, stderr)
+		st, err = consume(ctx, c, dst, o, stderr)
 		fmt.Fprintf(stdout, "recovered from pending %d · committed %d · already committed %d · refused %d\n",
 			st.recovered, st.committed, st.duplicates, st.refused)
 		if st.vanished > 0 {
@@ -211,7 +214,7 @@ func add(ctx context.Context, rdb *redis.Client, stream, field string, in io.Rea
 		if len(bytes.TrimSpace(raw)) == 0 {
 			continue
 		}
-		r, err := topicsink.RecordFromJSON(raw, field)
+		r, err := sink.RecordFromJSON(raw, field)
 		if err != nil {
 			return fmt.Errorf("line %d: %w", line, err)
 		}

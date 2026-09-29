@@ -6,11 +6,11 @@
 //	nats-sink publish -key user < events.jsonl   publish each line to evidence.<user>
 //	nats-sink consume                            commit, THEN ack; exit when drained
 //
-// Messages on evidence.<key> are committed to the chain <key> in a topicsink
-// folder (-dir). Checkpoint, verify and erase that folder with topic-sink.
+// Messages on evidence.<key> are committed to the chain <key> in a sink
+// folder (-dir). Checkpoint, verify and erase that folder with `proof sink`.
 //
 // A message is acknowledged only after its commit succeeds. Each record carries
-// its stream position as its topicsink Source, so a message redelivered after a
+// its stream position as its sink Source, so a message redelivered after a
 // crash is recognised and acked, never committed twice. -crash-after-commit
 // exits between the commit and the ack, to show exactly that.
 package main
@@ -33,13 +33,13 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/aleutian-ai/proof/examples/integrations/topicsink"
+	"github.com/aleutian-ai/proof/sink"
 )
 
 const (
 	streamName = "EVIDENCE"
 	durable    = "proof-sink"
-	fetchBatch = 100 // well under topicsink.MaxBatch
+	fetchBatch = 100 // well under sink.MaxBatch
 
 	// idleWait is how long -follow waits for new messages when the stream is
 	// drained. minAckWait keeps the ack deadline well above it: a message held
@@ -75,7 +75,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	url := fs.String("url", nats.DefaultURL, "NATS server")
 	prefix := fs.String("prefix", "evidence", "subject prefix: messages are <prefix>.<key>")
 	key := fs.String("key", "", "publish: the JSON field whose value becomes the subject's key")
-	dir := fs.String("dir", "sink-data", "consume: the topicsink folder")
+	dir := fs.String("dir", "sink-data", "consume: the sink folder")
 	follow := fs.Bool("follow", false, "consume: keep running instead of exiting when drained")
 	ackWait := fs.Duration("ack-wait", 30*time.Second, "consume: how long JetStream waits for an ack before redelivering")
 	crashAfter := fs.Bool("crash-after-commit", false, "consume: DEMO — exit after the first commit, before acking")
@@ -154,7 +154,7 @@ func publish(ctx context.Context, js jetstream.JetStream, prefix, field string, 
 		if len(bytes.TrimSpace(raw)) == 0 {
 			continue
 		}
-		r, err := topicsink.RecordFromJSON(raw, field)
+		r, err := sink.RecordFromJSON(raw, field)
 		if err != nil {
 			return fmt.Errorf("line %d: %w", line, err)
 		}
@@ -180,7 +180,7 @@ func publish(ctx context.Context, js jetstream.JetStream, prefix, field string, 
 // follow, until interrupted).
 func consume(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, r router, dir string,
 	ackWait time.Duration, follow bool, afterCommit func(), out, log io.Writer) error {
-	sink, err := topicsink.Open(dir)
+	dst, err := sink.Open(dir)
 	if err != nil {
 		return err
 	}
@@ -224,7 +224,7 @@ func consume(ctx context.Context, js jetstream.JetStream, stream jetstream.Strea
 				continue
 			}
 		}
-		st, err := processBatch(ctx, sink, r, msgs, afterCommit, log)
+		st, err := processBatch(ctx, dst, r, msgs, afterCommit, log)
 		total.committed += st.committed
 		total.duplicates += st.duplicates
 		total.refused += st.refused

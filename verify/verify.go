@@ -259,98 +259,142 @@ func Chain(entries []Entry, opts Options) (Result, error) {
 	if len(entries) == 0 {
 		return Result{}, fmt.Errorf("verify: no entries supplied; verifying nothing proves nothing")
 	}
-
-	res := Result{
-		Verdict:         VerdictIntact,
-		EntriesVerified: len(entries),
-		FirstBreak:      -1,
+	w := NewWalker(opts)
+	for _, e := range entries {
+		w.Add(e)
 	}
-	addBreak := func(b Break) {
-		if res.FirstBreak == -1 {
-			res.FirstBreak = b.Position
-		}
-		res.Verdict = VerdictBroken
-		if opts.MaxBreaks == 0 || len(res.Breaks) < opts.MaxBreaks {
-			res.Breaks = append(res.Breaks, b)
-		}
+	return w.Result(), nil
+}
+
+// Walker verifies a chain one entry at a time: Chain's walk, streamed.
+//
+// # Description
+//
+// Chain holds every entry in memory. A caller reading a long chain from a
+// store in pages feeds a Walker instead: the result is identical, because Chain
+// IS a Walker over a slice. Between entries the walker can bind an anchor that
+// covers exactly the entries seen so far (VerifyAnchor), so a series of
+// checkpoints is checked in the same single pass.
+//
+// # Thread Safety
+//
+// Not safe for concurrent use.
+type Walker struct {
+	opts         Options
+	res          Result
+	previousHash string
+	previousSeq  int64
+	first, last  Entry
+}
+
+// NewWalker starts a walk. opts is as for Chain.
+func NewWalker(opts Options) *Walker {
+	return &Walker{opts: opts, res: Result{Verdict: VerdictIntact, FirstBreak: -1},
+		previousHash: opts.PreviousHash}
+}
+
+// Count is how many entries have been added.
+func (w *Walker) Count() int { return w.res.EntriesVerified }
+
+// First and Last are the first and most recent entries added.
+func (w *Walker) First() Entry { return w.first }
+func (w *Walker) Last() Entry  { return w.last }
+
+// Result is the verdict over the entries added so far, as Chain would return it.
+func (w *Walker) Result() Result {
+	r := w.res
+	r.Breaks = append([]Break(nil), w.res.Breaks...)
+	return r
+}
+
+func (w *Walker) addBreak(b Break) {
+	if w.res.FirstBreak == -1 {
+		w.res.FirstBreak = b.Position
 	}
+	w.res.Verdict = VerdictBroken
+	if w.opts.MaxBreaks == 0 || len(w.res.Breaks) < w.opts.MaxBreaks {
+		w.res.Breaks = append(w.res.Breaks, b)
+	}
+}
 
-	previousHash := opts.PreviousHash
-	previousSeq := int64(0)
+// Add walks one entry. Every failure is recorded as a Break; there is no error.
+func (w *Walker) Add(e Entry) {
+	i := w.res.EntriesVerified
+	w.res.EntriesVerified++
+	if i == 0 {
+		w.first = e
+	}
+	w.last = e
 
-	for i, e := range entries {
-		if i > 0 && e.GlobalSeq != previousSeq+1 {
-			addBreak(Break{
-				Position: i, EntryID: e.EntryID, Type: BreakSequenceGap,
-				Detail: fmt.Sprintf("expected global_seq %d, got %d", previousSeq+1, e.GlobalSeq),
+	if i > 0 && e.GlobalSeq != w.previousSeq+1 {
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakSequenceGap,
+			Detail: fmt.Sprintf("expected global_seq %d, got %d", w.previousSeq+1, e.GlobalSeq),
+		})
+	}
+	w.previousSeq = e.GlobalSeq
+
+	// Rule 2 — tombstones. Format only, then advance on the STORED hash.
+	if chainformat.IsTombstone(e.EntryType, e.EntryID) {
+		w.res.TombstonesFound++
+		if !chainformat.ValidateTombstoneContentHash(e.ContentHash) {
+			w.addBreak(Break{
+				Position: i, EntryID: e.EntryID, Type: BreakInvalidTombstone,
+				Detail: "content hash is not a well-formed tombstone value",
 			})
 		}
-		previousSeq = e.GlobalSeq
-
-		// Rule 2 — tombstones. Format only, then advance on the STORED hash.
-		if chainformat.IsTombstone(e.EntryType, e.EntryID) {
-			res.TombstonesFound++
-			if !chainformat.ValidateTombstoneContentHash(e.ContentHash) {
-				addBreak(Break{
-					Position: i, EntryID: e.EntryID, Type: BreakInvalidTombstone,
-					Detail: "content hash is not a well-formed tombstone value",
-				})
-			}
-			previousHash = e.ChainHash
-			continue
-		}
-
-		ts, err := time.Parse(time.RFC3339Nano, e.Timestamp)
-		if err != nil {
-			addBreak(Break{
-				Position: i, EntryID: e.EntryID, Type: BreakInvalidTimestamp,
-				Detail: "timestamp is not RFC3339; the chain hash cannot be recomputed",
-			})
-			// Advance on the stored hash: the entry cannot be checked, but the
-			// entries after it still can, and linking from a hash we could not
-			// derive would report breaks for them too.
-			previousHash = e.ChainHash
-			continue
-		}
-
-		// The two formats cannot be told apart by looking at a digest, so the
-		// entry has to say which preimage produced it. Absent means v2, which is
-		// what every entry written before the field existed carries.
-		var expected string
-		switch chainformat.NormalizeFormatVersion(e.FormatVersion) {
-		case chainformat.FormatV2:
-			expected = chainformat.ComputeChainHashUnchecked(
-				previousHash, e.RunID, e.SequenceNum, ts, e.ContentHash)
-		case chainformat.FormatV3:
-			if e.RunID != "" || e.SequenceNum != 0 {
-				// v3 binds neither field. Carrying them anyway invites a reader
-				// to treat them as attested when they are free to change.
-				addBreak(Break{
-					Position: i, EntryID: e.EntryID, Type: BreakFormatFieldMisuse,
-					Detail: "a v3 entry must not carry run_id or sequence_num; neither is bound into its hash",
-				})
-				previousHash = e.ChainHash
-				continue
-			}
-			expected = chainformat.ComputeChainHashV3Unchecked(
-				previousHash, e.GlobalSeq, ts, e.ContentHash)
-		default:
-			addBreak(Break{
-				Position: i, EntryID: e.EntryID, Type: BreakUnknownFormat,
-				Detail: fmt.Sprintf("chain hash format version %d is not implemented by this build", e.FormatVersion),
-			})
-			previousHash = e.ChainHash
-			continue
-		}
-
-		if expected != e.ChainHash {
-			addBreak(Break{
-				Position: i, EntryID: e.EntryID, Type: BreakHashMismatch,
-				Expected: expected, Actual: e.ChainHash,
-			})
-		}
-		previousHash = expected
+		w.previousHash = e.ChainHash
+		return
 	}
 
-	return res, nil
+	ts, err := time.Parse(time.RFC3339Nano, e.Timestamp)
+	if err != nil {
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakInvalidTimestamp,
+			Detail: "timestamp is not RFC3339; the chain hash cannot be recomputed",
+		})
+		// Advance on the stored hash: the entry cannot be checked, but the
+		// entries after it still can, and linking from a hash we could not
+		// derive would report breaks for them too.
+		w.previousHash = e.ChainHash
+		return
+	}
+
+	// The two formats cannot be told apart by looking at a digest, so the
+	// entry has to say which preimage produced it. Absent means v2, which is
+	// what every entry written before the field existed carries.
+	var expected string
+	switch chainformat.NormalizeFormatVersion(e.FormatVersion) {
+	case chainformat.FormatV2:
+		expected = chainformat.ComputeChainHashUnchecked(
+			w.previousHash, e.RunID, e.SequenceNum, ts, e.ContentHash)
+	case chainformat.FormatV3:
+		if e.RunID != "" || e.SequenceNum != 0 {
+			// v3 binds neither field. Carrying them anyway invites a reader
+			// to treat them as attested when they are free to change.
+			w.addBreak(Break{
+				Position: i, EntryID: e.EntryID, Type: BreakFormatFieldMisuse,
+				Detail: "a v3 entry must not carry run_id or sequence_num; neither is bound into its hash",
+			})
+			w.previousHash = e.ChainHash
+			return
+		}
+		expected = chainformat.ComputeChainHashV3Unchecked(
+			w.previousHash, e.GlobalSeq, ts, e.ContentHash)
+	default:
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakUnknownFormat,
+			Detail: fmt.Sprintf("chain hash format version %d is not implemented by this build", e.FormatVersion),
+		})
+		w.previousHash = e.ChainHash
+		return
+	}
+
+	if expected != e.ChainHash {
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakHashMismatch,
+			Expected: expected, Actual: e.ChainHash,
+		})
+	}
+	w.previousHash = expected
 }

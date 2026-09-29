@@ -142,17 +142,12 @@ var allowedDeps = map[string][]string{
 		"golang.org/x/text",
 	},
 
-	// An EXAMPLE: one chain per key from a keyed stream. It assembles the
-	// library (verify, anchor/build, the bolt store, the nonce file) and adds no
-	// dependency of its own; the service examples that import it bring theirs in
-	// their own modules.
-	"/examples/integrations/topicsink": {
-		"github.com/cloudflare/circl",
-		"go.etcd.io/bbolt",
-		"golang.org/x/sys",
-		"golang.org/x/text",
-	},
-	"/examples/integrations/topicsink/cmd/topic-sink": {
+	// The sink: one chain per key, idempotent commits, checkpoints, verification
+	// and erasure over a folder. It assembles the library (verify, anchor/build,
+	// the bolt store, the nonce file) and adds no dependency of its own. The
+	// integrations that feed it (NATS, Redis, …) are separate modules, so their
+	// clients never enter this one.
+	"/sink": {
 		"github.com/cloudflare/circl",
 		"go.etcd.io/bbolt",
 		"golang.org/x/sys",

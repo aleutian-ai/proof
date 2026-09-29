@@ -9,7 +9,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/aleutian-ai/proof/examples/integrations/topicsink"
+	"github.com/aleutian-ai/proof/sink"
 )
 
 // entry is one stream entry, as the consumer needs it.
@@ -38,9 +38,9 @@ type streamClient interface {
 	ack(ctx context.Context, ids ...string) error
 }
 
-// committer is the part of topicsink.Sink the consumer uses.
+// committer is the part of sink.Sink the consumer uses.
 type committer interface {
-	Commit(ctx context.Context, records []topicsink.Record) ([]topicsink.Committed, error)
+	Commit(ctx context.Context, records []sink.Record) ([]sink.Committed, error)
 }
 
 // stats is what the consumer did.
@@ -63,7 +63,7 @@ func (s *stats) add(o stats) {
 // options configure consume.
 type options struct {
 	stream string
-	// sourcePrefix begins every record's topicsink Source: "<stream>@<incarnation>".
+	// sourcePrefix begins every record's sink Source: "<stream>@<incarnation>".
 	// The incarnation changes whenever the consumer group is created afresh,
 	// which is also when a deleted stream comes back. Entry ids restart then,
 	// and without it a new entry could be taken for an old one and dropped.
@@ -92,7 +92,7 @@ type options struct {
 // context ends with follow.
 //
 // Recovered entries were possibly committed already (a crash between commit
-// and ack). Each record's Source is "<stream>:<entry id>", so topicsink
+// and ack). Each record's Source is "<stream>@<incarnation>:<entry id>", so sink
 // recognises those and they are acked without being committed twice.
 //
 // # Outputs
@@ -100,7 +100,7 @@ type options struct {
 //   - stats: totals, also when an error stops the run
 //   - error: a read, commit or ack failed. Unacked entries stay pending and are
 //     recovered on the next run.
-func consume(ctx context.Context, c streamClient, sink committer, o options, log io.Writer) (stats, error) {
+func consume(ctx context.Context, c streamClient, dst committer, o options, log io.Writer) (stats, error) {
 	var total stats
 
 	// 1. Own pending entries. Each pass acks what it read, so the list shrinks.
@@ -112,7 +112,7 @@ func consume(ctx context.Context, c streamClient, sink committer, o options, log
 		if len(es) == 0 {
 			break
 		}
-		st, err := processBatch(ctx, c, sink, o, es, log)
+		st, err := processBatch(ctx, c, dst, o, es, log)
 		st.recovered = len(es)
 		total.add(st)
 		if err != nil {
@@ -121,7 +121,7 @@ func consume(ctx context.Context, c streamClient, sink committer, o options, log
 	}
 
 	// 2. Entries a dead consumer left behind.
-	st, err := claim(ctx, c, sink, o, log)
+	st, err := claim(ctx, c, dst, o, log)
 	total.add(st)
 	if err != nil {
 		return total, err
@@ -136,7 +136,7 @@ func consume(ctx context.Context, c streamClient, sink committer, o options, log
 	}
 	for ctx.Err() == nil {
 		if o.follow && time.Since(lastClaim) >= o.claimIdle {
-			st, err := claim(ctx, c, sink, o, log)
+			st, err := claim(ctx, c, dst, o, log)
 			total.add(st)
 			if err != nil {
 				return total, err
@@ -153,7 +153,7 @@ func consume(ctx context.Context, c streamClient, sink committer, o options, log
 			}
 			break
 		}
-		st, err := processBatch(ctx, c, sink, o, es, log)
+		st, err := processBatch(ctx, c, dst, o, es, log)
 		total.add(st)
 		if err != nil {
 			return total, err
@@ -165,7 +165,7 @@ func consume(ctx context.Context, c streamClient, sink committer, o options, log
 // claim runs XAUTOCLAIM to the end of the pending list, committing what it
 // takes over. Pending entries that were deleted from the stream are reported:
 // Redis drops them from the pending list, so this is their last trace.
-func claim(ctx context.Context, c streamClient, sink committer, o options, log io.Writer) (stats, error) {
+func claim(ctx context.Context, c streamClient, dst committer, o options, log io.Writer) (stats, error) {
 	var total stats
 	for cursor := "0-0"; ; {
 		es, next, deleted, err := c.autoClaim(ctx, o.claimIdle, cursor, o.batch)
@@ -178,7 +178,7 @@ func claim(ctx context.Context, c streamClient, sink committer, o options, log i
 		}
 		total.vanished += len(deleted)
 		if len(es) > 0 {
-			st, err := processBatch(ctx, c, sink, o, es, log)
+			st, err := processBatch(ctx, c, dst, o, es, log)
 			st.recovered = len(es)
 			total.add(st)
 			if err != nil {
@@ -209,7 +209,7 @@ func stopped(ctx context.Context, err error) error {
 //     empty or oversized data) and ack it at once, logged by entry id, never by
 //     key. Acking does not delete: the entry stays in the stream, just not on
 //     a chain. Leaving it pending would re-read it on every recovery forever.
-//  2. Commit the rest through topicsink, each with Source "<stream>:<id>".
+//  2. Commit the rest through sink, each with Source "<stream>@<incarnation>:<id>".
 //  3. Then ack them. For a chain whose commit failed, nothing is acked: those
 //     entries stay pending and are recovered next run.
 //
@@ -217,35 +217,32 @@ func stopped(ctx context.Context, err error) error {
 // folder itself is broken, and committing other chains past it would only hide
 // that. The failed entries stay pending, so nothing is lost; the next run
 // retries them first.
-func processBatch(ctx context.Context, c streamClient, sink committer, o options, es []entry,
+func processBatch(ctx context.Context, c streamClient, dst committer, o options, es []entry,
 	log io.Writer) (stats, error) {
 	var st stats
 	var refused []string
-	var recs []topicsink.Record
+	var recs []sink.Record
 	idsByChain := map[string][]string{}
 
 	for _, e := range es {
 		pos := o.stream + ":" + e.id // for the operator's log
-		chain, err := topicsink.ChainFor(e.key)
-		switch {
-		case e.gone:
+		if e.gone {
 			fmt.Fprintf(log, "lost %s: it was deleted from the stream while pending. If it was "+
 				"not committed before, it never will be. Acked.\n", pos)
 			st.vanished++
 			refused = append(refused, e.id)
 			continue
-		case err != nil:
-			fmt.Fprintf(log, "refused %s: its key is not a valid chain id (lowercase letters, "+
-				"digits, . _ -, max 64). Acked; it stays in the stream.\n", pos)
-		case len(e.data) == 0 || len(e.data) > topicsink.MaxContentBytes:
-			fmt.Fprintf(log, "refused %s: its data is %d bytes; it must be 1 to %d. Acked; it "+
-				"stays in the stream.\n", pos, len(e.data), topicsink.MaxContentBytes)
-		default:
-			recs = append(recs, topicsink.Record{Key: chain, Content: e.data, Source: o.sourcePrefix + ":" + e.id})
-			idsByChain[chain] = append(idsByChain[chain], e.id)
+		}
+		// The sink's own rule, applied here so one bad entry never fails (and
+		// stalls) its whole batch. The error never contains the key or the data.
+		rec := sink.Record{Key: e.key, Content: e.data, Source: o.sourcePrefix + ":" + e.id}
+		if err := rec.Validate(); err != nil {
+			fmt.Fprintf(log, "refused %s: %v. Acked; it stays in the stream.\n", pos, err)
+			refused = append(refused, e.id)
 			continue
 		}
-		refused = append(refused, e.id)
+		recs = append(recs, rec)
+		idsByChain[e.key] = append(idsByChain[e.key], e.id)
 	}
 	if len(refused) > 0 {
 		if err := c.ack(ctx, refused...); err != nil {
@@ -257,7 +254,7 @@ func processBatch(ctx context.Context, c streamClient, sink committer, o options
 		return st, nil
 	}
 
-	done, err := sink.Commit(ctx, recs)
+	done, err := dst.Commit(ctx, recs)
 	if o.afterCommit != nil && len(done) > 0 {
 		o.afterCommit()
 	}
@@ -279,4 +276,18 @@ func processBatch(ctx context.Context, c streamClient, sink committer, o options
 		return st, fmt.Errorf("commit: %w", err)
 	}
 	return st, nil
+}
+
+// maxEntryID is the longest Redis stream entry id: two uint64s and a dash.
+const maxEntryID = len("18446744073709551615-18446744073709551615")
+
+// sourceFits refuses a configuration in which some positions would be longer
+// than the sink accepts. Checked at start-up: otherwise EVERY entry would be
+// refused one by one, which is silent loss by misconfiguration.
+func sourceFits(sourcePrefix string) error {
+	if n := len(sourcePrefix) + 1 + maxEntryID; n > sink.MaxSourceBytes {
+		return fmt.Errorf("the stream name is too long: positions would be up to %d bytes, "+
+			"over the sink's %d byte limit", n, sink.MaxSourceBytes)
+	}
+	return nil
 }

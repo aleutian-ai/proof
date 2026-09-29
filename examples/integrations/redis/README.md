@@ -2,14 +2,14 @@
 
 Redis is the database most teams already run, and **Streams** are its append-only
 log. `redis-sink` reads a stream through a consumer group and commits each entry
-to the proof chain named by its `key` field, through [`topicsink`](../topicsink).
+to the proof chain named by its `key` field, through [`proof/sink`](../../../sink).
 It acknowledges (`XACK`) an entry only after its commit succeeds.
 
 It works unchanged with **Valkey**, the Linux Foundation's BSD-licensed fork of
 Redis. The demo runs on Valkey by default, and has also been run on Redis 8.
 
 ```
-  XADD evidence * key u-81 data {…} ─► stream "evidence" ─► group "proof" ─► topicsink ─► chain per key
+  XADD evidence * key u-81 data {…} ─► stream "evidence" ─► group "proof" ─► proof/sink ─► chain per key
                                                             commit, THEN XACK
       crash before XACK → entries stay PENDING → restart reads its pending list FIRST
                         → recognised as committed → XACK'd, not re-committed
@@ -31,7 +31,7 @@ With `-follow` it keeps claiming every `-claim-idle`, since a peer can die at
 any time, not just before this consumer started.
 
 Pending entries may already have been committed, if the crash came between the
-commit and the ack. Each record carries its stream position as its topicsink
+commit and the ack. Each record carries its stream position as its sink
 `Source`, so those are recognised and acknowledged, never committed twice.
 
 That position is `evidence@<incarnation>:<entry id>`. The incarnation is a
@@ -89,11 +89,11 @@ $ redis-sink pending
 **Checkpoint and verify: exactly six entries**, one chain per user:
 
 ```
-$ topic-sink checkpoint -dir sink-data -key-file keys/ml-dsa-65-private.pem
+$ proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
 checkpoint anchors/u-81/0001.json signed over 3 entries
 checkpoint anchors/u-82/0001.json signed over 2 entries
 checkpoint anchors/u-90/0001.json signed over 1 entry
-$ topic-sink verify -dir sink-data -pub-file keys/ml-dsa-65-public.pem
+$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem
 chain u-81         verifies 3 entries: 3 opened, 0 erased · 1 checkpoint, 0 unanchored
 chain u-82         verifies 2 entries: 2 opened, 0 erased · 1 checkpoint, 0 unanchored
 chain u-90         verifies 1 entry: 1 opened, 0 erased · 1 checkpoint, 0 unanchored
@@ -112,7 +112,7 @@ $ podman exec proof-redis-demo redis-cli XADD evidence 1790649543524-0 key u-81 
 1790649543524-0
 $ redis-sink consume -addr 127.0.0.1:6379 -dir sink-data
 recovered from pending 0 · committed 1 · already committed 0 · refused 0
-$ topic-sink verify -dir sink-data -pub-file keys/ml-dsa-65-public.pem
+$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem
 chain u-81         verifies 4 entries: 4 opened, 0 erased · 1 checkpoint, 1 unanchored
 chain u-82         verifies 2 entries: 2 opened, 0 erased · 1 checkpoint, 0 unanchored
 chain u-90         verifies 1 entry: 1 opened, 0 erased · 1 checkpoint, 0 unanchored

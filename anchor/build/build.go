@@ -159,16 +159,62 @@ func Anchor(ctx context.Context, in Input) (anchor.Anchor, error) {
 	if len(in.Entries) == 0 {
 		return anchor.Anchor{}, ErrNoEntries
 	}
-	if in.Subject == "" {
+	w := verify.NewWalker(verify.Options{MaxBreaks: 1})
+	for _, e := range in.Entries {
+		w.Add(e)
+	}
+	return FromWalker(ctx, in.Subject, w, in.Previous, in.CreatedAt)
+}
+
+// FromWalker produces an unsigned anchor over exactly the entries a Walker has
+// seen: Anchor's steps 2–5 for a chain read in pages rather than held whole.
+//
+// # Description
+//
+// The walker has already verified the entries as they were added; this refuses
+// to anchor if it found any break. The head is the last entry's chain hash, which
+// the walk verified, and the anchor hash is recomputed from what the anchor
+// commits to, exactly as in Anchor (which is FromWalker over a slice).
+//
+// # Inputs
+//
+//   - ctx: checked once
+//   - subject: see Input.Subject; required
+//   - w: a walker over the complete range this anchor covers, from its first
+//     entry
+//   - previous: the anchor this one follows, or nil for the first
+//   - createdAt: zero means time.Now().UTC()
+//
+// # Outputs
+//
+//   - anchor.Anchor: a v6 anchor, unsigned
+//   - error: ErrNoEntries, ErrChainBroken, ctx.Err(), or a validation failure
+//
+// # Example
+//
+//	w := verify.NewWalker(verify.Options{MaxBreaks: 1})
+//	for page := range pages { for _, e := range page { w.Add(e) } }
+//	a, err := build.FromWalker(ctx, "my-project", w, prev, time.Time{})
+//
+// # Limitations
+//
+//   - Like Anchor, it verifies linkage, not truth, and cannot tell whether the
+//     walker saw the whole chain.
+func FromWalker(ctx context.Context, subject string, w *verify.Walker, previous *anchor.Anchor,
+	createdAt time.Time) (anchor.Anchor, error) {
+	if err := ctx.Err(); err != nil {
+		return anchor.Anchor{}, fmt.Errorf("build: %w", err)
+	}
+	if w == nil || w.Count() == 0 {
+		return anchor.Anchor{}, ErrNoEntries
+	}
+	if subject == "" {
 		return anchor.Anchor{}, errors.New("build: a subject is required; it is the " +
 			"replay protection, and a v6 anchor without one is invalid")
 	}
 
-	// 2. Establish the claim BEFORE making it.
-	res, err := verify.Chain(in.Entries, verify.Options{MaxBreaks: 1})
-	if err != nil {
-		return anchor.Anchor{}, fmt.Errorf("build: verifying the chain: %w", err)
-	}
+	// 2. Establish the claim BEFORE making it: the walk already did.
+	res := w.Result()
 	if res.Verdict == verify.VerdictBroken {
 		detail := "unknown"
 		if len(res.Breaks) > 0 {
@@ -179,19 +225,19 @@ func Anchor(ctx context.Context, in Input) (anchor.Anchor, error) {
 			"claim look authoritative", ErrChainBroken, detail)
 	}
 
-	first, last := in.Entries[0], in.Entries[len(in.Entries)-1]
+	first, last := w.First(), w.Last()
 
-	// 3/4. The head is the last entry's chain hash — verified above, so it is
-	// the head of a chain that actually links. The anchor hash is RECOMPUTED
+	// 3/4. The head is the last entry's chain hash — verified by the walk, so it
+	// is the head of a chain that actually links. The anchor hash is RECOMPUTED
 	// from what the anchor commits to, never copied from the tip.
 	previousAnchorHash, previousAnchorID := anchor.SeedAnchorHash, anchor.SeedAnchorID
-	if in.Previous != nil {
-		previousAnchorHash = in.Previous.ChainHash
-		previousAnchorID = in.Previous.AnchorID
+	if previous != nil {
+		previousAnchorHash = previous.ChainHash
+		previousAnchorID = previous.AnchorID
 	}
 
 	chainHash, err := anchor.ChainHash(
-		previousAnchorHash, in.Subject, first.EntryID, last.EntryID, last.ChainHash)
+		previousAnchorHash, subject, first.EntryID, last.EntryID, last.ChainHash)
 	if err != nil {
 		return anchor.Anchor{}, fmt.Errorf("build: anchor chain hash: %w", err)
 	}
@@ -201,7 +247,6 @@ func Anchor(ctx context.Context, in Input) (anchor.Anchor, error) {
 		return anchor.Anchor{}, fmt.Errorf("build: %w", err)
 	}
 
-	createdAt := in.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
@@ -209,11 +254,11 @@ func Anchor(ctx context.Context, in Input) (anchor.Anchor, error) {
 	out := anchor.Anchor{
 		Version:    anchor.SubjectVersion,
 		AnchorID:   anchorID,
-		Subject:    in.Subject,
+		Subject:    subject,
 		ChainHash:  chainHash,
 		Range:      anchor.EntryRange{StartEntryID: first.EntryID, EndEntryID: last.EntryID},
-		EntryCount: int64(len(in.Entries)),
-		// Asserted ONLY because step 2 established it.
+		EntryCount: int64(w.Count()),
+		// Asserted ONLY because the walk established it.
 		VerifiedThrough:  int64(res.EntriesVerified),
 		PreviousAnchorID: previousAnchorID,
 		CreatedAtMs:      createdAt.UnixMilli(),

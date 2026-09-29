@@ -32,19 +32,22 @@ show() { printf '$ %s\n' "$*"; "$@"; }
 
 say "build (from this working tree)"
 mkdir -p "$BIN"
-(cd "$REPO" && go build -o "$BIN/proof" ./cmd/proof \
-             && go build -o "$BIN/topic-sink" ./examples/integrations/topicsink/cmd/topic-sink)
+(cd "$REPO" && go build -o "$BIN/proof" ./cmd/proof)
 (cd "$HERE" && go build -o "$BIN/nats-sink" .)
 export PATH="$BIN:$PATH"
 
 say "nats-server with JetStream ($IMAGE)"
 podman rm -f "$NAME" >/dev/null 2>&1 || true
 podman run -d --rm --name "$NAME" -p "$PORT:4222" "$IMAGE" -js >/dev/null
+# Capture, then grep: with pipefail, `podman logs | grep -q` fails whenever grep
+# exits at its first match before podman has finished writing (SIGPIPE), which
+# a server with long start-up logs (redis:8 loads modules) triggers every time.
+ready() { local l; l="$(podman logs "$NAME" 2>&1)"; grep -q "Server is ready" <<<"$l"; }
 for _ in $(seq 1 50); do
-    podman logs "$NAME" 2>&1 | grep -q "Server is ready" && break
+    ready && break
     sleep 0.2
 done
-podman logs "$NAME" 2>&1 | grep -q "Server is ready" || { echo "nats-server did not start" >&2; exit 1; }
+ready || { echo "nats-server did not start" >&2; exit 1; }
 URL="nats://127.0.0.1:$PORT"
 
 cd "$WORK"
@@ -81,9 +84,9 @@ echo "$out" | grep -q "committed 0 · already committed (redelivered) 6" \
     || { echo "REDELIVERY WAS NOT RECOGNISED" >&2; exit 1; }
 
 say "checkpoint and verify: exactly 6 entries"
-show topic-sink checkpoint -dir sink-data -key-file keys/ml-dsa-65-private.pem
-out="$(topic-sink verify -dir sink-data -pub-file keys/ml-dsa-65-public.pem)"
-printf '$ topic-sink verify -dir sink-data -pub-file keys/ml-dsa-65-public.pem\n%s\n' "$out"
+show proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
+out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem)"
+printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem\n%s\n' "$out"
 echo "$out" | grep -q "all 3 chains verify" || exit 1
 total=$(echo "$out" | sed -n 's/.* \([0-9]*\) entr[a-z]*:.*/\1/p' | paste -sd+ - | bc)
 [ "$total" -eq 6 ] || { echo "expected 6 entries in total, found $total" >&2; exit 1; }

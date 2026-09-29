@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aleutian-ai/proof/examples/integrations/topicsink"
+	"github.com/aleutian-ai/proof/sink"
 )
 
 // fakeMsg records what the consumer did to it, and when, on a shared log.
@@ -46,10 +46,10 @@ type loggingSink struct {
 	fail   string // a chain whose commit fails
 }
 
-func (s *loggingSink) Commit(ctx context.Context, recs []topicsink.Record) ([]topicsink.Committed, error) {
+func (s *loggingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Committed, error) {
 	*s.events = append(*s.events, "commit")
 	if s.fail != "" {
-		var ok []topicsink.Record
+		var ok []sink.Record
 		for _, r := range recs {
 			if r.Key != s.fail {
 				ok = append(ok, r)
@@ -66,12 +66,12 @@ func (s *loggingSink) Commit(ctx context.Context, recs []topicsink.Record) ([]to
 
 type harness struct {
 	events []string
-	sink   *topicsink.Sink
+	sink   *sink.Sink
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	s, err := topicsink.Open(t.TempDir())
+	s, err := sink.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,9 +120,9 @@ func TestRouter(t *testing.T) {
 // TestAckAfterCommit: every ack comes after the commit, never before.
 func TestAckAfterCommit(t *testing.T) {
 	h := newHarness(t)
-	sink := &loggingSink{inner: h.sink, events: &h.events}
+	dst := &loggingSink{inner: h.sink, events: &h.events}
 	ms := []*fakeMsg{h.msg("evidence.u-81", 1), h.msg("evidence.u-82", 2), h.msg("evidence.u-81", 3)}
-	st, err := processBatch(context.Background(), sink, r, asMessages(ms...), nil, &bytes.Buffer{})
+	st, err := processBatch(context.Background(), dst, r, asMessages(ms...), nil, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,9 +202,9 @@ func TestRefused(t *testing.T) {
 // redelivery; those of chains committed before it are acked.
 func TestCommitFailure(t *testing.T) {
 	h := newHarness(t)
-	sink := &loggingSink{inner: h.sink, events: &h.events, fail: "u-82"}
+	dst := &loggingSink{inner: h.sink, events: &h.events, fail: "u-82"}
 	a, b := h.msg("evidence.u-81", 1), h.msg("evidence.u-82", 2)
-	_, err := processBatch(context.Background(), sink, r, asMessages(a, b), nil, &bytes.Buffer{})
+	_, err := processBatch(context.Background(), dst, r, asMessages(a, b), nil, &bytes.Buffer{})
 	if err == nil {
 		t.Fatal("the commit failure was swallowed")
 	}
@@ -226,12 +226,12 @@ func TestNoPosition(t *testing.T) {
 }
 
 // TestBadPayloadDoesNotStallTheStream: an empty or oversized payload would make
-// topicsink refuse the whole batch, every time it came back. It is terminated
+// sink refuse the whole batch, every time it came back. It is terminated
 // instead, and the rest of the batch is committed and acked.
 func TestBadPayloadDoesNotStallTheStream(t *testing.T) {
 	for name, data := range map[string][]byte{
 		"empty":     {},
-		"oversized": make([]byte, topicsink.MaxContentBytes+1),
+		"oversized": make([]byte, sink.MaxContentBytes+1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)

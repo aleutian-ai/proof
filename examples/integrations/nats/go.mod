@@ -8,7 +8,7 @@ go 1.25.0
 // Never a replace directive to a local path.
 
 require (
-	github.com/aleutian-ai/proof v0.3.1-0.20260929004521-f88a575994de
+	github.com/aleutian-ai/proof v0.3.1-0.20260929165125-458e746caed2
 	github.com/nats-io/nats.go v1.53.0
 )
 

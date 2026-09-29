@@ -44,7 +44,10 @@ func TestSymlinkedContentDir_OutsideTheSink(t *testing.T) {
 	if err := os.Symlink(outside, dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Erase(context.Background(), cid(t, s, "u-81")); err == nil {
+	if _, err := s.Commit(context.Background(), events("u-81", 1)); err == nil {
+		t.Fatal("Commit wrote content through a symlinked folder")
+	}
+	if _, err := eraseOne(t, s, "u-81"); err == nil {
 		t.Fatal("Erase went ahead through a symlinked content folder")
 	}
 	if _, err := os.Stat(victim); err != nil {
@@ -55,9 +58,6 @@ func TestSymlinkedContentDir_OutsideTheSink(t *testing.T) {
 	}
 	if p := problems(t, s, ring, cid(t, s, "u-81")); !strings.Contains(p, "not a real directory") {
 		t.Fatalf("Verify did not report the symlinked folder: %q", p)
-	}
-	if _, err := s.Commit(context.Background(), events("u-81", 1)); err == nil {
-		t.Fatal("Commit wrote content through a symlinked folder")
 	}
 }
 
@@ -71,7 +71,7 @@ func TestSymlinkedContentDir_InsideTheSink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(s.dir, "content", cid(t, s, "u-82")), dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Erase(context.Background(), cid(t, s, "u-81")); err == nil {
+	if _, err := eraseOne(t, s, "u-81"); err == nil {
 		t.Fatal("erasing u-81 went ahead through a link to u-82's folder")
 	}
 	after, _ := os.ReadDir(filepath.Join(s.dir, "content", cid(t, s, "u-82")))
@@ -190,7 +190,7 @@ func TestReadVerbsCreateNothing(t *testing.T) {
 	if _, err := s.Checkpoint(context.Background(), signer, nil); err == nil {
 		t.Fatal("Checkpoint of a folder that does not exist succeeded")
 	}
-	if _, err := s.Erase(context.Background(), testClass+"."+strings.Repeat("0", 32)); err == nil {
+	if _, err := s.EraseSubject(context.Background(), "u-1"); err == nil {
 		t.Fatal("Erase of a folder that does not exist succeeded")
 	}
 	if _, err := os.Stat(typo); !os.IsNotExist(err) {
@@ -311,9 +311,11 @@ func TestErase_PreflightRefusesBeforeRecording(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(s.dir, "content", cid(t, s, "u-81"), "stuck"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The first attempt forgets the subject, then refuses the chain; the second
+	// finds it pending and refuses again. Neither appends an erasure entry.
 	for i := 0; i < 2; i++ {
-		if _, err := s.Erase(context.Background(), cid(t, s, "u-81")); err == nil ||
-			!strings.Contains(err.Error(), "Nothing was erased") {
+		if _, err := s.EraseSubject(context.Background(), "u-81"); err == nil ||
+			!strings.Contains(err.Error(), "was not erased") {
 			t.Fatalf("attempt %d: %v", i, err)
 		}
 	}

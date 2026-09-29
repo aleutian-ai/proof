@@ -87,7 +87,6 @@ func TestErase_ForgedErasureIsRejected(t *testing.T) {
 // bbolt leaves the bytes in free pages: an erased nonce must not be findable
 // anywhere in the live nonce file.
 func TestErase_RemovesNoncesFromTheFile(t *testing.T) {
-	ctx := context.Background()
 	s, _, _ := setup(t)
 	nonces := func(chain string) [][]byte {
 		ns, err := noncestore.Open(noncestore.PathFor(s.DBPath()), DefaultLockTimeout)
@@ -107,7 +106,7 @@ func TestErase_RemovesNoncesFromTheFile(t *testing.T) {
 	}
 	erased, kept := nonces(cid(t, s, "u-81")), nonces(cid(t, s, "u-82"))
 
-	if _, err := s.Erase(ctx, cid(t, s, "u-81")); err != nil {
+	if _, err := eraseOne(t, s, "u-81"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(noncestore.PathFor(s.DBPath()))
@@ -141,7 +140,7 @@ func TestErase_DeletesSourcesAndForgetsThem(t *testing.T) {
 	if _, err := s.Commit(ctx, append(recs, sourced("u-2", 1, 950)...)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Erase(ctx, cid(t, s, "u-1")); err != nil {
+	if _, err := eraseOne(t, s, "u-1"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(s.sourcesPath())
@@ -161,8 +160,13 @@ func TestErase_DeletesSourcesAndForgetsThem(t *testing.T) {
 	if err != nil || got[0].Entries != 2 || got[0].Duplicates != 0 {
 		t.Fatalf("redelivery after erasure: %v, %v; want committed again (decision (a))", got, err)
 	}
-	if n := len(entryIDs(t, s, cid(t, s, "u-1"))); n != 5 { // 2 events + erasure + 2 re-committed
-		t.Fatalf("u-1 holds %d entries, want 5", n)
+	// ...on a NEW chain: the subject was forgotten (_69b), so the redelivery can
+	// never rejoin the erased history.
+	if got[0].Chain == cid(t, s, "u-1") {
+		t.Fatal("the redelivery was appended to the erased chain")
+	}
+	if n := len(entryIDs(t, s, cid(t, s, "u-1"))); n != 3 { // 2 events + erasure, untouched
+		t.Fatalf("the erased chain holds %d entries, want 3", n)
 	}
 }
 

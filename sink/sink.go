@@ -1,34 +1,36 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Package sink commits keyed events to one proof chain per key, and
-// checkpoints, verifies and erases each chain on its own.
+// Package sink commits events about subjects to opaque proof chains, one per
+// (class, subject) pair, and checkpoints, verifies and erases them.
 //
 // # Description
 //
-// Logging and streaming systems split their data by key: a user, a topic, a
-// tenant. A sink keeps that split. It is a folder holding one evidence file with
-// many chains, and it is where real event systems meet proof's deterministic
+// Logging and streaming systems carry events about someone: a user, an
+// account, a device. A sink keeps each subject's evidence of each class on its
+// own chain, and it is where real event systems meet proof's deterministic
 // core. The integrations under examples/integrations (NATS, Redis/Valkey, Kafka,
 // …) are consumers in front of this package and nothing more.
 //
-//	records ──► ChainFor(key) ──► Commit ──► evidence.db          one chain per key
-//	                              (salted)   evidence.db.nonces   the secret half, per entry
-//	                                         evidence.db.sources  upstream positions, for idempotency
-//	                                         content/<chain>/     the events themselves
-//	            Checkpoint ─────────────────► anchors/<chain>/    one signed checkpoint series per chain
+//	records ──► Commit ──► evidence.db           opaque chains <class>.<32 hex>   shareable
+//	            (salted)   evidence.db.nonces    the secret half, per entry       SECRET
+//	                       evidence.db.sources   upstream positions, idempotency  SECRET
+//	                       evidence.db.subjects  subject ↔ chain index            SECRET
+//	                       content/<chain>/      the events themselves            SECRET
+//	            Checkpoint ─────────────────► anchors/<chain>/   one signed series per chain
 //	            Verify: every chain, on its own
-//	            Erase(chain): content and nonces gone; the chain still verifies
+//	            EraseSubject: content, nonces and the index rows gone; the chains still verify
 //
-// Every event is committed as a salted commitment (package commitment): the
-// chain holds a fingerprint that cannot be reversed or guessed, even for short
-// or predictable events, and the evidence file holds no event content. It is
-// still pseudonymous personal data (chain ids, per-subject counts and
-// timestamps, erasures): see docs/sink-format.md before sharing it. The event
-// itself and its nonce stay in the folder.
+// Chain ids are random, never derived from the subject: only the secret subject
+// index links a subject to its chains, so the evidence file and checkpoints name
+// no one. Every event is committed as a salted commitment (package commitment):
+// the chain holds a fingerprint that cannot be reversed or guessed, even for
+// short or predictable events. The evidence file is still pseudonymous personal
+// data (per-chain counts and timestamps, erasures): see docs/sink-format.md
+// before sharing it.
 //
 // The folder layout, entry types, erasure record and verification rules are
-// specified in docs/sink-format.md. The three bbolt files are this package's
+// specified in docs/sink-format.md. The bbolt files are this package's
 // implementation, documented there but not an interface: other languages
 // verify an exported bundle, not the files.
 //
@@ -38,27 +40,34 @@
 // incarnation. A record whose Source is already committed on its chain is
 // skipped, across calls and across crashes. That is what lets a consumer
 // acknowledge upstream only after committing, without committing a redelivery
-// twice. Erasing a chain deletes its sources, so a redelivery after an erasure
-// is committed again.
+// twice. Erasing a subject deletes its chains' sources, and a later event for
+// the subject goes to a new chain, so a redelivery after an erasure is
+// committed again: consumers should acknowledge before erasing.
 //
 // # Erasure
 //
-// Erase deletes a chain's events, nonces and source positions, and rewrites the
-// files they lived in, so none can be opened from this folder again. It first
-// commits an erasure entry to that chain, so the erasure is on the record:
-// Verify reports events before an erasure entry as ERASED, and an event missing
-// with no erasure after it as MISSING, which is what deleting files by hand
-// looks like. Erasure reaches only the live files: not backups, snapshots, SSD
-// blocks, or anyone the content was disclosed to.
+// EraseSubject (or EraseSubjectClass, for one class) forgets the subject in the
+// index, then commits a genuine erasure entry to each of its chains and deletes
+// their events, nonces and source positions, and rewrites the secret files, so
+// none can be opened from this folder again. Verify reports events before an
+// erasure entry as ERASED, and an event missing with no erasure after it as
+// MISSING, which is what deleting files by hand looks like. An interrupted
+// erasure is completed by ResumeErasures. Erasure reaches only the live files:
+// not backups, snapshots, SSD blocks, or anyone the content was disclosed to.
 //
 // # Limitations
 //
 //   - One checkpoint series per chain. Thousands of chains means thousands of
 //     signatures per checkpoint run.
-//   - Keys must already be pseudonyms. A chain id is stored permanently and is
-//     signed into every checkpoint. The id rule refuses an email address or
-//     anything upper-case, but it checks characters only: "john.smith" passes.
-//     Pseudonymizing is the caller's job, upstream.
+//   - Subjects must already be pseudonyms. A subject is stored only in the
+//     secret index, but also sits in its events' content. ValidSubject refuses
+//     an email address or anything upper-case, but it checks characters only:
+//     "john.smith" passes. Pseudonymizing is the caller's job, upstream.
+//   - Correlation leakage: erasing a subject erases all its chains within the
+//     same moment, and a returning subject's new chain starts soon after, so an
+//     observer of the evidence file may infer which opaque chains belonged to
+//     one subject. Timestamps are never altered to hide it. Kept copies of the
+//     subjects file re-link every chain, erased or not.
 //   - One process at a time: the files are locked while in use. Calls on one
 //     Sink queue.
 //   - Checkpoints prove what they cover only if they are kept where the writer
@@ -70,6 +79,7 @@ package sink
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
@@ -144,15 +154,32 @@ type Record struct {
 }
 
 // Committed reports what one (class, subject) pair's chain received.
+//
+// SENSITIVE: a Committed pairs a subject with its chain, which is exactly what
+// the secret subject index exists to hold, and what erasure deletes. Subject is
+// here only so a streaming consumer can acknowledge upstream per subject. Do not
+// log, print or persist it: a logged pairing re-identifies the chain forever,
+// after any erasure. To make that hard to do by accident, Subject is never
+// encoded to JSON, and a Committed formats with the subject redacted (%v, %+v,
+// %#v, %s).
 type Committed struct {
 	Chain   string `json:"chain"` // the opaque chain id
 	Class   string `json:"class"`
-	Subject string `json:"subject"` // as the caller gave it; not stored in the chain
+	Subject string `json:"-"`       // as the caller gave it; SENSITIVE, see above
 	Entries int    `json:"entries"` // newly committed
 	// Duplicates were records whose Source was already committed on this chain,
 	// or repeated within the batch. They were skipped.
 	Duplicates int `json:"duplicates,omitempty"`
 }
+
+// String formats c with its subject redacted.
+func (c Committed) String() string {
+	return fmt.Sprintf("{Chain:%s Class:%s Subject:[redacted] Entries:%d Duplicates:%d}",
+		c.Chain, c.Class, c.Entries, c.Duplicates)
+}
+
+// GoString formats c for %#v, with its subject redacted.
+func (c Committed) GoString() string { return "sink.Committed" + c.String() }
 
 // Checkpointed reports one chain's checkpoint: written, or refused.
 type Checkpointed struct {
@@ -200,7 +227,20 @@ func (r Report) OK() bool {
 	return true
 }
 
-// EraseResult reports one erasure.
+// SubjectErasure reports one EraseSubject or EraseSubjectClass call.
+type SubjectErasure struct {
+	// Class is empty for a subject erasure (every class; the subject is
+	// forgotten), and names the one class erased for a class-scoped erasure (the
+	// subject is still known through its other classes).
+	Class string `json:"class,omitempty"`
+	// Erased are this call's chains. None means the sink held nothing for the
+	// subject in scope.
+	Erased []EraseResult `json:"erased"`
+	// Resumed are chains of earlier, interrupted erasures, completed first.
+	Resumed []EraseResult `json:"resumed,omitempty"`
+}
+
+// EraseResult reports one chain's erasure.
 type EraseResult struct {
 	Chain string `json:"chain"`
 	// Events is how many events this erasure newly covers: those since the
@@ -215,7 +255,7 @@ type EraseResult struct {
 	Leftovers int `json:"leftovers,omitempty"`
 }
 
-// Sink is a folder holding one evidence file with a chain per key.
+// Sink is a folder holding one evidence file with a chain per (class, subject).
 //
 // Safe for concurrent use. Calls on one Sink queue; anything else touching the
 // folder — another process, or a second Sink on the same folder — waits on the
@@ -227,6 +267,9 @@ type Sink struct {
 	// mintChainID mints a new chain id: newChainID, always, outside tests. A
 	// field (not a package variable) so a test can force a collision on one Sink.
 	mintChainID func(class string) (string, error)
+	// compact rewrites one secret file: compactFile, always, outside tests. A
+	// field so a test can make one compaction fail.
+	compact func(path string, lockTimeout time.Duration) error
 }
 
 // Open opens a sink folder, creating it if needed.
@@ -263,7 +306,7 @@ func Open(dir string, opts ...Option) (*Sink, error) {
 	if dir == "" {
 		return nil, errors.New("sink: a folder is required")
 	}
-	s := &Sink{dir: dir, lockTimeout: DefaultLockTimeout, mintChainID: newChainID}
+	s := &Sink{dir: dir, lockTimeout: DefaultLockTimeout, mintChainID: newChainID, compact: compactFile}
 	for _, o := range opts {
 		o(s)
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
@@ -86,7 +87,7 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 	defer st.Close()
 	defer ns.Close()
 	// Opened only when needed, so a sink that never sees a Source has no
-	// sources file. Always after the other two: one lock order everywhere.
+	// sources file.
 	var src *sourcesStore
 	if sourced {
 		if src, err = openSources(s.sourcesPath(), s.lockTimeout); err != nil {
@@ -94,8 +95,11 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 		}
 		defer src.Close()
 	}
-	// The subject index: last in the lock order (evidence → nonces → sources →
-	// subjects), as everywhere.
+	// The subject index. The evidence file is opened first by every writer, and
+	// its exclusive lock is what serializes them: whoever holds it can open the
+	// secret files in any order without deadlock (erase opens them in another
+	// order). Readers open the evidence file first too (a shared lock), so none
+	// can hold a secret file while a writer holds the evidence file.
 	subj, err := openSubjects(s.subjectsPath(), s.lockTimeout)
 	if err != nil {
 		return nil, err
@@ -141,6 +145,9 @@ func (s *Sink) resolveChain(ctx context.Context, st *boltstore.Store, subj *subj
 		if chain, err = s.mintChainID(class); err != nil {
 			return "", err
 		}
+		if !ValidChainID(chain) || !strings.HasPrefix(chain, class+".") {
+			return "", fmt.Errorf("sink: minted an invalid chain id for class %s; nothing was bound", class)
+		}
 		// 128 random bits do not collide in practice, but a collision would
 		// merge two subjects' histories, so it is checked, not assumed: the id
 		// must be unused both in the store and in the index.
@@ -151,7 +158,7 @@ func (s *Sink) resolveChain(ctx context.Context, st *boltstore.Store, subj *subj
 		if !errors.Is(terr, store.ErrEmptyChain) {
 			return "", fmt.Errorf("sink: check a new chain id is unused: %w", terr)
 		}
-		if _, _, taken, err := subj.owner(chain); err != nil || taken {
+		if taken, err := subj.taken(chain); err != nil || taken { // live OR pending
 			continue
 		}
 		if err := subj.bind(subject, class, chain); err != nil {
@@ -273,6 +280,12 @@ func (s *Sink) appendChain(ctx context.Context, l appender, st *boltstore.Store,
 			ids = append(ids, id)
 		}
 		_ = ns.DeleteBatch(chain, ids)
+		if next == 0 {
+			// A first commit created the folder: remove it too, or Verify would
+			// report a removed chain. Leftovers of an earlier attempt keep it
+			// (the removal fails on a non-empty folder), for erasure to find.
+			_ = f.root.Remove(filepath.Join("content", chain))
+		}
 	}
 
 	for i, r := range recs {

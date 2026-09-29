@@ -22,7 +22,7 @@ func TestErase(t *testing.T) {
 	s, signer, ring := setup(t)
 	before := entryIDs(t, s, cid(t, s, "u-81"))
 
-	res, err := s.Erase(ctx, cid(t, s, "u-81"))
+	res, err := eraseOne(t, s, "u-81")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,36 +57,51 @@ func TestErase(t *testing.T) {
 		}
 	}
 
-	// The erasure is checkpointed like any other entry, and the user can come back.
-	if _, err := s.Commit(ctx, events("u-81", 1)); err != nil {
+	// The erasure is checkpointed like any other entry. The user can come back,
+	// but the sink has forgotten them: the new event starts a NEW chain, and
+	// never rejoins the erased history.
+	old := cid(t, s, "u-81")
+	done, err := s.Commit(ctx, events("u-81", 1))
+	if err != nil {
 		t.Fatal(err)
+	}
+	fresh := done[0].Chain
+	if fresh == old {
+		t.Fatal("a returning subject was committed to its erased chain")
 	}
 	if _, err := s.Checkpoint(ctx, signer, nil); err != nil {
 		t.Fatal(err)
 	}
-	c := chainReport(t, mustVerify(t, s, ring), cid(t, s, "u-81"))
-	if c.Erased != 3 || c.Opened != 1 || c.Checkpoints != 2 || c.Unanchored != 0 {
-		t.Fatalf("u-81 after a new event: %+v", c)
+	r = mustVerify(t, s, ring)
+	if c := chainReport(t, r, old); c.Erased != 3 || c.Opened != 0 || c.Checkpoints != 2 || c.Unanchored != 0 {
+		t.Fatalf("the erased chain after the user returned: %+v", c)
+	}
+	if c := chainReport(t, r, fresh); c.Entries != 1 || c.Opened != 1 {
+		t.Fatalf("the returning user's new chain: %+v", c)
 	}
 
-	// Erasing again is safe, and counts only what it newly covers: the one event
-	// committed since the first erasure.
-	res, err = s.Erase(ctx, cid(t, s, "u-81"))
-	if err != nil || res.Events != 1 {
-		t.Fatalf("second erase = %+v, %v", res, err)
+	// Erasing again erases only the new chain.
+	res2, err := s.EraseSubject(ctx, "u-81")
+	if err != nil || len(res2.Erased) != 1 || res2.Erased[0].Chain != fresh || res2.Erased[0].Events != 1 {
+		t.Fatalf("second erase = %+v, %v", res2, err)
 	}
-	if c := chainReport(t, mustVerify(t, s, ring), cid(t, s, "u-81")); c.Erased != 4 || c.Opened != 0 {
-		t.Fatalf("u-81 after a second erase: %+v", c)
+	if c := chainReport(t, mustVerify(t, s, ring), fresh); c.Erased != 1 || c.Opened != 0 {
+		t.Fatalf("the new chain after a second erase: %+v", c)
 	}
 }
 
 func TestErase_Refusals(t *testing.T) {
 	s, _, _ := setup(t)
-	if _, err := s.Erase(context.Background(), "jo@example.com"); err == nil {
-		t.Fatal("an invalid chain id was accepted")
+	if _, err := s.EraseSubject(context.Background(), "jo@example.com"); !errors.Is(err, ErrInvalidSubject) {
+		t.Fatalf("an invalid subject: %v", err)
 	}
-	if _, err := s.Erase(context.Background(), testClass+"."+strings.Repeat("0", 32)); err == nil {
-		t.Fatal("erasing a chain with no entries must fail, not record an erasure of nothing")
+	if _, err := s.EraseSubjectClass(context.Background(), "u-81", "Pay.ments"); !errors.Is(err, ErrInvalidClass) {
+		t.Fatalf("an invalid class: %v", err)
+	}
+	// A subject the sink holds nothing for: no error, nothing erased, no entry.
+	res, err := s.EraseSubject(context.Background(), "u-unknown")
+	if err != nil || len(res.Erased) != 0 || len(res.Resumed) != 0 {
+		t.Fatalf("an unknown subject: %+v, %v; want nothing erased", res, err)
 	}
 }
 
@@ -111,7 +126,7 @@ func TestErase_RemovesLeftovers(t *testing.T) {
 	}
 	ns.Close()
 
-	if _, err := s.Erase(context.Background(), cid(t, s, "u-81")); err != nil {
+	if _, err := eraseOne(t, s, "u-81"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(s.contentPath(cid(t, s, "u-81"), strayID)); !errors.Is(err, os.ErrNotExist) {
@@ -134,7 +149,6 @@ func TestErase_RemovesLeftovers(t *testing.T) {
 // but no entries. Erase removes all three, writes no erasure entry, and Verify
 // no longer reports a removed chain.
 func TestErase_LeftoversOfAnInterruptedFirstCommit(t *testing.T) {
-	ctx := context.Background()
 	s, _, ring := setup(t)
 	// Commit step 1 happened (the index row for u-99 is written first), then
 	// content, nonce and source position, then the crash: no append.
@@ -167,7 +181,7 @@ func TestErase_LeftoversOfAnInterruptedFirstCommit(t *testing.T) {
 	if p := problems(t, s, ring, cid(t, s, "u-99")); !strings.Contains(p, "first commit stopped") {
 		t.Fatalf("leftovers not reported: %q", p)
 	}
-	res, err := s.Erase(ctx, cid(t, s, "u-99"))
+	res, err := eraseOne(t, s, "u-99")
 	if err != nil || res.Leftovers != 3 || res.ErasureEntryID != "" {
 		t.Fatalf("Erase of leftovers = %+v, %v; want 3 removed and no erasure entry", res, err)
 	}
@@ -186,9 +200,9 @@ func TestErase_LeftoversOfAnInterruptedFirstCommit(t *testing.T) {
 	}
 	mustVerify(t, s, ring)
 
-	// Nothing left: a second call says so rather than pretending to erase.
-	if _, err := s.Erase(ctx, cid(t, s, "u-99")); err == nil {
-		t.Fatal("erasing a chain with no entries and no leftovers succeeded")
+	// Nothing left, and the subject is forgotten: a second call erases nothing.
+	if res, err := s.EraseSubject(context.Background(), "u-99"); err != nil || len(res.Erased) != 0 {
+		t.Fatalf("a second erasure of u-99: %+v, %v; want nothing", res, err)
 	}
 }
 
@@ -205,7 +219,7 @@ func TestErase_ReadsInPages(t *testing.T) {
 	if _, err := s.Commit(ctx, events("u-1", 5)); err != nil {
 		t.Fatal(err)
 	}
-	res, err := s.Erase(ctx, cid(t, s, "u-1"))
+	res, err := eraseOne(t, s, "u-1")
 	if err != nil || res.Events != entryPage+5 {
 		t.Fatalf("Erase over %d entries = %+v, %v", entryPage+5, res, err)
 	}

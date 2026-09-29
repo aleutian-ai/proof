@@ -63,15 +63,17 @@ func sinkKeys(t *testing.T) (priv, pub string) {
 func TestSink_Usage(t *testing.T) {
 	dir := t.TempDir()
 	for name, args := range map[string][]string{
-		"no verb":            nil,
-		"unknown verb":       {"append", "--dir", dir},
-		"commit, no class":   {"commit", "--dir", dir, "--subject-field", "user"},
-		"commit, no subject": {"commit", "--dir", dir, "--class", "events"},
-		"checkpoint, no key": {"checkpoint", "--dir", dir},
-		"verify, no key":     {"verify", "--dir", dir},
-		"erase, no chain":    {"erase", "--dir", dir},
-		"stray argument":     {"erase", "--dir", dir, "--chain", "events.00000000000000000000000000000000", "extra"},
-		"wrong verb's flag":  {"commit", "--dir", dir, "--chain", "events.00000000000000000000000000000000"},
+		"no verb":                 nil,
+		"unknown verb":            {"append", "--dir", dir},
+		"commit, no class":        {"commit", "--dir", dir, "--subject-field", "user"},
+		"commit, no subject":      {"commit", "--dir", dir, "--class", "events"},
+		"checkpoint, no key":      {"checkpoint", "--dir", dir},
+		"verify, no key":          {"verify", "--dir", dir},
+		"erase, no subject":       {"erase", "--dir", dir},
+		"erase, subject + resume": {"erase", "--dir", dir, "--subject", "u-1", "--resume"},
+		"erase, resume + class":   {"erase", "--dir", dir, "--resume", "--class", "payments"},
+		"stray argument":          {"erase", "--dir", dir, "--subject", "u-1", "extra"},
+		"wrong verb's flag":       {"commit", "--dir", dir, "--chain", "events.00000000000000000000000000000000"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _, _ := sinkRun(t, "", args...); code != exitUsage {
@@ -94,13 +96,12 @@ func TestSink_EndToEnd(t *testing.T) {
 {"user":"u-81","event":"export","rows":120}
 `
 	code, out, errs := sinkRun(t, events, "commit", "--dir", dir, "--class", "events", "--subject-field", "user")
-	if code != exitOK || !strings.Contains(out, "committed    2 for u-81 → chain events.") ||
-		!strings.Contains(out, "committed    1 for u-82 → chain events.") {
+	if code != exitOK || !strings.Contains(out, "committed 3 entries on 2 chains (0 duplicates)") {
 		t.Fatalf("commit: exit %d\n%s%s", code, out, errs)
 	}
-	c81, c82 := chainOf(t, out, "u-81"), chainOf(t, out, "u-82")
-	if c81 == c82 || strings.Contains(c81, "u-81") {
-		t.Fatalf("chains must be distinct and opaque: %s, %s", c81, c82)
+	noSubjects(t, out+errs)
+	if len(contentChains(t, dir)) != 2 {
+		t.Fatal("want two opaque chains")
 	}
 	if code, out, errs = sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv); code != exitOK ||
 		strings.Count(out, "checkpoint anchors/") != 2 {
@@ -110,14 +111,21 @@ func TestSink_EndToEnd(t *testing.T) {
 		!strings.Contains(out, "all 2 chains verify") {
 		t.Fatalf("verify: exit %d\n%s%s", code, out, errs)
 	}
-	if code, out, errs = sinkRun(t, "", "erase", "--dir", dir, "--chain", c81); code != exitOK ||
-		!strings.Contains(out, "erased 2 events on chain "+c81) || !strings.Contains(out, "entry sink-") {
+	if code, out, errs = sinkRun(t, "", "erase", "--dir", dir, "--subject", "u-81"); code != exitOK ||
+		!strings.Contains(out, "erased 1 subject: 1 chain, 2 events. The subject is forgotten") {
 		t.Fatalf("erase: exit %d\n%s%s", code, out, errs)
 	}
+	noSubjects(t, out+errs)
 	code, out, errs = sinkRun(t, "", "verify", "--dir", dir, "--key", pub)
 	if code != exitOK || !strings.Contains(out, "0 opened, 2 erased") || !strings.Contains(out, "all 2 chains verify") {
 		t.Fatalf("verify after erase: exit %d\n%s%s", code, out, errs)
 	}
+	// u-82's is the chain with an opened event.
+	m := regexp.MustCompile(`chain (\S+) +verifies +1 entry: 1 opened`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("no chain with one opened event in:\n%s", out)
+	}
+	c82 := m[1]
 
 	// Tampering: verify exits 1 (a finding, like a broken chain), naming the chain.
 	files, err := os.ReadDir(filepath.Join(dir, "content", c82))
@@ -166,8 +174,7 @@ func TestSink_CommitBatches(t *testing.T) {
 		fmt.Fprintf(&in, `{"user":"u-%d","i":%d}`+"\n", i%2, i)
 	}
 	code, out, errs := sinkRun(t, in.String(), "commit", "--dir", t.TempDir(), "--class", "events", "--subject-field", "user")
-	if code != exitOK || !strings.Contains(out, fmt.Sprintf("%4d for u-0 → chain", (n+1)/2)) ||
-		!strings.Contains(out, fmt.Sprintf("%4d for u-1 → chain", n/2)) {
+	if code != exitOK || !strings.Contains(out, fmt.Sprintf("committed %d entries on 2 chains", n)) {
 		t.Fatalf("exit %d\n%s%s", code, out, errs)
 	}
 
@@ -178,7 +185,7 @@ func TestSink_CommitBatches(t *testing.T) {
 	in.WriteString(`{"user":"Not-Valid"}` + "\n")
 	code, out, errs = sinkRun(t, in.String(), "commit", "--dir", t.TempDir(), "--class", "events", "--subject-field", "user")
 	if code != exitIOError || !strings.Contains(errs, fmt.Sprintf("line %d", sink.MaxBatch+1)) ||
-		!strings.Contains(out, fmt.Sprintf("committed %4d for u-1 → chain", sink.MaxBatch)) {
+		!strings.Contains(out, fmt.Sprintf("committed %d entries on 1 chain", sink.MaxBatch)) {
 		t.Fatalf("later bad line: exit %d\n%s%s", code, out, errs)
 	}
 }
@@ -203,11 +210,12 @@ func TestSink_CheckpointWrongKeyType(t *testing.T) {
 func TestSink_BusyAndRefusedExits(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sink")
 	priv, _ := sinkKeys(t)
-	code, out, e := sinkRun(t, `{"user":"u-1"}`+"\n"+`{"user":"u-2"}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user")
+	code, _, e := sinkRun(t, `{"user":"u-1"}`+"\n"+`{"user":"u-2"}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user")
 	if code != exitOK {
 		t.Fatalf("commit: %d %s", code, e)
 	}
-	c1, c2 := chainOf(t, out, "u-1"), chainOf(t, out, "u-2")
+	both := contentChains(t, dir)
+	c1, c2 := both[0], both[1]
 	if code, _, e := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv); code != exitOK {
 		t.Fatalf("checkpoint: %d %s", code, e)
 	}
@@ -218,7 +226,7 @@ func TestSink_BusyAndRefusedExits(t *testing.T) {
 	if code, _, e := sinkRun(t, `{"user":"u-1","n":2}`+"\n"+`{"user":"u-2","n":2}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user"); code != exitOK {
 		t.Fatalf("commit: %d %s", code, e)
 	}
-	code, out, _ = sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv)
+	code, out, _ := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv)
 	if code != exitBroken || !strings.Contains(out, "chain "+c1+" NOT checkpointed") ||
 		!strings.Contains(out, "anchors/"+c2+"/0002.json") {
 		t.Fatalf("exit %d\n%s", code, out)
@@ -260,13 +268,74 @@ func TestSink_TrustAfterRotation(t *testing.T) {
 	_ = newPub
 }
 
-// chainOf reads the chain a subject was committed to from commit's output
-// ("committed N for <subject> → chain <id>").
-func chainOf(t *testing.T, out, subject string) string {
+// contentChains lists the sink's chains, by their content folders.
+func contentChains(t *testing.T, dir string) []string {
 	t.Helper()
-	m := regexp.MustCompile(`for ` + regexp.QuoteMeta(subject) + ` → chain (\S+)`).FindStringSubmatch(out)
-	if m == nil {
-		t.Fatalf("no chain for %s in commit output:\n%s", subject, out)
+	es, err := os.ReadDir(filepath.Join(dir, "content"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return m[1]
+	var out []string
+	for _, e := range es {
+		out = append(out, e.Name())
+	}
+	return out
+}
+
+// noSubjects fails if CLI output names a subject: which chain holds whom is the
+// secret index's content, and who was erased is what erasure removes.
+func noSubjects(t *testing.T, out string) {
+	t.Helper()
+	if regexp.MustCompile(`u-\d`).MatchString(out) {
+		t.Fatalf("CLI output names a subject:\n%s", out)
+	}
+}
+
+// TestSink_EraseScopes: a class-scoped erasure says only that class went;
+// a subject erasure says it is forgotten; --resume completes nothing when
+// nothing is pending; an unknown subject erases nothing.
+func TestSink_EraseScopes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sink")
+	for _, class := range []string{"payments", "auth"} {
+		if code, _, e := sinkRun(t, `{"user":"u-1"}`+"\n", "commit", "--dir", dir, "--class", class, "--subject-field", "user"); code != exitOK {
+			t.Fatalf("commit %s: %d %s", class, code, e)
+		}
+	}
+	code, out, e := sinkRun(t, "", "erase", "--dir", dir, "--subject", "u-1", "--class", "payments")
+	if code != exitOK || !strings.Contains(out, "erased the payments evidence of 1 subject: 1 chain, 1 event") ||
+		!strings.Contains(out, "any other class is kept") {
+		t.Fatalf("class-scoped: exit %d\n%s%s", code, out, e)
+	}
+	noSubjects(t, out+e)
+	code, out, e = sinkRun(t, "", "erase", "--dir", dir, "--subject", "u-1")
+	if code != exitOK || !strings.Contains(out, "erased 1 subject: 1 chain, 1 event. The subject is forgotten") {
+		t.Fatalf("subject: exit %d\n%s%s", code, out, e)
+	}
+	noSubjects(t, out+e)
+	if code, out, _ = sinkRun(t, "", "erase", "--dir", dir, "--subject", "u-1"); code != exitOK ||
+		!strings.Contains(out, "no evidence held") {
+		t.Fatalf("again: exit %d\n%s", code, out)
+	}
+	if code, out, _ = sinkRun(t, "", "erase", "--dir", dir, "--resume"); code != exitOK ||
+		!strings.Contains(out, "no interrupted erasures") {
+		t.Fatalf("resume: exit %d\n%s", code, out)
+	}
+}
+
+// TestSink_EraseRefusalNamesNoSubject: a chain that cannot be erased is found
+// before the subject is forgotten; the refusal exits 3 and never names the
+// subject.
+func TestSink_EraseRefusalNamesNoSubject(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sink")
+	if code, _, e := sinkRun(t, `{"user":"u-1"}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user"); code != exitOK {
+		t.Fatalf("commit: %d %s", code, e)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "content", contentChains(t, dir)[0], "stuck"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	code, out, e := sinkRun(t, "", "erase", "--dir", dir, "--subject", "u-1")
+	if code != exitIOError || !strings.Contains(e, "not forgotten") {
+		t.Fatalf("exit %d\n%s%s", code, out, e)
+	}
+	noSubjects(t, out+e)
 }

@@ -107,7 +107,7 @@ func TestRouter(t *testing.T) {
 		"evidence." + strings.Repeat("a", 129): "",
 	}
 	for subject, want := range cases {
-		got, ok := r.chain(subject)
+		got, ok := r.subject(subject)
 		if want == "" && ok {
 			t.Errorf("%q routed to %q; want refused", subject, got)
 		}

@@ -34,23 +34,23 @@ type committer interface {
 	Commit(ctx context.Context, records []sink.Record) ([]sink.Committed, error)
 }
 
-// router turns a subject into a chain id.
+// router turns a NATS subject into the record's subject (the pseudonym the
+// sink files the message under; the sink maps it to an opaque chain).
 //
-// The subject must be exactly <prefix>.<key>: one token after the prefix, no
-// more. NATS splits subjects on '.', so "evidence.jo@example.com" arrives as
-// three tokens. Taking the last would route it to a chain named "com". Refusing
-// every other shape means a key is used whole or not at all.
+// The NATS subject must be exactly <prefix>.<key>: one token after the prefix,
+// no more. NATS splits subjects on '.', so "evidence.jo@example.com" arrives as
+// three tokens. Taking the last would file it under "com". Refusing every other
+// shape means a key is used whole or not at all.
 type router struct {
 	prefix string
 	class  string // the evidence class every message is committed under
 }
 
-func (r router) chain(subject string) (string, bool) {
-	key, ok := strings.CutPrefix(subject, r.prefix+".")
+func (r router) subject(natsSubject string) (string, bool) {
+	key, ok := strings.CutPrefix(natsSubject, r.prefix+".")
 	if !ok || key == "" || strings.Contains(key, ".") {
 		return "", false
 	}
-	// The key is the record's subject; the sink maps it to an opaque chain.
 	return key, sink.ValidSubject(key)
 }
 
@@ -90,8 +90,8 @@ type stats struct {
 //   - afterCommit: called between commit and ack; the demo's crash hook. nil
 //     for none.
 //   - log: operator log; receives stream positions and counts, never subjects
-//     or content. (A returned commit error may name a chain id, which by the
-//     routing rule is already a pseudonym.)
+//     or content. (A returned commit error may name a chain id, which is
+//     opaque.)
 //
 // # Outputs
 //
@@ -101,7 +101,7 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 	afterCommit func(), log io.Writer) (stats, error) {
 	var st stats
 	var recs []sink.Record
-	byChain := map[string][]message{}
+	bySubject := map[string][]message{}
 
 	for _, m := range msgs {
 		pos, err := m.Position()
@@ -113,10 +113,10 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 			st.refused++
 			continue
 		}
-		chain, ok := r.chain(m.Subject())
+		subject, ok := r.subject(m.Subject())
 		if !ok {
-			fmt.Fprintf(log, "refused %s: the subject is not %s.<key> with a valid chain id "+
-				"(lowercase letters, digits, . _ -, max 64). Terminated.\n", pos, r.prefix)
+			fmt.Fprintf(log, "refused %s: the NATS subject is not %s.<key> with a valid key "+
+				"(lowercase letters, digits, . _ -, max 128; no dots in NATS). Terminated.\n", pos, r.prefix)
 			_ = m.Term()
 			st.refused++
 			continue
@@ -125,7 +125,7 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 		// refuses a whole batch for one bad record, and a message that can never
 		// be committed would come back forever and stall every message behind it.
 		// (The error never contains the key or the payload.)
-		rec := sink.Record{Class: r.class, Subject: chain, Content: m.Data(), Source: pos}
+		rec := sink.Record{Class: r.class, Subject: subject, Content: m.Data(), Source: pos}
 		if err := rec.Validate(); err != nil {
 			fmt.Fprintf(log, "refused %s: %v. Terminated.\n", pos, err)
 			_ = m.Term()
@@ -133,7 +133,7 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 			continue
 		}
 		recs = append(recs, rec)
-		byChain[chain] = append(byChain[chain], m)
+		bySubject[subject] = append(bySubject[subject], m)
 	}
 	if len(recs) == 0 {
 		return st, nil
@@ -148,17 +148,17 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 		st.duplicates += c.Duplicates
 		// Messages were grouped by subject; the sink reports the subject it
 		// committed for each (opaque) chain.
-		for _, m := range byChain[c.Subject] {
+		for _, m := range bySubject[c.Subject] {
 			// An ack that fails is not lost evidence: the message comes back and
 			// is recognised as a duplicate.
 			if aerr := m.Ack(); aerr != nil {
 				fmt.Fprintf(log, "ack failed (%v): it will be redelivered and recognised\n", aerr)
 			}
 		}
-		delete(byChain, c.Subject)
+		delete(bySubject, c.Subject)
 	}
 	if err != nil {
-		for _, ms := range byChain {
+		for _, ms := range bySubject {
 			for _, m := range ms {
 				_ = m.Nak()
 			}

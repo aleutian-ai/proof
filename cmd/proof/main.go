@@ -134,9 +134,9 @@ established. Pass --previous for any anchor after the first; without it the
 anchor is the first in its chain. Like keygen, this verb takes a key and is
 therefore never exposed over MCP.
 
-sink keeps one chain per key in a folder: commit a keyed JSONL stream, sign one
-checkpoint per chain, verify every chain on its own, and erase one chain's
-events while every chain still verifies. See docs/sink-format.md.
+sink keeps one opaque chain per (class, subject) in a folder: commit a JSONL
+stream, sign one checkpoint per chain, verify every chain on its own, and erase
+a subject's events while every chain still verifies. See docs/sink-format.md.
 `)
 }
 

@@ -18,8 +18,8 @@
 #     4. the full suite passes on linux/arm64
 #     5. the crypto packages pass on linux/amd64, where circl uses different
 #        assembly than on arm64
-#     6. proof sink runs as sink/README.md shows: one chain per key, erase
-#        one, every chain verifies
+#     6. proof sink runs as sink/README.md shows: one opaque chain per
+#        subject, erase one, every chain verifies
 #
 #   Check 2 is the important one. Everything else is a build; that one is the
 #   guarantee.
@@ -419,10 +419,10 @@ else
     bad "fips140=only: X-Wing failed for an unexpected reason:"; detail "$WORK/log5"
 fi
 
-# ------------------------------------------- 7. keyed stream: one chain per key
+# ------------------------------------- 7. sink: one opaque chain per subject
 # The sink/README.md flow, built from this tree. No services: the sink is what
 # every streaming integration puts a consumer in front of.
-step "proof sink: one chain per key, per-chain erasure (${IMAGE})"
+step "proof sink: one opaque chain per subject, erasure by subject (${IMAGE})"
 if podman run --rm -v "$REPO_ROOT:/src:ro" "$IMAGE" sh -c '
 set -e
 cp -r /src /work && cd /work
@@ -434,7 +434,11 @@ printf "%s\n" \
   "{\"user\":\"u-81\",\"event\":\"export\"}" "{\"user\":\"u-90\",\"event\":\"reset\"}" \
   "{\"user\":\"u-81\",\"event\":\"logout\"}" > events.jsonl
 proof sink commit --class events --subject-field user < events.jsonl > commit.out
-chain_of() { sed -n "s/.*for $1 → chain \([^ ]*\).*/\1/p" commit.out; }
+# Counts only: which chain holds whom belongs in the secret index alone.
+grep -q "committed 5 entries on 3 chains" commit.out
+if grep -q "u-[0-9]" commit.out; then echo "commit output names a subject" >&2; exit 1; fi
+# The test reads the (secret) content to learn which opaque chain is whose.
+chain_of() { basename "$(dirname "$(grep -l "\"$1\"" sink-data/content/*/*.json | head -1)")"; }
 c81=$(chain_of u-81); c82=$(chain_of u-82)
 [ -n "$c81" ] && [ -n "$c82" ] && [ "$c81" != "$c82" ] || { cat commit.out >&2; exit 1; }
 proof sink checkpoint --key keys/ml-dsa-65-private.pem
@@ -448,7 +452,8 @@ done
 # The plain chain verbs verify a sink chain and its checkpoint on their own.
 proof export --db sink-data/evidence.db --chain "$c82" --out c82.json
 proof verify c82.json --anchor "sink-data/anchors/$c82/0001.json" --key keys/ml-dsa-65-public.pem >/dev/null
-proof sink erase --chain "$c81" >/dev/null
+proof sink erase --subject u-81 > erase.out
+if grep -q "u-[0-9]" erase.out; then echo "erase output names the subject" >&2; exit 1; fi
 out=$(proof sink verify --key keys/ml-dsa-65-public.pem)
 echo "$out" | grep -q "all 3 chains verify"
 echo "$out" | grep "chain $c81" | grep -q "0 opened, 3 erased"
@@ -463,6 +468,7 @@ rc=0; out=$(proof sink verify --key keys/ml-dsa-65-public.pem) || rc=$?
   || { echo "$out" >&2; exit 1; }
 ' >"$WORK/log6" 2>&1; then
     ok "three subjects → three opaque chains, each checkpointed and verified on its own"
+    ok "commit and erase print counts, never a subject"
     ok "no subject appears in the evidence file or any checkpoint"
     ok "proof export + proof verify check a sink chain and its checkpoint independently"
     ok "erasing one user leaves every chain verifying, that user's events erased"

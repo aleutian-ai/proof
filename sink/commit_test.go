@@ -20,7 +20,7 @@ func TestLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s, signer, ring := setup(t)
 
-	// One chain per key, each checkpointed and verified on its own.
+	// One chain per subject, each checkpointed and verified on its own.
 	r := mustVerify(t, s, ring)
 	if len(r.Chains) != 3 {
 		t.Fatalf("want 3 chains, got %+v", r.Chains)

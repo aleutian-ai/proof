@@ -27,9 +27,9 @@ import (
 //
 // Positions, not content: a source names where a message sat upstream (a stream
 // sequence, an offset), never what it said. But a position maps the chain's
-// pseudonym to exact upstream messages, so Erase deletes the chain's rows and
+// events to exact upstream messages, so erasure deletes the chain's rows and
 // rewrites the file. A redelivery arriving after an erasure is therefore
-// committed again, after the erasure entry, visibly.
+// committed again, to the subject's new chain.
 
 var sourcesBucket = []byte("sources")
 

@@ -72,7 +72,7 @@ func TestVerify_Detects(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := s.Erase(context.Background(), cid(t, s, "u-81")); err != nil {
+			if _, err := eraseOne(t, s, "u-81"); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(s.contentPath(cid(t, s, "u-81"), id), raw, 0o600); err != nil {
@@ -80,7 +80,7 @@ func TestVerify_Detects(t *testing.T) {
 			}
 		}, "run erase again"},
 		{"erasure record edited", "u-81", func(t *testing.T, s *Sink) {
-			res, err := s.Erase(context.Background(), cid(t, s, "u-81"))
+			res, err := eraseOne(t, s, "u-81")
 			if err != nil {
 				t.Fatal(err)
 			}

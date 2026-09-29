@@ -14,7 +14,7 @@ import (
 	"github.com/aleutian-ai/proof/sink"
 )
 
-// Commit a keyed stream, checkpoint every chain, erase one user, and verify.
+// Commit events about two users, checkpoint every chain, erase one user, and verify.
 func Example() {
 	ctx := context.Background()
 	dir, _ := os.MkdirTemp("", "sink-example")
@@ -55,7 +55,7 @@ func Example() {
 	if _, err := s.Checkpoint(ctx, signer, nil); err != nil {
 		panic(err)
 	}
-	if _, err := s.Erase(ctx, done[0].Chain); err != nil { // u-81's chain
+	if _, err := s.EraseSubject(ctx, "u-81"); err != nil {
 		panic(err)
 	}
 

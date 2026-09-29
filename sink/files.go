@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -112,6 +113,11 @@ const entryPage = 1000
 
 // forEachEntry calls fn for every entry of a chain, in order, reading a page at
 // a time so the chain is never held in memory whole.
+//
+// The next page starts after the last entry's stored global_seq. That value is
+// read from the file, so a crafted file could hold one that does not advance,
+// and paging would never end: a page that does not move past its start is
+// refused instead.
 func forEachEntry(ctx context.Context, st *boltstore.Store, chain string, fn func(store.Entry)) error {
 	start := int64(0)
 	for {
@@ -125,7 +131,12 @@ func forEachEntry(ctx context.Context, st *boltstore.Store, chain string, fn fun
 		if len(rows) < entryPage {
 			return nil
 		}
-		start = rows[len(rows)-1].GlobalSeq + 1
+		next := rows[len(rows)-1].GlobalSeq + 1
+		if next <= start {
+			return fmt.Errorf("sink: chain %s: an entry's stored global_seq does not match its "+
+				"position; the evidence file is corrupt or crafted", chain)
+		}
+		start = next
 	}
 }
 
@@ -144,15 +155,30 @@ func compactFile(path string, lockTimeout time.Duration) error {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	tmp := path + ".compact"
-	_ = os.Remove(tmp) // a leftover of an earlier crash
+	dir, base := filepath.Split(path)
+	if err := removeCompactLeftovers(dir, base); err != nil {
+		return err
+	}
+	// A fresh file with an unpredictable name, created exclusively: nothing
+	// planted in the folder beforehand can receive the copy.
+	tf, err := os.CreateTemp(dir, base+".compact-*")
+	if err != nil {
+		return err
+	}
+	tmp := tf.Name()
+	if err := tf.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	src, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
 	if err != nil {
+		_ = os.Remove(tmp)
 		return busy(err)
 	}
 	dst, err := bolt.Open(tmp, 0o600, &bolt.Options{Timeout: lockTimeout})
 	if err != nil {
 		src.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	err = bolt.Compact(dst, src, 0)
@@ -171,6 +197,23 @@ func compactFile(path string, lockTimeout time.Duration) error {
 		return err
 	}
 	return syncFile(filepath.Dir(path))
+}
+
+// removeCompactLeftovers removes the temporary copies an interrupted compaction
+// of base left in dir: each is a copy of a secret file.
+func removeCompactLeftovers(dir, base string) error {
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), base+".compact") {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove an earlier compaction's leftover: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // syncFile fsyncs a file or folder.

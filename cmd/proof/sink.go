@@ -27,9 +27,10 @@ const sinkUsage = `usage:
   proof sink commit     [--dir D] --class NAME --subject-field FIELD   < events.jsonl
   proof sink checkpoint [--dir D] --key <ml-dsa-65 private.pem> [--trust <public.pem>]…
   proof sink verify     [--dir D] --key <ml-dsa-65 public.pem>
-  proof sink erase      [--dir D] --chain ID
+  proof sink erase      [--dir D] --subject S [--class C]   (or --resume)
 
-A sink is a folder (default ./sink-data) holding one chain per key. See
+A sink is a folder (default ./sink-data) holding one opaque chain per
+(class, subject); only a secret index links subjects to chains. See
 docs/sink-format.md. --trust names earlier signing keys whose checkpoints may
 be built on (after a key rotation). Exit: 0 ok · 1 a chain failed verification
 or was not checkpointed · 2 usage · 3 error · 4 the folder is busy.`
@@ -51,7 +52,8 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("sink "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", "sink-data", "the sink folder")
-	var class, subjectField, key, chain *string
+	var class, subjectField, key, subject, eraseClass *string
+	var resume *bool
 	var trust multiFlag
 	switch verb {
 	case "commit":
@@ -63,7 +65,9 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	case "verify":
 		key = fs.String("key", "", "ML-DSA-65 public key (PEM) the checkpoints are signed with")
 	case "erase":
-		chain = fs.String("chain", "", "the chain to erase")
+		subject = fs.String("subject", "", "the subject to erase (every class, unless --class)")
+		eraseClass = fs.String("class", "", "erase only this class of the subject's evidence; the others are kept")
+		resume = fs.Bool("resume", false, "only complete erasures an earlier, interrupted call started")
 	case "-h", "--help", "help":
 		fmt.Fprintln(stdout, sinkUsage)
 		return exitOK
@@ -78,7 +82,15 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintf(stderr, "proof sink %s: unexpected argument %q\n", verb, fs.Arg(0))
 		return exitUsage
 	}
-	for name, v := range map[string]*string{"--class": class, "--subject-field": subjectField, "--key": key, "--chain": chain} {
+	if verb == "erase" && (*subject == "") == !*resume {
+		fmt.Fprintln(stderr, "proof sink erase: give --subject, or --resume (not both)")
+		return exitUsage
+	}
+	if verb == "erase" && *resume && *eraseClass != "" {
+		fmt.Fprintln(stderr, "proof sink erase: --class applies to --subject, not to --resume")
+		return exitUsage
+	}
+	for name, v := range map[string]*string{"--class": class, "--subject-field": subjectField, "--key": key} {
 		if v != nil && *v == "" {
 			fmt.Fprintf(stderr, "proof sink %s: %s is required\n", verb, name)
 			return exitUsage
@@ -100,7 +112,7 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	case "verify":
 		failed, err = sinkVerify(c, s, *key, stdout)
 	case "erase":
-		err = sinkErase(c, s, *chain, stdout)
+		err = sinkErase(c, s, *subject, *eraseClass, *resume, stdout)
 	}
 	switch {
 	case err != nil:
@@ -120,12 +132,15 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 // Every line of a batch is parsed before the batch is committed, so a bad line
 // stops the run with the batches before it committed and nothing after. Totals
 // are printed however the run ends.
+//
+// Only counts are printed. Which chain holds which subject is the content of
+// the secret subject index: printed, it would land in terminals, logs and CI
+// output, and re-identify the chain after any erasure.
 func sinkCommit(c ctx.Context, s *sink.Sink, class, field string, in io.Reader, out io.Writer) error {
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 64<<10), sinkMaxLine)
-	totals := map[string]int{}
-	subjectOf := map[string]string{}
-	var order []string
+	chains := map[string]bool{}
+	entries, duplicates := 0, 0
 	var batch []sink.Record
 	lines := 0
 
@@ -135,21 +150,19 @@ func sinkCommit(c ctx.Context, s *sink.Sink, class, field string, in io.Reader, 
 		}
 		done, err := s.Commit(c, batch)
 		for _, d := range done {
-			if _, seen := totals[d.Chain]; !seen {
-				order = append(order, d.Chain)
-			}
-			totals[d.Chain] += d.Entries
-			subjectOf[d.Chain] = d.Subject
+			chains[d.Chain] = true
+			entries += d.Entries
+			duplicates += d.Duplicates
 		}
 		batch = batch[:0]
 		return err
 	}
 	defer func() {
-		// The subject is the operator's own input; the chain is where it went.
-		// The chain id is opaque: the subject is only in the secret index.
-		for _, ch := range order {
-			fmt.Fprintf(out, "committed %4d for %s → chain %s\n", totals[ch], subjectOf[ch], ch)
+		if len(chains) == 0 {
+			return
 		}
+		fmt.Fprintf(out, "committed %s on %s (%s)\n", plural(entries, "entry", "entries"),
+			plural(len(chains), "chain", "chains"), plural(duplicates, "duplicate", "duplicates"))
 	}()
 
 	for sc.Scan() {
@@ -179,7 +192,7 @@ func sinkCommit(c ctx.Context, s *sink.Sink, class, field string, in io.Reader, 
 	if err := flush(); err != nil {
 		return err
 	}
-	if len(order) == 0 {
+	if len(chains) == 0 {
 		return errors.New("no events on stdin")
 	}
 	return nil
@@ -309,18 +322,72 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, out io.Writer) (boo
 	return false, nil
 }
 
-func sinkErase(c ctx.Context, s *sink.Sink, chain string, out io.Writer) error {
-	res, err := s.Erase(c, chain)
+// sinkErase erases a subject (every class), one class of a subject's
+// evidence, or only completes interrupted erasures. The output says which, so a
+// class-scoped erasure is never mistaken for forgetting the subject.
+//
+// It never prints the subject: a line saying who was erased, and when, is a
+// lasting record of exactly what the erasure removes.
+func sinkErase(c ctx.Context, s *sink.Sink, subject, class string, resume bool, out io.Writer) error {
+	var res sink.SubjectErasure
+	var err error
+	switch {
+	case resume:
+		res.Resumed, err = s.ResumeErasures(c)
+	case class != "":
+		res, err = s.EraseSubjectClass(c, subject, class)
+	default:
+		res, err = s.EraseSubject(c, subject)
+	}
+	if len(res.Resumed) > 0 {
+		fmt.Fprintf(out, "completed %s an earlier call left unfinished\n",
+			plural(len(res.Resumed), "interrupted erasure", "interrupted erasures"))
+	}
+	var incomplete *sink.ErasureIncompleteError
+	if errors.As(err, &incomplete) {
+		if len(res.Erased) > 0 {
+			fmt.Fprintf(out, "erased %s of the subject's evidence\n", plural(len(res.Erased), "chain", "chains"))
+		}
+		if incomplete.Forgotten {
+			fmt.Fprintln(out, "The subject is removed from the index, but its evidence on the pending chains is "+
+				"not yet deleted.")
+		}
+		return err
+	}
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "erased %s on chain %s; the erasure is entry %s.\n"+
-		"Their content, nonces and source positions are deleted, and the files rewritten: none can be\n"+
-		"opened from this folder again, and the chain still verifies.\n"+
-		"Not reached by this: backups or snapshots of %s, SSD blocks, anyone an event or nonce was\n"+
-		"disclosed to, and the chain id, which stays in the chain, its checkpoints and folder names.\n",
-		plural(res.Events, "event", "events"), res.Chain, res.ErasureEntryID,
-		strings.TrimSuffix(s.DBPath(), "evidence.db"))
+	if resume {
+		if len(res.Resumed) == 0 {
+			fmt.Fprintln(out, "no interrupted erasures")
+		}
+		return nil
+	}
+	if len(res.Erased) == 0 {
+		fmt.Fprintln(out, "no evidence held for that subject in that scope (never committed, or already erased)")
+		return nil
+	}
+	events, leftovers := 0, 0
+	for _, e := range res.Erased {
+		events += e.Events
+		leftovers += e.Leftovers
+	}
+	if class != "" {
+		fmt.Fprintf(out, "erased the %s evidence of 1 subject: %s, %s.\n"+
+			"Only that class: the subject's evidence in any other class is kept.\n",
+			class, plural(len(res.Erased), "chain", "chains"), plural(events, "event", "events"))
+	} else {
+		fmt.Fprintf(out, "erased 1 subject: %s, %s. The subject is forgotten: nothing in this folder\n"+
+			"links it to the erased chains any more, and a later event for it starts a new chain.\n",
+			plural(len(res.Erased), "chain", "chains"), plural(events, "event", "events"))
+	}
+	if leftovers > 0 {
+		fmt.Fprintf(out, "Also removed %s of commits that never reached a chain.\n",
+			plural(leftovers, "leftover", "leftovers"))
+	}
+	fmt.Fprintf(out, "Content, nonces and source positions are deleted and the files rewritten; every chain still verifies.\n"+
+		"Not reached by this: backups or snapshots of %s, SSD blocks, and anyone an event or nonce\n"+
+		"was disclosed to.\n", strings.TrimSuffix(s.DBPath(), "evidence.db"))
 	return nil
 }
 

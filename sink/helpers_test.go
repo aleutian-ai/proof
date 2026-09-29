@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -180,6 +181,11 @@ const testClass = "events"
 // the subject index records it. Tests name subjects; the sink names chains.
 func cid(t *testing.T, s *Sink, subject string) string {
 	t.Helper()
+	memo := chainMemoFor(t)
+	key := fmt.Sprintf("%p|%s", s, subject)
+	if c, ok := memo[key]; ok {
+		return c // resolved before an erasure made the index forget it
+	}
 	subj, err := openSubjects(s.subjectsPath(), DefaultLockTimeout)
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +195,44 @@ func cid(t *testing.T, s *Sink, subject string) string {
 	if err != nil || !ok {
 		t.Fatalf("no chain for subject %s: %v", subject, err)
 	}
+	memo[key] = chain
 	return chain
+}
+
+// chainMemo lets a test keep naming a subject's OLD chain after erasing the
+// subject, which makes the index forget it (by design). One memo per test,
+// dropped when the test ends, so no test can see another's chains.
+var (
+	chainMemoMu sync.Mutex
+	chainMemo   = map[*testing.T]map[string]string{}
+)
+
+func chainMemoFor(t *testing.T) map[string]string {
+	chainMemoMu.Lock()
+	defer chainMemoMu.Unlock()
+	m, ok := chainMemo[t]
+	if !ok {
+		m = map[string]string{}
+		chainMemo[t] = m
+		t.Cleanup(func() {
+			chainMemoMu.Lock()
+			delete(chainMemo, t)
+			chainMemoMu.Unlock()
+		})
+	}
+	return m
+}
+
+// eraseOne erases a subject (all classes) and returns its one chain's result,
+// remembering the chain first so the test can inspect it afterwards.
+func eraseOne(t *testing.T, s *Sink, subject string) (EraseResult, error) {
+	t.Helper()
+	cid(t, s, subject)
+	res, err := s.EraseSubject(context.Background(), subject)
+	if len(res.Erased) > 0 {
+		return res.Erased[0], err
+	}
+	return EraseResult{}, err
 }
 
 // bindChain performs Commit's first step alone for a subject: mint its chain

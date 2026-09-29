@@ -214,7 +214,7 @@ func stopped(ctx context.Context, err error) error {
 //
 // # Description
 //
-//  1. Refuse what can never be committed (a key that is not a valid chain id;
+//  1. Refuse what can never be committed (a key that is not a valid subject;
 //     empty or oversized data) and ack it at once, logged by entry id, never by
 //     key. Acking does not delete: the entry stays in the stream, just not on
 //     a chain. Leaving it pending would re-read it on every recovery forever.

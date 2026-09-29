@@ -1,7 +1,7 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Command redis-sink commits a Redis (or Valkey) stream to one proof chain per key.
+// Command redis-sink commits a Redis (or Valkey) stream to proof chains, one per (class, subject).
 //
 //	redis-sink add -key user < events.jsonl   XADD each line: key=<user>, data=<line>
 //	redis-sink consume                        recover pending, then commit → XACK
@@ -83,6 +83,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	follow := fs.Bool("follow", false, "consume: keep running instead of exiting when drained")
 	crashAfter := fs.Bool("crash-after-commit", false, "consume: DEMO — exit after the first commit, before any ack")
 	if err := fs.Parse(args[1:]); err != nil {
+		return exitUsage
+	}
+	// A class the sink refuses would make it refuse EVERY message: checked here,
+	// at startup, not discovered as silent drops.
+	if cmd == "consume" && !sink.ValidClass(*class) {
+		fmt.Fprintf(stderr, "redis-sink consume: -class must match [a-z0-9][a-z0-9_-]{0,30}\n")
 		return exitUsage
 	}
 	if cmd == "add" && *key == "" {

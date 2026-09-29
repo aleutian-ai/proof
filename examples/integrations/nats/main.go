@@ -1,7 +1,7 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Command nats-sink commits a NATS JetStream stream to one proof chain per key.
+// Command nats-sink commits a NATS JetStream stream to proof chains, one per (class, subject).
 //
 //	nats-sink publish -key user < events.jsonl   publish each line to evidence.<user>
 //	nats-sink consume                            commit, THEN ack; exit when drained
@@ -85,6 +85,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if *ackWait < minAckWait {
 		fmt.Fprintf(stderr, "nats-sink: -ack-wait must be at least %s\n", minAckWait)
+		return exitUsage
+	}
+	// A class the sink refuses would make it refuse EVERY message: checked here,
+	// at startup, not discovered as silent drops.
+	if cmd == "consume" && !sink.ValidClass(*class) {
+		fmt.Fprintf(stderr, "nats-sink consume: -class must match [a-z0-9][a-z0-9_-]{0,30}\n")
 		return exitUsage
 	}
 	if cmd == "publish" && *key == "" {

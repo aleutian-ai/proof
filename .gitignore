@@ -47,3 +47,5 @@ node_modules/
 /cmd/proof-mcp/proof-mcp
 /examples/integrations/nats/nats
 /examples/integrations/nats/nats-sink
+/examples/integrations/redis/redis
+/examples/integrations/redis/redis-sink

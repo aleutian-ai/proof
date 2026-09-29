@@ -1,4 +1,4 @@
-module github.com/aleutian-ai/proof/examples/integrations/nats
+module github.com/aleutian-ai/proof/examples/integrations/redis
 
 go 1.25.0
 
@@ -9,16 +9,14 @@ go 1.25.0
 
 require (
 	github.com/aleutian-ai/proof v0.3.1-0.20260929004521-f88a575994de
-	github.com/nats-io/nats.go v1.53.0
+	github.com/redis/go-redis/v9 v9.22.0
 )
 
 require (
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
-	github.com/klauspost/compress v1.18.5 // indirect
-	github.com/nats-io/nkeys v0.4.15 // indirect
-	github.com/nats-io/nuid v1.0.1 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
+	golang.org/x/sys v0.30.0 // indirect
+	golang.org/x/text v0.21.0 // indirect
 )

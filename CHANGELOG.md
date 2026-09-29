@@ -58,6 +58,15 @@ change is called out here.
   `nats-server`: all six messages are redelivered and recognised, and none is
   committed twice. It is its own module, so the NATS client stays out of proof's
   `go.mod`.
+- **`examples/integrations/redis`: Redis / Valkey Streams → proof.** Redis never
+  redelivers, so the consumer recovers pending entries (its own, then any idle
+  past `-claim-idle`) before reading new ones. `run.sh` crashes it between
+  commit and `XACK`; the six pending entries are recovered on restart,
+  recognised, and none is committed twice. Positions carry a stream incarnation,
+  so a deleted and recreated stream that reuses an entry id is not mistaken for
+  the old one. `run.sh` proves this, and the check fails with the incarnation
+  removed. Entries deleted while pending are reported as lost. It defaults to
+  Valkey and is also run against Redis 8. It is its own module.
 - `store/bolt.Store.Chains` lists every chain in a file, from the store itself.
   Not part of the store port.
 

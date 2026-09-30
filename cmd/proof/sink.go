@@ -24,9 +24,9 @@ import (
 const sinkMaxLine = 1 << 20
 
 const sinkUsage = `usage:
-  proof sink commit     [--dir D] --class NAME --subject-field FIELD   < events.jsonl
+  proof sink commit     [--dir D] (--class NAME | --class-field FIELD --classes A,B…) --subject-field FIELD  < events.jsonl
   proof sink checkpoint [--dir D] --key <ml-dsa-65 private.pem> [--trust <public.pem>]…
-  proof sink verify     [--dir D] --key <ml-dsa-65 public.pem>
+  proof sink verify     [--dir D] --key <ml-dsa-65 public.pem> [--show-subjects]
   proof sink erase      [--dir D] --subject S [--class C]   (or --resume)
 
 A sink is a folder (default ./sink-data) holding one opaque chain per
@@ -52,18 +52,23 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("sink "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", "sink-data", "the sink folder")
-	var class, subjectField, key, subject, eraseClass *string
-	var resume *bool
+	var class, classField, classes, subjectField, key, subject, eraseClass *string
+	var resume, showSubjects *bool
 	var trust multiFlag
 	switch verb {
 	case "commit":
 		class = fs.String("class", "", "the evidence class of every event: payments, auth, events… (never a person)")
+		classField = fs.String("class-field", "", "instead of --class: the JSON field whose value is each event's class")
+		classes = fs.String("classes", "", "with --class-field: the only classes it may hold, comma-separated "+
+			"(a class is public and never erased, so data may not choose one freely)")
 		subjectField = fs.String("subject-field", "", "the JSON field whose value is the subject (a pseudonym)")
 	case "checkpoint":
 		key = fs.String("key", "", "ML-DSA-65 private key (PEM), from `proof keygen --alg ml-dsa-65`")
 		fs.Var(&trust, "trust", "an earlier ML-DSA-65 public key (PEM) existing checkpoints may be signed with; repeatable")
 	case "verify":
 		key = fs.String("key", "", "ML-DSA-65 public key (PEM) the checkpoints are signed with")
+		showSubjects = fs.Bool("show-subjects", false, "also print each live chain's subject, read from the "+
+			"secret index (the output is then secret too)")
 	case "erase":
 		subject = fs.String("subject", "", "the subject to erase (every class, unless --class)")
 		eraseClass = fs.String("class", "", "erase only this class of the subject's evidence; the others are kept")
@@ -90,7 +95,32 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stderr, "proof sink erase: --class applies to --subject, not to --resume")
 		return exitUsage
 	}
-	for name, v := range map[string]*string{"--class": class, "--subject-field": subjectField, "--key": key} {
+	var allowed []string
+	if verb == "commit" {
+		if (*class == "") == (*classField == "") {
+			fmt.Fprintln(stderr, "proof sink commit: give --class or --class-field (one of them)")
+			return exitUsage
+		}
+		if (*classField == "") != (*classes == "") {
+			fmt.Fprintln(stderr, "proof sink commit: --classes goes with --class-field, and is required by it")
+			return exitUsage
+		}
+		if *classField != "" && *classField == *subjectField {
+			fmt.Fprintln(stderr, "proof sink commit: --class-field and --subject-field must differ")
+			return exitUsage
+		}
+		for _, c := range strings.Split(*classes, ",") {
+			if *classes == "" {
+				break
+			}
+			if !sink.ValidClass(c) {
+				fmt.Fprintf(stderr, "proof sink commit: --classes: %q is not a valid class\n", c)
+				return exitUsage
+			}
+			allowed = append(allowed, c)
+		}
+	}
+	for name, v := range map[string]*string{"--subject-field": subjectField, "--key": key} {
 		if v != nil && *v == "" {
 			fmt.Fprintf(stderr, "proof sink %s: %s is required\n", verb, name)
 			return exitUsage
@@ -106,11 +136,12 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	var failed bool
 	switch verb {
 	case "commit":
-		err = sinkCommit(c, s, *class, *subjectField, os.Stdin, stdout)
+		err = sinkCommit(c, s, sink.JSONFields{Class: *class, ClassField: *classField, Classes: allowed,
+			SubjectField: *subjectField}, os.Stdin, stdout)
 	case "checkpoint":
 		failed, err = sinkCheckpoint(c, s, *key, trust, stdout)
 	case "verify":
-		failed, err = sinkVerify(c, s, *key, stdout)
+		failed, err = sinkVerify(c, s, *key, *showSubjects, stdout, stderr)
 	case "erase":
 		err = sinkErase(c, s, *subject, *eraseClass, *resume, stdout)
 	}
@@ -136,7 +167,7 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 // Only counts are printed. Which chain holds which subject is the content of
 // the secret subject index: printed, it would land in terminals, logs and CI
 // output, and re-identify the chain after any erasure.
-func sinkCommit(c ctx.Context, s *sink.Sink, class, field string, in io.Reader, out io.Writer) error {
+func sinkCommit(c ctx.Context, s *sink.Sink, fields sink.JSONFields, in io.Reader, out io.Writer) error {
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 64<<10), sinkMaxLine)
 	chains := map[string]bool{}
@@ -148,11 +179,18 @@ func sinkCommit(c ctx.Context, s *sink.Sink, class, field string, in io.Reader, 
 		if len(batch) == 0 {
 			return nil
 		}
-		done, err := s.Commit(c, batch)
-		for _, d := range done {
-			chains[d.Chain] = true
-			entries += d.Entries
-			duplicates += d.Duplicates
+		out, err := s.Commit(c, batch)
+		for i, o := range out {
+			if !o.Committed {
+				continue
+			}
+			// One chain per (class, subject): count pairs, held only for this run.
+			chains[batch[i].Class+"\x00"+batch[i].Subject] = true
+			if o.Duplicate {
+				duplicates++
+			} else {
+				entries++
+			}
 		}
 		batch = batch[:0]
 		return err
@@ -171,11 +209,10 @@ func sinkCommit(c ctx.Context, s *sink.Sink, class, field string, in io.Reader, 
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		r, err := sink.RecordFromJSON(line, field)
+		r, err := sink.RecordFromJSON(line, fields)
 		if err != nil {
 			return fmt.Errorf("line %d: %w", lines, err)
 		}
-		r.Class = class
 		if err := r.Validate(); err != nil {
 			return fmt.Errorf("line %d: %w", lines, err)
 		}
@@ -284,7 +321,11 @@ func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 // sinkVerify prints one line per chain. The bool reports whether any chain
 // failed; the error, whether verification could not run at all.
-func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, out io.Writer) (bool, error) {
+//
+// With showSubjects it also reads the secret index (sink.ChainSubjects) and
+// prints each live chain's subject, after a warning on stderr: the output is
+// then as secret as the index.
+func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, showSubjects bool, out, errOut io.Writer) (bool, error) {
 	id, pub, err := readPublicKey(keyPath)
 	if err != nil {
 		return false, err
@@ -300,6 +341,22 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, out io.Writer) (boo
 	if len(rep.Chains) == 0 {
 		return false, errors.New("the evidence file has no chains")
 	}
+	subjectOf := map[string]string{}
+	if showSubjects {
+		// A second read, after Verify: a commit or erasure in between can make the
+		// two disagree. Best effort, for an operator's eyes only.
+		rows, err := s.ChainSubjects(c)
+		if err != nil {
+			return false, err
+		}
+		for _, r := range rows {
+			subjectOf[r.Chain] = r.Subject
+		}
+		fmt.Fprintln(errOut, "subjects shown: this output is secret-index material; "+
+			"do not paste it into tickets, chats or logs")
+		// Marked in the output itself too: stdout is what gets saved or captured.
+		fmt.Fprintln(out, "# SECRET: subject-index material (proof sink verify --show-subjects)")
+	}
 	bad := 0
 	for _, ch := range rep.Chains {
 		verdict := "verifies"
@@ -307,9 +364,10 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, out io.Writer) (boo
 			verdict = "FAILS"
 			bad++
 		}
-		fmt.Fprintf(out, "chain %-12s %-8s %s: %d opened, %d erased · %s, %d unanchored\n",
+		fmt.Fprintf(out, "chain %-12s %-8s %s: %d opened, %d erased · %s, %d unanchored%s%s\n",
 			printable(ch.Chain), verdict, plural(ch.Entries, "entry", "entries"), ch.Opened, ch.Erased,
-			plural(ch.Checkpoints, "checkpoint", "checkpoints"), ch.Unanchored)
+			plural(ch.Checkpoints, "checkpoint", "checkpoints"), ch.Unanchored, indexNote(ch.Index),
+			subjectNote(subjectOf[ch.Chain]))
 		for _, p := range ch.Problems {
 			fmt.Fprintf(out, "    %s\n", p)
 		}
@@ -320,6 +378,30 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, out io.Writer) (boo
 	}
 	fmt.Fprintf(out, "all %d chains verify\n", len(rep.Chains))
 	return false, nil
+}
+
+// indexNote describes a chain's subject-index state, when it is not the usual
+// "live".
+func indexNote(index sink.IndexState) string {
+	switch index {
+	case "", sink.IndexLive:
+		return ""
+	case sink.IndexErased:
+		return " · subject erased"
+	case sink.IndexErasedUnanchored:
+		return " · subject erased (not yet checkpointed)"
+	case sink.IndexOnly:
+		return " · bound, no entries yet"
+	default:
+		return " · index: " + string(index)
+	}
+}
+
+func subjectNote(subject string) string {
+	if subject == "" {
+		return ""
+	}
+	return " · subject " + subject
 }
 
 // sinkErase erases a subject (every class), one class of a subject's

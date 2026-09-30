@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	bbolt "go.etcd.io/bbolt"
+
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 
 	"github.com/aleutian-ai/proof/anchor"
@@ -63,17 +65,22 @@ func sinkKeys(t *testing.T) (priv, pub string) {
 func TestSink_Usage(t *testing.T) {
 	dir := t.TempDir()
 	for name, args := range map[string][]string{
-		"no verb":                 nil,
-		"unknown verb":            {"append", "--dir", dir},
-		"commit, no class":        {"commit", "--dir", dir, "--subject-field", "user"},
-		"commit, no subject":      {"commit", "--dir", dir, "--class", "events"},
-		"checkpoint, no key":      {"checkpoint", "--dir", dir},
-		"verify, no key":          {"verify", "--dir", dir},
-		"erase, no subject":       {"erase", "--dir", dir},
-		"erase, subject + resume": {"erase", "--dir", dir, "--subject", "u-1", "--resume"},
-		"erase, resume + class":   {"erase", "--dir", dir, "--resume", "--class", "payments"},
-		"stray argument":          {"erase", "--dir", dir, "--subject", "u-1", "extra"},
-		"wrong verb's flag":       {"commit", "--dir", dir, "--chain", "events.00000000000000000000000000000000"},
+		"no verb":                       nil,
+		"unknown verb":                  {"append", "--dir", dir},
+		"commit, no class":              {"commit", "--dir", dir, "--subject-field", "user"},
+		"commit, class and class field": {"commit", "--dir", dir, "--class", "events", "--class-field", "kind", "--subject-field", "user"},
+		"commit, class field, no list":  {"commit", "--dir", dir, "--class-field", "kind", "--subject-field", "user"},
+		"commit, list, no class field":  {"commit", "--dir", dir, "--class", "events", "--classes", "a", "--subject-field", "user"},
+		"commit, class field = subject": {"commit", "--dir", dir, "--class-field", "user", "--classes", "a", "--subject-field", "user"},
+		"commit, invalid listed class":  {"commit", "--dir", dir, "--class-field", "kind", "--classes", "a,B c", "--subject-field", "user"},
+		"commit, no subject":            {"commit", "--dir", dir, "--class", "events"},
+		"checkpoint, no key":            {"checkpoint", "--dir", dir},
+		"verify, no key":                {"verify", "--dir", dir},
+		"erase, no subject":             {"erase", "--dir", dir},
+		"erase, subject + resume":       {"erase", "--dir", dir, "--subject", "u-1", "--resume"},
+		"erase, resume + class":         {"erase", "--dir", dir, "--resume", "--class", "payments"},
+		"stray argument":                {"erase", "--dir", dir, "--subject", "u-1", "extra"},
+		"wrong verb's flag":             {"commit", "--dir", dir, "--chain", "events.00000000000000000000000000000000"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _, _ := sinkRun(t, "", args...); code != exitUsage {
@@ -335,6 +342,87 @@ func TestSink_EraseRefusalNamesNoSubject(t *testing.T) {
 	}
 	code, out, e := sinkRun(t, "", "erase", "--dir", dir, "--subject", "u-1")
 	if code != exitIOError || !strings.Contains(e, "not forgotten") {
+		t.Fatalf("exit %d\n%s%s", code, out, e)
+	}
+	noSubjects(t, out+e)
+}
+
+// TestSink_ClassFieldAndShowSubjects: --class-field takes each line's class;
+// verify names no subject unless asked, and then warns first; an erased
+// subject's chain says so.
+func TestSink_ClassFieldAndShowSubjects(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sink")
+	priv, pub := sinkKeys(t)
+	in := `{"kind":"auth","user":"u-1"}
+{"kind":"payments","user":"u-1","amount":4}
+{"kind":"auth","user":"u-2"}
+`
+	code, out, e := sinkRun(t, in, "commit", "--dir", dir, "--class-field", "kind", "--classes", "auth,payments",
+		"--subject-field", "user")
+	if code != exitOK || !strings.Contains(out, "committed 3 entries on 3 chains") {
+		t.Fatalf("commit: exit %d\n%s%s", code, out, e)
+	}
+	classes := map[string]int{}
+	for _, c := range contentChains(t, dir) {
+		classes[strings.SplitN(c, ".", 2)[0]]++
+	}
+	if classes["auth"] != 2 || classes["payments"] != 1 {
+		t.Fatalf("chains by class = %v; want 2 auth, 1 payments", classes)
+	}
+	if code, _, e := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv); code != exitOK {
+		t.Fatalf("checkpoint: %d %s", code, e)
+	}
+
+	code, out, e = sinkRun(t, "", "verify", "--dir", dir, "--key", pub)
+	if code != exitOK || !strings.Contains(out, "all 3 chains verify") {
+		t.Fatalf("verify: exit %d\n%s%s", code, out, e)
+	}
+	noSubjects(t, out+e)
+
+	code, out, e = sinkRun(t, "", "verify", "--dir", dir, "--key", pub, "--show-subjects")
+	if code != exitOK || strings.Count(out, "· subject u-1") != 2 || strings.Count(out, "· subject u-2") != 1 ||
+		!strings.Contains(e, "secret-index material") || !strings.HasPrefix(out, "# SECRET") {
+		t.Fatalf("verify --show-subjects: exit %d\n%s%s", code, out, e)
+	}
+
+	if code, _, e := sinkRun(t, "", "erase", "--dir", dir, "--subject", "u-2"); code != exitOK {
+		t.Fatalf("erase: %d %s", code, e)
+	}
+	code, out, e = sinkRun(t, "", "verify", "--dir", dir, "--key", pub, "--show-subjects")
+	if code != exitOK || strings.Count(out, "· subject erased") != 1 || strings.Contains(out, "u-2") {
+		t.Fatalf("verify after erase: exit %d\n%s%s", code, out, e)
+	}
+
+	// A bad class names the line, never the value.
+	for _, bad := range []string{"Jo Smith", "u-3", "refunds"} { // invalid, a pseudonym, not listed
+		code, _, e = sinkRun(t, `{"kind":"`+bad+`","user":"u-3"}`+"\n", "commit", "--dir", dir,
+			"--class-field", "kind", "--classes", "auth,payments", "--subject-field", "user")
+		if code != exitIOError || !strings.Contains(e, "line 1") || strings.Contains(e, bad) {
+			t.Fatalf("class %q: exit %d, %q", bad, code, e)
+		}
+	}
+}
+
+// TestSink_VerifyNeverPrintsRawIndexKeys: a malformed index key is shown by
+// number only; it could hold a subject.
+func TestSink_VerifyNeverPrintsRawIndexKeys(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sink")
+	_, pub := sinkKeys(t)
+	if code, _, e := sinkRun(t, `{"user":"u-1"}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user"); code != exitOK {
+		t.Fatalf("commit: %d %s", code, e)
+	}
+	db, err := bbolt.Open(filepath.Join(dir, "evidence.db.subjects"), 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket([]byte("reverse")).Put([]byte("u-9\x00payments"), []byte("payments\x00u-9"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	code, out, e := sinkRun(t, "", "verify", "--dir", dir, "--key", pub)
+	if code != exitBroken || !strings.Contains(out, "invalid index row #1") {
 		t.Fatalf("exit %d\n%s%s", code, out, e)
 	}
 	noSubjects(t, out+e)

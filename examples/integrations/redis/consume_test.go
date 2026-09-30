@@ -129,22 +129,32 @@ type loggingSink struct {
 	fail  string
 }
 
-func (s *loggingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Committed, error) {
+func (s *loggingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Outcome, error) {
 	s.g.events = append(s.g.events, "commit")
 	if s.fail == "" {
 		return s.inner.Commit(ctx, recs)
 	}
 	var ok []sink.Record
-	for _, r := range recs {
+	var at []int // at[j] is the index in recs of ok[j]
+	for i, r := range recs {
 		if r.Subject != s.fail {
 			ok = append(ok, r)
+			at = append(at, i)
 		}
 	}
-	done, err := s.inner.Commit(ctx, ok)
-	if err != nil {
-		return done, err
+	// One outcome per record, as the real sink returns: the failed subject's
+	// records are not committed.
+	out := make([]sink.Outcome, len(recs))
+	if len(ok) > 0 {
+		done, err := s.inner.Commit(ctx, ok)
+		for j, o := range done {
+			out[at[j]] = o
+		}
+		if err != nil {
+			return out, err
+		}
 	}
-	return done, errors.New("injected failure on " + s.fail)
+	return out, errors.New("injected failure on " + s.fail)
 }
 
 func ev(id, key string) entry {
@@ -412,14 +422,14 @@ func TestSourceFits(t *testing.T) {
 	}
 }
 
-// misreportingSink commits, then reports its results under the wrong subject,
-// so the consumer can match none of them to entries and acks nothing.
+// misreportingSink commits, then reports every record as NOT committed, so the
+// consumer acks nothing.
 type misreportingSink struct{ inner *sink.Sink }
 
-func (m misreportingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Committed, error) {
+func (m misreportingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Outcome, error) {
 	done, err := m.inner.Commit(ctx, recs)
 	for i := range done {
-		done[i].Subject = "someone-else"
+		done[i].Committed = false
 	}
 	return done, err
 }
@@ -443,5 +453,29 @@ func TestPendingThatNeverAcksStops(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("consume looped over pending entries it could not acknowledge")
+	}
+}
+
+// shortSink commits for real, then returns fewer outcomes than records: a
+// committer breaking the one-per-record contract.
+type shortSink struct{ inner *sink.Sink }
+
+func (s shortSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Outcome, error) {
+	out, err := s.inner.Commit(ctx, recs)
+	if len(out) > 0 {
+		out = out[:len(out)-1]
+	}
+	return out, err
+}
+
+// TestOutcomeCountMismatch: outcomes that cannot be matched one to one are not
+// trusted: nothing is acked (everything stays pending), and nothing panics.
+func TestOutcomeCountMismatch(t *testing.T) {
+	g := newGroup(sixEvents()...)
+	if _, err := consume(context.Background(), as{g, "sink-1"}, shortSink{newSink(t)}, opts(), &bytes.Buffer{}); err == nil {
+		t.Fatal("a mismatched outcome count was accepted")
+	}
+	if len(g.pending) != 6 {
+		t.Fatalf("pending %d, want all 6: nothing may be acked on a broken contract", len(g.pending))
 	}
 }

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -40,7 +41,7 @@ type streamClient interface {
 
 // committer is the part of sink.Sink the consumer uses.
 type committer interface {
-	Commit(ctx context.Context, records []sink.Record) ([]sink.Committed, error)
+	Commit(ctx context.Context, records []sink.Record) ([]sink.Outcome, error)
 }
 
 // stats is what the consumer did.
@@ -231,7 +232,7 @@ func processBatch(ctx context.Context, c streamClient, dst committer, o options,
 	var st stats
 	var refused []string
 	var recs []sink.Record
-	idsByChain := map[string][]string{}
+	var ids []string // ids[i] is the stream entry of recs[i]
 
 	for _, e := range es {
 		pos := o.stream + ":" + e.id // for the operator's log
@@ -251,7 +252,7 @@ func processBatch(ctx context.Context, c streamClient, dst committer, o options,
 			continue
 		}
 		recs = append(recs, rec)
-		idsByChain[e.key] = append(idsByChain[e.key], e.id)
+		ids = append(ids, e.id)
 	}
 	if len(refused) > 0 {
 		if err := c.ack(ctx, refused...); err != nil {
@@ -263,17 +264,29 @@ func processBatch(ctx context.Context, c streamClient, dst committer, o options,
 		return st, nil
 	}
 
-	done, err := dst.Commit(ctx, recs)
-	if o.afterCommit != nil && len(done) > 0 {
-		o.afterCommit()
+	out, err := dst.Commit(ctx, recs)
+	if out != nil && len(out) != len(recs) {
+		// Not the one-per-record contract: nothing can be matched to an entry,
+		// so nothing is acked; the entries stay pending and are recovered.
+		err = errors.Join(err, fmt.Errorf("the sink returned %d outcomes for %d records", len(out), len(recs)))
+		out = nil
 	}
+	// One outcome per record, in order: entry i is acked exactly when record i
+	// is on its chain. Nothing is matched by subject.
 	var ack []string
-	for _, d := range done {
-		st.committed += d.Entries
-		st.duplicates += d.Duplicates
-		// Entries were grouped by subject; the sink reports the subject it
-		// committed for each (opaque) chain.
-		ack = append(ack, idsByChain[d.Subject]...)
+	for i, oc := range out {
+		if !oc.Committed {
+			continue
+		}
+		if oc.Duplicate {
+			st.duplicates++
+		} else {
+			st.committed++
+		}
+		ack = append(ack, ids[i])
+	}
+	if o.afterCommit != nil && len(ack) > 0 {
+		o.afterCommit()
 	}
 	if len(ack) > 0 {
 		if aerr := c.ack(ctx, ack...); aerr != nil {

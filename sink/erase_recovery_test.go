@@ -9,7 +9,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -545,24 +544,36 @@ func TestCompactFile_IgnoresPlantedTempLink(t *testing.T) {
 	}
 }
 
-// A Committed pairs a subject with its chain: it never prints or encodes the
-// subject (D4).
-func TestCommitted_RedactsSubject(t *testing.T) {
-	c := Committed{Chain: testClass + "." + strings.Repeat("a", 32), Class: testClass, Subject: "u-secret", Entries: 2}
-	for _, got := range []string{
-		fmt.Sprintf("%v", c), fmt.Sprintf("%+v", c), fmt.Sprintf("%#v", c), fmt.Sprintf("%s", c),
-		fmt.Sprintf("%v", []Committed{c}), fmt.Sprintf("%+v", &c),
-	} {
-		if strings.Contains(got, "u-secret") {
-			t.Fatalf("formatted Committed names the subject: %s", got)
-		}
-		if !strings.Contains(got, c.Chain) {
-			t.Fatalf("control: the chain is missing from %s", got)
-		}
+// Commit returns one outcome per record, in the order given, and never the
+// subject. When a later pair fails, the records of the pairs before it are
+// committed and say so; the failed pair's records, and every later one's, do
+// not: a consumer acks exactly the committed ones.
+func TestCommit_OutcomesPerRecordOnPartialFailure(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	raw, err := json.Marshal(c)
-	if err != nil || bytes.Contains(raw, []byte("u-secret")) {
-		t.Fatalf("JSON of Committed names the subject: %s, %v", raw, err)
+	if _, err := s.Commit(ctx, events("u-1", 1)); err != nil {
+		t.Fatal(err)
+	}
+	taken := cid(t, s, "u-1")
+	recs := []Record{events("u-1", 1)[0], events("u-2", 1)[0], events("u-1", 1)[0], events("u-3", 1)[0]}
+	recs[2].Content = []byte(`{"user":"u-1","i":9}`)
+	s.mintChainID = func(string) (string, error) { return taken, nil } // u-2 cannot get a chain
+	out, err := s.Commit(ctx, recs)
+	if err == nil || !strings.Contains(err.Error(), "pair 2 of 3") {
+		t.Fatalf("err = %v; want the failed pair named by position", err)
+	}
+	if len(out) != len(recs) || pattern(out) != "N-N-" {
+		t.Fatalf("outcomes = %s (%+v); want N-N-: u-1's two committed, u-2 and u-3 not", pattern(out), out)
+	}
+	if n := len(entryIDs(t, s, taken)); n != 3 {
+		t.Fatalf("u-1's chain holds %d entries, want 3", n)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil || bytes.Contains(raw, []byte("u-")) || bytes.Contains(raw, []byte(testClass+".")) {
+		t.Fatalf("an outcome carries a subject or a chain: %s, %v", raw, err)
 	}
 }
 
@@ -724,5 +735,48 @@ func TestEraseChain_KeepsOnlyExactErasureRecords(t *testing.T) {
 	}
 	if _, err := os.Stat(record); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("content in an erasure record's place was kept: %v", err)
+	}
+}
+
+// A pair whose APPEND fails (not its chain resolution) is not committed, nor is
+// a duplicate among its records, nor any later pair; the pairs before it are.
+func TestCommit_OutcomesWhenAnAppendFails(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Commit(ctx, events("u-1", 1)); err != nil {
+		t.Fatal(err)
+	}
+	// u-2's chain gets a known id, and a FILE where its content folder must go.
+	doomed := testClass + "." + strings.Repeat("d", 32)
+	s.mintChainID = func(string) (string, error) { return doomed, nil }
+	if err := os.WriteFile(filepath.Join(s.dir, "content", doomed), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u2 := sourced("u-2", 1, 70)[0]
+	recs := []Record{sourced("u-1", 1, 60)[0], u2, u2, sourced("u-3", 1, 80)[0]}
+	out, err := s.Commit(ctx, recs)
+	if err == nil || !strings.Contains(err.Error(), "pair 2 of 3") {
+		t.Fatalf("err = %v; want the failed pair named by position", err)
+	}
+	if pattern(out) != "N---" {
+		t.Fatalf("outcomes %s; want N---: u-2 (and its duplicate) and u-3 not committed", pattern(out))
+	}
+}
+
+// A context already cancelled: nothing is committed, and the outcomes (one per
+// record) say so.
+func TestCommit_CancelledContext(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out, err := s.Commit(ctx, events("u-1", 2))
+	if !errors.Is(err, context.Canceled) || pattern(out) != "--" {
+		t.Fatalf("out %s, err %v; want -- and context.Canceled", pattern(out), err)
 	}
 }

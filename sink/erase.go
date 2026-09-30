@@ -176,6 +176,14 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 		return out, fmt.Errorf("sink: prepare the chains: %w", err)
 	}
 
+	if resumeOnly {
+		// A live row on a chain that ends with a genuine erasure (the index was
+		// restored from before an erasure, or edited) re-links an erased subject:
+		// forget it again, so it is completed below like any pending erasure.
+		if err := s.forgetRelinked(ctx, st, subj); err != nil {
+			return out, err
+		}
+	}
 	// Interrupted erasures of earlier calls: completed too, reported apart.
 	earlier, err := subj.pending()
 	if err != nil {
@@ -259,6 +267,55 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	}
 	incomplete.Err = errors.Join(errs...)
 	return out, incomplete
+}
+
+// forgetRelinked turns every relinked chain's live row into a pending erasure.
+func (s *Sink) forgetRelinked(ctx context.Context, st *boltstore.Store, subj *subjectsStore) error {
+	live, err := subj.liveChains()
+	if err != nil {
+		return fmt.Errorf("sink: read the subject index: %w", err)
+	}
+	for _, chain := range live {
+		erased, err := endsWithGenuineErasure(ctx, st, chain)
+		if err != nil {
+			return err
+		}
+		if erased {
+			if err := subj.forgetChain(chain); err != nil {
+				return fmt.Errorf("sink: forget the subject of relinked chain %s: %w", chain, err)
+			}
+		}
+	}
+	return nil
+}
+
+// endsWithGenuineErasure reports whether a chain's last entry is a genuine
+// erasure: of the erasure type, with the hash of the exact record for its
+// predecessor's sequence. The same rule as eraseChain and Verify.
+func endsWithGenuineErasure(ctx context.Context, st *boltstore.Store, chain string) (bool, error) {
+	_, tail, err := st.ReadTail(ctx, chain)
+	if errors.Is(err, store.ErrEmptyChain) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("sink: read chain %s: %w", chain, err)
+	}
+	rows, err := st.Range(ctx, chain, tail, tail, 1)
+	if err != nil {
+		return false, fmt.Errorf("sink: read chain %s's last entry: %w", chain, err)
+	}
+	if len(rows) != 1 {
+		return false, fmt.Errorf("sink: chain %s: its last entry is not where its tail says", chain)
+	}
+	prev, err := st.Predecessor(ctx, chain, tail)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil // an erasure needs a predecessor
+	}
+	if err != nil {
+		return false, fmt.Errorf("sink: read chain %s: %w", chain, err)
+	}
+	last := rows[0]
+	return last.EntryType == EntryTypeErasure && last.ContentHash == erasureHash(erasureRecord(prev.GlobalSeq)), nil
 }
 
 // checkErasable runs, read-only, the checks eraseChain makes before it records

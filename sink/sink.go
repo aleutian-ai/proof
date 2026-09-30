@@ -79,7 +79,6 @@ package sink
 
 import (
 	"errors"
-	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
@@ -153,33 +152,24 @@ type Record struct {
 	Source string
 }
 
-// Committed reports what one (class, subject) pair's chain received.
+// Outcome is what Commit did with one record. Commit returns one per record,
+// in the order given, so a streaming consumer acknowledges message i by
+// outcome i.
 //
-// SENSITIVE: a Committed pairs a subject with its chain, which is exactly what
-// the secret subject index exists to hold, and what erasure deletes. Subject is
-// here only so a streaming consumer can acknowledge upstream per subject. Do not
-// log, print or persist it: a logged pairing re-identifies the chain forever,
-// after any erasure. To make that hard to do by accident, Subject is never
-// encoded to JSON, and a Committed formats with the subject redacted (%v, %+v,
-// %#v, %s).
-type Committed struct {
-	Chain   string `json:"chain"` // the opaque chain id
-	Class   string `json:"class"`
-	Subject string `json:"-"`       // as the caller gave it; SENSITIVE, see above
-	Entries int    `json:"entries"` // newly committed
-	// Duplicates were records whose Source was already committed on this chain,
-	// or repeated within the batch. They were skipped.
-	Duplicates int `json:"duplicates,omitempty"`
+// It deliberately names no chain. The caller knows each record's subject, so a
+// chain id next to it would be a row of the secret subject index, easily logged
+// beside the message and outliving any erasure. Which chain holds whom is read
+// only from the index itself (ChainSubjects), deliberately.
+type Outcome struct {
+	// Committed is true when a record with this record's content is on its chain:
+	// newly appended, or (Duplicate) a record with the same Source already was.
+	// Only then is it safe to acknowledge upstream.
+	Committed bool `json:"committed"`
+	// Duplicate is true when the record's Source was already committed on its
+	// chain, or repeated earlier in the same call: it was skipped, not appended
+	// again. A reused Source is taken as the same record (see Record.Source).
+	Duplicate bool `json:"duplicate,omitempty"`
 }
-
-// String formats c with its subject redacted.
-func (c Committed) String() string {
-	return fmt.Sprintf("{Chain:%s Class:%s Subject:[redacted] Entries:%d Duplicates:%d}",
-		c.Chain, c.Class, c.Entries, c.Duplicates)
-}
-
-// GoString formats c for %#v, with its subject redacted.
-func (c Committed) GoString() string { return "sink.Committed" + c.String() }
 
 // Checkpointed reports one chain's checkpoint: written, or refused.
 type Checkpointed struct {
@@ -197,6 +187,13 @@ type ChainReport struct {
 	// Chain is the chain id, raw. It may come from a crafted evidence file or a
 	// stray folder name: quote it before printing (the CLI does).
 	Chain string `json:"chain"`
+	// Class is the chain's evidence class (its id's prefix); empty for an
+	// invalid id.
+	Class string `json:"class,omitempty"`
+	// Index is the chain's state in the subject index (see IndexState). Empty
+	// for a chain Verify could not classify: an invalid id, or a chain known only
+	// by a leftover folder. Never the subject itself; see ChainSubjects.
+	Index IndexState `json:"index,omitempty"`
 	// Anomaly is set when this is not an ordinary chain: "invalid-id" (the
 	// evidence file holds an id this sink never writes; nothing was read) or
 	// "removed" (checkpoint or content folders exist, but no entries), or
@@ -210,6 +207,36 @@ type ChainReport struct {
 	// Problems lists every failure. Empty means the chain verifies.
 	Problems []string `json:"problems,omitempty"`
 }
+
+// IndexState is a chain's state in the subject index, as Verify reports it.
+type IndexState string
+
+// The states. The first four are not problems; the rest are.
+const (
+	// IndexLive: bound to a (class, subject) pair.
+	IndexLive IndexState = "live"
+	// IndexErased: no row, and the chain ends with a genuine erasure entry that
+	// a verified checkpoint covers.
+	IndexErased IndexState = "erased"
+	// IndexErasedUnanchored: as IndexErased, but no verified checkpoint covers
+	// the erasure yet. Normal right after an erasure; until a checkpoint covers
+	// it, the erasure is only as trustworthy as the folder (anyone who can write
+	// the evidence file can append a well-formed one).
+	IndexErasedUnanchored IndexState = "erased-unanchored"
+	// IndexOnly: bound, but no entries yet (a first commit stopped before its
+	// append; the next commit of the pair uses it).
+	IndexOnly IndexState = "index-only"
+	// IndexPending: the subject is forgotten, the erasure not finished.
+	IndexPending IndexState = "pending"
+	// IndexUnaccounted: no row, and the chain does not end with an erasure.
+	IndexUnaccounted IndexState = "unaccounted"
+	// IndexRelinked: a live row on a chain that ends with a genuine erasure: the
+	// index was restored from before an erasure, or edited. It re-links an
+	// erased subject; `proof sink erase --resume` forgets it again.
+	IndexRelinked IndexState = "relinked"
+	// IndexMalformed: a row that disagrees with the rest of the index.
+	IndexMalformed IndexState = "malformed"
+)
 
 // Report is what Verify found on every chain.
 type Report struct {
@@ -253,6 +280,15 @@ type EraseResult struct {
 	// files, nonces and source positions left by a first commit that stopped
 	// before its append. No erasure entry is written: there is no chain to hold it.
 	Leftovers int `json:"leftovers,omitempty"`
+}
+
+// ChainSubject is one live row of the subject index: whose evidence a chain
+// holds. SENSITIVE: it is exactly what the secret index exists to hold. See
+// ChainSubjects.
+type ChainSubject struct {
+	Chain   string `json:"chain"`
+	Class   string `json:"class"`
+	Subject string `json:"subject"`
 }
 
 // Sink is a folder holding one evidence file with a chain per (class, subject).

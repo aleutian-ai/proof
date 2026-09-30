@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 )
 
 // ErrInvalidClass is returned for an evidence class that breaks the class rule.
@@ -79,6 +80,11 @@ func (r Record) Validate() error {
 	if !ValidSubject(r.Subject) {
 		return fmt.Errorf("%w: %w", ErrInvalidRecord, ErrInvalidSubject)
 	}
+	if r.Class == r.Subject {
+		// The class is public and permanent (it is the chain id's prefix); a class
+		// equal to the subject would publish the subject forever.
+		return fmt.Errorf("%w: %w: the class equals the subject", ErrInvalidRecord, ErrInvalidClass)
+	}
 	switch n := len(r.Content); {
 	case n == 0:
 		return fmt.Errorf("%w: content is empty; there is nothing to commit", ErrInvalidRecord)
@@ -102,41 +108,103 @@ func newChainID(class string) (string, error) {
 	return class + "." + hex.EncodeToString(b), nil
 }
 
-// RecordFromJSON makes a Record from one JSON object, whose subject is one of
-// its fields. The caller sets the Record's Class.
+// JSONFields says where a JSON line's class and subject come from: exactly one
+// of Class and ClassField (with Classes), and SubjectField.
+//
+// A class is public and permanent: it is the prefix of the chain id, in the
+// shareable evidence file and every checkpoint, and no erasure removes it. A
+// class read from the data is therefore limited to Classes, so a producer can
+// never put an identifier there.
+type JSONFields struct {
+	// Class is the class of every line.
+	Class string
+	// ClassField is the top-level field holding each line's class. It must
+	// differ from SubjectField.
+	ClassField string
+	// Classes lists the only classes ClassField may hold. Required with
+	// ClassField; a line with any other class is refused.
+	Classes []string
+	// SubjectField is the top-level field holding each line's subject.
+	SubjectField string
+}
+
+// RecordFromJSON makes a Record from one JSON object: its subject from one of
+// its fields, its class fixed or from another field.
 //
 // # Description
 //
-// The field must hold a JSON string. The record's content is the line exactly as
-// given — no trimming, no re-encoding — so what is committed is what arrived.
+// Each field read must hold a JSON string. The record's content is the line
+// exactly as given (no trimming, no re-encoding), so what is committed is what
+// arrived. Errors name fields, never their values: a refused value is often the
+// personal data the rules keep out.
+//
+// # Inputs
+//
+//   - line: one JSON object
+//   - f: where the class and subject come from
 //
 // # Outputs
 //
-//   - Record: the record with Subject and Content set; Class is the caller's to
-//     set, and nothing is validated yet (Validate or Commit does that)
-//   - error: the line is not a JSON object, or the field is absent or not a string
+//   - Record: Class, Subject and Content set. Nothing is validated yet
+//     (Validate or Commit does that).
+//   - error: f does not give exactly one of Class and ClassField, gives
+//     ClassField without Classes or equal to SubjectField, or no SubjectField;
+//     the line is not a JSON object; a field is absent or not a string; the
+//     class read is not one of Classes
 //
 // # Example
 //
-//	r, err := sink.RecordFromJSON([]byte(`{"user":"u-81","event":"login"}`), "user")
-//	// r.Subject == "u-81"; r.Content is the whole line; set r.Class
+//	r, err := sink.RecordFromJSON([]byte(`{"kind":"auth","user":"u-81"}`),
+//	    sink.JSONFields{ClassField: "kind", Classes: []string{"auth", "payments"}, SubjectField: "user"})
+//	// r.Class == "auth", r.Subject == "u-81", r.Content is the whole line
 //
 // # Limitations
 //
-//   - Reads one top-level field; nested paths are not supported.
-func RecordFromJSON(line []byte, field string) (Record, error) {
+//   - Reads top-level fields only; nested paths are not supported.
+//   - Checks f on every call (cheap); a bad f fails on the first line.
+//
+// # Assumptions
+//
+//   - The subject is already a pseudonym upstream; this reads it, it does not
+//     pseudonymize it.
+func RecordFromJSON(line []byte, f JSONFields) (Record, error) {
+	switch {
+	case (f.Class == "") == (f.ClassField == "") || f.SubjectField == "":
+		return Record{}, errors.New("sink: give a subject field, and exactly one of a class and a class field")
+	case f.ClassField != "" && f.ClassField == f.SubjectField:
+		return Record{}, errors.New("sink: the class field and the subject field must differ " +
+			"(a class is public and never erased)")
+	case f.ClassField != "" && len(f.Classes) == 0:
+		return Record{}, errors.New("sink: a class field needs the list of classes it may hold")
+	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(line, &obj); err != nil {
-		return Record{}, fmt.Errorf("not a JSON object: %w", err)
+		return Record{}, fmt.Errorf("sink: not a JSON object: %w", err)
 	}
+	subject, err := stringField(obj, f.SubjectField)
+	if err != nil {
+		return Record{}, err
+	}
+	class := f.Class
+	if f.ClassField != "" {
+		if class, err = stringField(obj, f.ClassField); err != nil {
+			return Record{}, err
+		}
+		if !slices.Contains(f.Classes, class) {
+			return Record{}, fmt.Errorf("%w: %w: field %q holds a class not in the allowed list",
+				ErrInvalidRecord, ErrInvalidClass, f.ClassField)
+		}
+	}
+	return Record{Class: class, Subject: subject, Content: append([]byte(nil), line...)}, nil
+}
+
+// stringField reads a top-level field that must hold a JSON string.
+func stringField(obj map[string]json.RawMessage, field string) (string, error) {
 	raw, ok := obj[field]
-	if !ok {
-		return Record{}, fmt.Errorf("no %q field to route by", field)
-	}
 	// Checked explicitly: null decodes into a string without error, as "".
-	var key string
-	if len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &key) != nil {
-		return Record{}, fmt.Errorf("field %q is not a string", field)
+	var v string
+	if !ok || len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &v) != nil {
+		return "", fmt.Errorf("sink: field %q is missing or not a string", field)
 	}
-	return Record{Subject: key, Content: append([]byte(nil), line...)}, nil
+	return v, nil
 }

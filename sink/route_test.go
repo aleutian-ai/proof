@@ -95,29 +95,57 @@ func TestChainIDs(t *testing.T) {
 }
 
 func TestRecordFromJSON(t *testing.T) {
-	line := []byte(`{"user":"u-81","event":"login","n":1}`)
-	r, err := RecordFromJSON(line, "user")
-	if err != nil || r.Subject != "u-81" || string(r.Content) != string(line) {
+	fixed := JSONFields{Class: "events", SubjectField: "user"}
+	line := []byte(`{"user":"u-81","kind":"auth","event":"login","n":1}`)
+	r, err := RecordFromJSON(line, fixed)
+	if err != nil || r.Class != "events" || r.Subject != "u-81" || string(r.Content) != string(line) {
 		t.Fatalf("got %+v, %v", r, err)
+	}
+	allowed := []string{"auth", "payments"}
+	r2, err := RecordFromJSON(line, JSONFields{ClassField: "kind", Classes: allowed, SubjectField: "user"})
+	if err != nil || r2.Class != "auth" || r2.Subject != "u-81" {
+		t.Fatalf("class from a field: %+v, %v", r2, err)
 	}
 	line[2] = 'X' // the record must not alias the caller's buffer
 	if r.Content[2] == 'X' {
 		t.Fatal("Record.Content aliases the input line")
 	}
 
-	for name, in := range map[string]string{
-		"missing field":    `{"topic":"a"}`,
-		"number field":     `{"user":81}`,
-		"null field":       `{"user":null}`,
-		"not an object":    `["u-81"]`,
-		"not JSON":         `user=u-81`,
-		"trailing garbage": `{"user":"u-81"} x`,
+	byField := JSONFields{ClassField: "kind", Classes: allowed, SubjectField: "user"}
+	for name, c := range map[string]struct {
+		in string
+		f  JSONFields
+	}{
+		"missing field":         {`{"topic":"a"}`, fixed},
+		"number field":          {`{"user":81}`, fixed},
+		"null field":            {`{"user":null}`, fixed},
+		"not an object":         {`["u-81"]`, fixed},
+		"not JSON":              {`user=u-81`, fixed},
+		"trailing garbage":      {`{"user":"u-81"} x`, fixed},
+		"class field missing":   {`{"user":"u-81"}`, byField},
+		"class field null":      {`{"user":"u-81","kind":null}`, byField},
+		"class and class field": {`{"user":"u-81","kind":"auth"}`, JSONFields{Class: "events", ClassField: "kind", SubjectField: "user"}},
+		"no class at all":       {`{"user":"u-81"}`, JSONFields{SubjectField: "user"}},
+		"no subject field":      {`{"user":"u-81"}`, JSONFields{Class: "events"}},
+		"class not allowed":     {`{"user":"u-81","kind":"u-81"}`, byField},
+		"class field, no list":  {`{"user":"u-81","kind":"auth"}`, JSONFields{ClassField: "kind", SubjectField: "user"}},
+		"class field = subject": {`{"user":"auth"}`, JSONFields{ClassField: "user", Classes: []string{"auth"}, SubjectField: "user"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := RecordFromJSON([]byte(in), "user"); err == nil {
-				t.Fatalf("RecordFromJSON(%s) succeeded", in)
+			if _, err := RecordFromJSON([]byte(c.in), c.f); err == nil {
+				t.Fatalf("RecordFromJSON(%s, %+v) succeeded", c.in, c.f)
 			}
 		})
+	}
+	// A record whose class equals its subject is refused: the class is public
+	// and never erased.
+	if err := (Record{Class: "u-81", Subject: "u-81", Content: []byte("x")}).Validate(); !errors.Is(err, ErrInvalidClass) {
+		t.Fatalf("class == subject: %v", err)
+	}
+	// Errors name fields, never values.
+	_, err = RecordFromJSON([]byte(`{"user":"jo@example.com","kind":7}`), byField)
+	if err == nil || strings.Contains(err.Error(), "jo@example.com") {
+		t.Fatalf("err = %v", err)
 	}
 }
 

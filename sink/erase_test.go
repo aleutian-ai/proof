@@ -61,11 +61,10 @@ func TestErase(t *testing.T) {
 	// but the sink has forgotten them: the new event starts a NEW chain, and
 	// never rejoins the erased history.
 	old := cid(t, s, "u-81")
-	done, err := s.Commit(ctx, events("u-81", 1))
-	if err != nil {
+	if _, err := s.Commit(ctx, events("u-81", 1)); err != nil {
 		t.Fatal(err)
 	}
-	fresh := done[0].Chain
+	fresh := cidIn(t, s, testClass, "u-81")
 	if fresh == old {
 		t.Fatal("a returning subject was committed to its erased chain")
 	}

@@ -26,6 +26,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -221,14 +222,14 @@ func add(ctx context.Context, rdb *redis.Client, stream, field string, in io.Rea
 		if len(bytes.TrimSpace(raw)) == 0 {
 			continue
 		}
-		r, err := sink.RecordFromJSON(raw, field)
+		key, err := keyOf(raw, field)
 		if err != nil {
 			return fmt.Errorf("line %d: %w", line, err)
 		}
 		// Auto ids ("*"): time-based and increasing. The consumer's idempotency
 		// relies on an id never being reused; never set ids by hand here.
 		if err := rdb.XAdd(ctx, &redis.XAddArgs{
-			Stream: stream, ID: "*", Values: []string{"key", r.Subject, "data", string(r.Content)},
+			Stream: stream, ID: "*", Values: []string{"key", key, "data", string(raw)},
 		}).Err(); err != nil {
 			return fmt.Errorf("line %d: XADD: %w", line, err)
 		}
@@ -297,4 +298,22 @@ func toEntry(m redis.XMessage) entry {
 		e.data = []byte(d)
 	}
 	return e
+}
+
+// keyOf reads the top-level field that holds a line's key, which must be a JSON
+// string. Errors name the field, never a value. The publisher needs a key, not
+// a sink.Record, so it does not use sink.RecordFromJSON; each example module
+// carries its own copy on purpose (they are separate modules).
+func keyOf(line []byte, field string) (string, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(line, &obj); err != nil {
+		return "", fmt.Errorf("not a JSON object: %w", err)
+	}
+	raw, ok := obj[field]
+	var key string
+	// Checked explicitly: null decodes into a string without error, as "".
+	if !ok || len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &key) != nil {
+		return "", fmt.Errorf("field %q is missing or not a string", field)
+	}
+	return key, nil
 }

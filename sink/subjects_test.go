@@ -63,15 +63,16 @@ func TestIndexAccountsForEveryChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(done) != 3 {
-		t.Fatalf("want 3 chains (2 classes for u-1, 1 for u-2), got %+v", done)
+	if pattern(done) != "NNNN" {
+		t.Fatalf("want one committed outcome per record: %+v", done)
 	}
 	ids := map[string]bool{}
-	for _, d := range done {
-		if !strings.HasPrefix(d.Chain, d.Class+".") || ids[d.Chain] {
-			t.Fatalf("chain %s: wrong class prefix, or reused", d.Chain)
+	for _, r := range recs[:3] {
+		c := cidIn(t, s, r.Class, r.Subject)
+		if !strings.HasPrefix(c, r.Class+".") || ids[c] {
+			t.Fatalf("chain %s: wrong class prefix, or reused", c)
 		}
-		ids[d.Chain] = true
+		ids[c] = true
 	}
 
 	st, err := s.openStore(true)
@@ -113,7 +114,7 @@ func TestIndexRowWithoutChainIsReused(t *testing.T) {
 	}
 	bound := bindChain(t, s, "u-1")
 	done, err := s.Commit(context.Background(), events("u-1", 2))
-	if err != nil || len(done) != 1 || done[0].Chain != bound {
+	if err != nil || pattern(done) != "NN" || cid(t, s, "u-1") != bound || len(entryIDs(t, s, bound)) != 2 {
 		t.Fatalf("commit after a crash at step 1 = %+v, %v; want chain %s reused", done, err, bound)
 	}
 }
@@ -131,7 +132,7 @@ func TestFailedAppendKeepsTheBinding(t *testing.T) {
 	}
 	fx.close()
 	done, err := fx.s.Commit(context.Background(), sourced("u-1", 2, 1))
-	if err != nil || done[0].Chain != fx.chain || done[0].Entries != 2 {
+	if err != nil || pattern(done) != "NN" || len(entryIDs(t, fx.s, fx.chain)) != 2 {
 		t.Fatalf("retry = %+v, %v; want 2 entries on %s", done, err, fx.chain)
 	}
 }
@@ -168,22 +169,21 @@ func TestNewChainIDIsCheckedUnused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	done, err := s.Commit(ctx, events("u-1", 1)) // u-1's chain: in the store AND the index
-	if err != nil {
+	if _, err := s.Commit(ctx, events("u-1", 1)); err != nil { // u-1's chain: in the store AND the index
 		t.Fatal(err)
 	}
-	taken := done[0].Chain
-	indexOnly := bindChain(t, s, "u-2") // in the index, no entries yet
+	taken := cid(t, s, "u-1")
+	IndexOnly := bindChain(t, s, "u-2") // in the index, no entries yet
 
 	fresh := testClass + "." + strings.Repeat("f", 32)
-	queue := []string{taken, indexOnly, fresh}
+	queue := []string{taken, IndexOnly, fresh}
 	s.mintChainID = func(string) (string, error) {
 		id := queue[0]
 		queue = queue[1:]
 		return id, nil
 	}
 	got, err := s.Commit(ctx, events("u-3", 1))
-	if err != nil || got[0].Chain != fresh {
+	if err != nil || pattern(got) != "N" || cid(t, s, "u-3") != fresh {
 		t.Fatalf("u-3 = %+v, %v; want the first unused id %s", got, err, fresh)
 	}
 

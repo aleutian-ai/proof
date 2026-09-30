@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -161,12 +162,12 @@ func publish(ctx context.Context, js jetstream.JetStream, prefix, field string, 
 		if len(bytes.TrimSpace(raw)) == 0 {
 			continue
 		}
-		r, err := sink.RecordFromJSON(raw, field)
+		key, err := keyOf(raw, field)
 		if err != nil {
 			return fmt.Errorf("line %d: %w", line, err)
 		}
 		msgID := hex.EncodeToString(run) + "-" + strconv.Itoa(line)
-		if _, err := js.Publish(ctx, prefix+"."+r.Subject, r.Content, jetstream.WithMsgID(msgID)); err != nil {
+		if _, err := js.Publish(ctx, prefix+"."+key, append([]byte(nil), raw...), jetstream.WithMsgID(msgID)); err != nil {
 			// Never echo the subject: it holds the key.
 			if errors.Is(err, jetstream.ErrNoStreamResponse) || errors.Is(err, nats.ErrNoResponders) {
 				return fmt.Errorf("line %d: no stream accepts that subject (the key must be one "+
@@ -269,4 +270,22 @@ func (m jsMessage) Position() (string, error) {
 		return "", err
 	}
 	return md.Stream + "@" + m.incarnation + ":" + strconv.FormatUint(md.Sequence.Stream, 10), nil
+}
+
+// keyOf reads the top-level field that holds a line's key, which must be a JSON
+// string. Errors name the field, never a value. The publisher needs a key, not
+// a sink.Record, so it does not use sink.RecordFromJSON; each example module
+// carries its own copy on purpose (they are separate modules).
+func keyOf(line []byte, field string) (string, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(line, &obj); err != nil {
+		return "", fmt.Errorf("not a JSON object: %w", err)
+	}
+	raw, ok := obj[field]
+	var key string
+	// Checked explicitly: null decodes into a string without error, as "".
+	if !ok || len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &key) != nil {
+		return "", fmt.Errorf("field %q is missing or not a string", field)
+	}
+	return key, nil
 }

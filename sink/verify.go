@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/commitment"
@@ -34,10 +35,21 @@ import (
 //  4. Events before an erasure entry are gone: content and nonce both deleted.
 //     They count as erased. An event missing WITHOUT an erasure after it is a
 //     problem, not an erasure.
+//  5. The chain is accounted for by the subject index (read-only; see
+//     ChainReport.Index): bound to a pair (live), or with no row and ending in
+//     a genuine erasure entry (erased). A chain whose erasure was interrupted
+//     (pending), a chain with no row that does not end in an erasure
+//     (unaccounted), and a row that disagrees with the index (malformed) are
+//     problems. An index row with no chain yet (index-only: a first commit
+//     stopped before its append; the next commit of the pair reuses it) is
+//     reported, and is not a problem.
+//
+// The report never names a subject. ChainSubjects is the separate, deliberate
+// call that does.
 //
 // Steps 1 and 2 need only the evidence file, the checkpoints and a public key.
-// Step 3 needs the content folder and the nonce file, which only the operator
-// holds.
+// Steps 3 and 5 need the content folder, the nonce file and the subject index,
+// which only the operator holds.
 //
 // # Inputs
 //
@@ -74,6 +86,19 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 	if ns != nil {
 		defer ns.Close()
 	}
+	// No index file means no rows: every live chain is then unaccounted.
+	subj, err := openSubjectsReadOnly(s.subjectsPath(), s.lockTimeout)
+	if err != nil {
+		return Report{}, err
+	}
+	var ix *indexSnapshot // nil: no index, no rows
+	if subj != nil {
+		defer subj.Close()
+		if ix, err = subj.snapshot(); err != nil {
+			return Report{}, err
+		}
+		defer ix.close()
+	}
 	chains, err := st.Chains(ctx)
 	if err != nil {
 		return Report{}, fmt.Errorf("sink: %w", err)
@@ -81,8 +106,10 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 
 	var rep Report
 	inStore := map[string]bool{}
+	reported := map[string]int{} // chain → its report's index in rep.Chains
 	for _, chain := range chains {
 		inStore[chain] = true
+		reported[chain] = len(rep.Chains)
 		if err := ctx.Err(); err != nil {
 			return rep, err
 		}
@@ -92,11 +119,61 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 				Problems: []string{"the evidence file holds a chain id this sink never writes; it was not read"}})
 			continue
 		}
-		cr, err := s.verifyChain(ctx, st, ns, f, chain, keys)
+		cr, err := s.verifyChain(ctx, st, ns, f, chain, keys, ix.state(chain))
 		if err != nil {
 			return rep, err
 		}
 		rep.Chains = append(rep.Chains, cr)
+	}
+
+	// Index rows with no chain in the evidence file. A key that is not a valid
+	// chain id is never shown: it could hold anything, even a subject.
+	invalidRows := 0
+	addInvalid := func() {
+		invalidRows++
+		rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid index row #%d>", invalidRows),
+			Index: IndexMalformed, Problems: []string{indexInconsistent}})
+	}
+	if err := ix.eachReverse(ctx, func(key []byte, row IndexState) {
+		chain := string(key)
+		if !ValidChainID(chain) {
+			addInvalid()
+			return
+		}
+		if inStore[chain] {
+			return
+		}
+		cr := ChainReport{Chain: chain, Class: classOf(chain), Index: row}
+		switch row {
+		case IndexLive:
+			cr.Index = IndexOnly // a note, not a problem: the next commit of the pair uses it
+		case IndexPending:
+			cr.Problems = append(cr.Problems, erasureInterrupted)
+		default:
+			cr.Problems = append(cr.Problems, indexInconsistent)
+		}
+		reported[chain] = len(rep.Chains)
+		rep.Chains = append(rep.Chains, cr)
+	}); err != nil {
+		return rep, fmt.Errorf("sink: read the subject index: %w", err)
+	}
+	// Forward rows that disagree with the index: each still names a subject (in
+	// its key, never shown) that no consistent row accounts for, and makes every
+	// commit of its pair fail.
+	if err := ix.eachBadForward(ctx, func(v []byte) {
+		chain := string(v)
+		i, known := reported[chain]
+		if !ValidChainID(chain) || !known {
+			addInvalid()
+			return
+		}
+		cr := &rep.Chains[i]
+		if cr.Index != IndexMalformed {
+			cr.Problems = append(cr.Problems, indexInconsistent)
+		}
+		cr.Index = IndexMalformed
+	}); err != nil {
+		return rep, fmt.Errorf("sink: read the subject index: %w", err)
 	}
 
 	// A chain removed from the evidence file leaves its checkpoints and content
@@ -112,42 +189,120 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 			return rep, fmt.Errorf("sink: %w", err)
 		}
 		for _, d := range dirs {
-			if inStore[d.Name()] {
+			name := d.Name()
+			if inStore[name] {
 				continue
 			}
-			inStore[d.Name()] = true // report each once
-			rep.Chains = append(rep.Chains, ChainReport{Chain: d.Name(), Anomaly: "removed",
-				Problems: []string{fmt.Sprintf("%s/ has a folder for this chain, but the evidence file "+
-					"has no entries for it: the chain was REMOVED, or a first commit stopped before its "+
-					"append (erase the chain to remove what it left)", sub)}})
+			i, known := reported[name]
+			if !known {
+				reported[name] = len(rep.Chains)
+				rep.Chains = append(rep.Chains, ChainReport{Chain: name, Anomaly: "removed"})
+				i = len(rep.Chains) - 1
+			}
+			cr := &rep.Chains[i]
+			if sub == "anchors" {
+				// Checkpoints are written only for chains with entries: whatever
+				// the index says, entries were removed.
+				cr.Anomaly = "removed"
+				cr.Problems = append(cr.Problems, "anchors/ has checkpoints for this chain, but the "+
+					"evidence file has no entries for it: the chain was REMOVED")
+				continue
+			}
+			if cr.Index != IndexOnly && cr.Index != IndexPending {
+				cr.Anomaly = "removed"
+			}
+			cr.Problems = append(cr.Problems, "content/ has a folder for this chain, but the evidence "+
+				"file has no entries for it: the chain was removed, or a first commit stopped before "+
+				"its append; "+remedy(cr.Index))
 		}
 	}
 	sort.Slice(rep.Chains, func(i, j int) bool { return rep.Chains[i].Chain < rep.Chains[j].Chain })
 	return rep, nil
 }
 
+// Index problems, worded once.
+const (
+	erasureInterrupted = "erasure interrupted: the subject is forgotten but this chain is not yet " +
+		"erased; run `proof sink erase --resume`"
+	indexInconsistent = "the subject index is inconsistent for this chain (a row that disagrees with " +
+		"the rest of the index); repair it by hand. Restoring an older copy is no fix: it re-links " +
+		"every subject erased since"
+	indexRelinked = "the subject index binds a subject to this chain, which ends with its erasure: the " +
+		"index was restored from before an erasure, or edited, and re-links an erased subject; run " +
+		"`proof sink erase --resume` to forget it again"
+)
+
+// remedy says how to remove leftover files of a chain in a given index state.
+func remedy(index IndexState) string {
+	switch index {
+	case IndexLive, IndexOnly:
+		return "erasing its subject removes them"
+	case IndexPending:
+		return "`proof sink erase --resume` removes them"
+	default:
+		return "nothing in the sink will remove them (no index row): check, then remove by hand"
+	}
+}
+
+// classOf is the class prefix of a valid chain id, or "".
+func classOf(chain string) string {
+	if !ValidChainID(chain) {
+		return ""
+	}
+	class, _, _ := strings.Cut(chain, ".")
+	return class
+}
+
 // verifyChain verifies one chain in two paged passes, never holding it whole:
 // the first counts it and finds its last erasure; the second walks it, binding
 // each checkpoint as the walk reaches its end, and checks each entry's content.
 func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, ns *noncestore.Store, f *folder,
-	chain string, keys anchor.KeySource) (ChainReport, error) {
-	cr := ChainReport{Chain: chain}
+	chain string, keys anchor.KeySource, row IndexState) (ChainReport, error) {
+	cr := ChainReport{Chain: chain, Class: classOf(chain)}
 	anchors, problem, err := f.readAnchors(chain)
 	if err != nil {
 		return cr, err
 	}
 
-	// Pass 1: the length, and where the last erasure is.
+	// Pass 1: the length, where the last GENUINE erasure is (its hash is that of
+	// the exact record; the entry type alone is not evidence), and whether the
+	// chain ends with one. Erase applies the same rule.
 	total, lastErasure := 0, -1
+	endsErased, tailSeq := false, int64(0)
 	if err := forEachEntry(ctx, st, chain, func(e store.Entry) {
-		if e.EntryType == EntryTypeErasure {
+		endsErased = total > 0 && e.EntryType == EntryTypeErasure &&
+			e.ContentHash == erasureHash(erasureRecord(tailSeq))
+		if endsErased {
 			lastErasure = total
 		}
+		tailSeq = e.GlobalSeq
 		total++
 	}); err != nil {
 		return cr, err
 	}
 	cr.Entries = total
+	switch {
+	case row == IndexLive && endsErased:
+		cr.Index = IndexRelinked
+		cr.Problems = append(cr.Problems, indexRelinked)
+	case row == IndexLive:
+		cr.Index = IndexLive
+	case row == IndexPending:
+		cr.Index = IndexPending
+		cr.Problems = append(cr.Problems, erasureInterrupted)
+	case row == IndexMalformed:
+		cr.Index = IndexMalformed
+		cr.Problems = append(cr.Problems, indexInconsistent)
+	case endsErased:
+		// Upgraded to IndexErased below, once a verified checkpoint is known to
+		// cover the erasure entry.
+		cr.Index = IndexErasedUnanchored
+	default:
+		cr.Index = IndexUnaccounted
+		cr.Problems = append(cr.Problems, "not accounted for: the subject index has no row for this "+
+			"chain, and it does not end with an erasure (the index was lost or edited, or another "+
+			"writer added the chain)")
+	}
 
 	// The content folder, as a set of names to tick off. The folder first:
 	// under a symlinked folder every read would be refused as an escape.
@@ -205,6 +360,9 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, ns *noncest
 		cr.Checkpoints, covered = series.verified, series.covered
 	}
 	cr.Unanchored = total - int(covered)
+	if cr.Index == IndexErasedUnanchored && series != nil && len(series.problems) == 0 && int(covered) == total {
+		cr.Index = IndexErased
+	}
 
 	// A file matching no entry is content that was never committed: a commit
 	// that stopped before its append. It is still personal data, so say so.
@@ -215,7 +373,7 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, ns *noncest
 	sort.Strings(names)
 	for _, n := range names {
 		cr.Problems = append(cr.Problems, fmt.Sprintf("content file %q matches no entry (a commit "+
-			"that did not finish?); erase the chain or remove it", n))
+			"that did not finish?); %s", n, remedy(cr.Index)))
 	}
 	return cr, nil
 }

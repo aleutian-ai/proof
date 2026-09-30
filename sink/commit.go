@@ -46,17 +46,46 @@ import (
 //
 // # Outputs
 //
-//   - []Committed: per chain, in order of first appearance. On error, the chains
-//     committed before the failure.
-//   - error: a record is invalid (nothing written), or one chain's append failed.
-//     Each chain is atomic; the batch as a whole is not.
-func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error) {
+//   - []Outcome: nil, or exactly one per record in the order given (see
+//     Outcome). Nil when nothing was attempted: an invalid record, or the files
+//     could not be opened. Otherwise non-nil, error or not: when a pair fails
+//     (its chain cannot be resolved or appended, or ctx is cancelled), the
+//     records of the pairs before it are Committed and the rest are not.
+//   - error: a *RecordError (nothing written); a file could not be opened (ErrBusy
+//     when another process holds it); or a pair failed, wrapped with its
+//     position in the batch. Each pair's chain is atomic; the batch is not.
+//
+// # Example
+//
+//	out, err := s.Commit(ctx, recs)
+//	for i, m := range msgs {
+//	    if out != nil && out[i].Committed {
+//	        m.Ack()
+//	    } else {
+//	        m.Nak()
+//	    }
+//	}
+//
+// # Limitations
+//
+//   - Not atomic across pairs: a failure part-way leaves the earlier pairs
+//     committed (and reported so).
+//   - A reused Source is taken as the same record (see Record.Source): its
+//     outcome is Committed and Duplicate even if its content differs.
+//
+// # Assumptions
+//
+//   - Records are validated here; callers need not, but a streaming consumer
+//     should (Record.Validate) so one bad record does not fail its batch.
+//   - Safe for concurrent use: calls on one Sink queue on its mutex, and other
+//     processes on the evidence file's lock.
+func (s *Sink) Commit(ctx context.Context, records []Record) ([]Outcome, error) {
 	if n := len(records); n == 0 || n > MaxBatch {
 		return nil, fmt.Errorf("sink: commit 1 to %d records, got %d", MaxBatch, n)
 	}
 	type pair struct{ class, subject string }
 	var order []pair
-	groups := map[pair][]Record{}
+	groups := map[pair][]int{} // record indexes, in order
 	sourced := false
 	for i, r := range records {
 		if err := r.Validate(); err != nil {
@@ -69,7 +98,7 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 		if _, seen := groups[p]; !seen {
 			order = append(order, p)
 		}
-		groups[p] = append(groups[p], r)
+		groups[p] = append(groups[p], i)
 	}
 
 	s.mu.Lock()
@@ -110,21 +139,28 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 		return nil, fmt.Errorf("sink: prepare the chains: %w", err)
 	}
 
-	var done []Committed
-	for _, p := range order {
+	out := make([]Outcome, len(records))
+	for pi, p := range order {
+		idx := groups[p]
 		chain, err := s.resolveChain(ctx, st, subj, p.class, p.subject)
 		if err != nil {
-			return done, err
+			return out, fmt.Errorf("sink: pair %d of %d: %w (the pairs before it in this batch were committed)",
+				pi+1, len(order), err)
 		}
-		c, err := s.commitChain(ctx, l, st, ns, src, f, chain, groups[p])
+		recs := make([]Record, len(idx))
+		for j, i := range idx {
+			recs[j] = records[i]
+		}
+		dup, err := s.commitChain(ctx, l, st, ns, src, f, chain, recs)
 		if err != nil {
-			return done, fmt.Errorf("sink: chain %s: %w (chains before it in this batch were committed)",
-				chain, err)
+			return out, fmt.Errorf("sink: pair %d of %d, chain %s: %w (the pairs before it in this batch "+
+				"were committed)", pi+1, len(order), chain, err)
 		}
-		c.Class, c.Subject = p.class, p.subject
-		done = append(done, c)
+		for j, i := range idx {
+			out[i].Committed, out[i].Duplicate = true, dup[j]
+		}
 	}
-	return done, nil
+	return out, nil
 }
 
 // resolveChain returns the chain of a (class, subject) pair, minting one when
@@ -138,8 +174,21 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Committed, error
 func (s *Sink) resolveChain(ctx context.Context, st *boltstore.Store, subj *subjectsStore,
 	class, subject string) (string, error) {
 	chain, ok, err := subj.lookup(subject, class)
-	if err != nil || ok {
-		return chain, err
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		// Never append to an erased history: a live row on a chain that ends with
+		// its erasure means the index was restored from before the erasure.
+		erased, err := endsWithGenuineErasure(ctx, st, chain)
+		if err != nil {
+			return "", err
+		}
+		if erased {
+			return "", errors.New("sink: the subject index re-links an erased chain (restored from " +
+				"before an erasure?); nothing was committed; run `proof sink erase --resume`")
+		}
+		return chain, nil
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		if chain, err = s.mintChainID(class); err != nil {
@@ -170,61 +219,62 @@ func (s *Sink) resolveChain(ctx context.Context, st *boltstore.Store, subj *subj
 }
 
 // dropDuplicates removes records whose Source is already committed on the
-// chain, or repeated earlier in the batch.
+// chain, or repeated earlier in the batch. dup[j] reports whether recs[j] was
+// dropped.
 func dropDuplicates(ctx context.Context, st *boltstore.Store, src *sourcesStore, chain string,
-	recs []Record) ([]Record, int, error) {
+	recs []Record) ([]Record, []bool, error) {
+	dup := make([]bool, len(recs))
 	if src == nil {
-		return recs, 0, nil
+		return recs, dup, nil
 	}
 	keep := make([]Record, 0, len(recs))
 	inBatch := map[string]bool{}
-	dups := 0
-	for _, r := range recs {
+	for j, r := range recs {
 		if r.Source == "" {
 			keep = append(keep, r)
 			continue
 		}
 		if inBatch[r.Source] {
-			dups++
+			dup[j] = true
 			continue
 		}
 		inBatch[r.Source] = true
 		p, found, err := src.get(chain, r.Source)
 		if err != nil {
-			return nil, 0, err
+			return nil, nil, err
 		}
 		if found {
 			// Recorded. Committed only if the chain holds that entry at that
 			// position; otherwise the earlier attempt stopped before its append.
 			rows, err := st.Range(ctx, chain, p.seq, p.seq, 1)
 			if err != nil {
-				return nil, 0, fmt.Errorf("check source position: %w", err)
+				return nil, nil, fmt.Errorf("check source position: %w", err)
 			}
 			if len(rows) == 1 && rows[0].EntryID == p.entryID {
-				dups++
+				dup[j] = true
 				continue
 			}
 		}
 		keep = append(keep, r)
 	}
-	return keep, dups, nil
+	return keep, dup, nil
 }
 
-// commitChain appends one chain's records in a single atomic append.
+// commitChain appends one chain's records in a single atomic append. It
+// returns, per record, whether it was a duplicate (skipped).
 func (s *Sink) commitChain(ctx context.Context, l *linker.Linker, st *boltstore.Store,
-	ns *noncestore.Store, src *sourcesStore, f *folder, chain string, recs []Record) (Committed, error) {
-	recs, dups, err := dropDuplicates(ctx, st, src, chain, recs)
+	ns *noncestore.Store, src *sourcesStore, f *folder, chain string, recs []Record) ([]bool, error) {
+	keep, dup, err := dropDuplicates(ctx, st, src, chain, recs)
 	if err != nil {
-		return Committed{}, err
+		return nil, err
 	}
-	out := Committed{Chain: chain, Entries: len(recs), Duplicates: dups}
-	if len(recs) == 0 {
-		return out, nil
+	if len(keep) == 0 {
+		return dup, nil
 	}
-	if err := s.appendChain(ctx, l, st, ns, src, f, chain, recs); err != nil {
-		return Committed{}, err
+	if err := s.appendChain(ctx, l, st, ns, src, f, chain, keep); err != nil {
+		return nil, err
 	}
-	return out, nil
+	return dup, nil
 }
 
 // The three writes appendChain makes, each as the smallest interface it needs.

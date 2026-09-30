@@ -46,22 +46,32 @@ type loggingSink struct {
 	fail   string // a chain whose commit fails
 }
 
-func (s *loggingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Committed, error) {
+func (s *loggingSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Outcome, error) {
 	*s.events = append(*s.events, "commit")
-	if s.fail != "" {
-		var ok []sink.Record
-		for _, r := range recs {
-			if r.Subject != s.fail {
-				ok = append(ok, r)
-			}
-		}
-		done, err := s.inner.Commit(ctx, ok)
-		if err != nil {
-			return done, err
-		}
-		return done, errors.New("injected failure on " + s.fail)
+	if s.fail == "" {
+		return s.inner.Commit(ctx, recs)
 	}
-	return s.inner.Commit(ctx, recs)
+	var ok []sink.Record
+	var at []int // at[j] is the index in recs of ok[j]
+	for i, r := range recs {
+		if r.Subject != s.fail {
+			ok = append(ok, r)
+			at = append(at, i)
+		}
+	}
+	// One outcome per record, as the real sink returns: the failed subject's
+	// records are not committed.
+	out := make([]sink.Outcome, len(recs))
+	if len(ok) > 0 {
+		done, err := s.inner.Commit(ctx, ok)
+		for j, o := range done {
+			out[at[j]] = o
+		}
+		if err != nil {
+			return out, err
+		}
+	}
+	return out, errors.New("injected failure on " + s.fail)
 }
 
 type harness struct {
@@ -274,5 +284,28 @@ func TestRecreatedStreamIsNotADuplicate(t *testing.T) {
 	st, err := processBatch(context.Background(), h.sink, r, asMessages(fresh), nil, &bytes.Buffer{})
 	if err != nil || st.committed != 1 || st.duplicates != 0 {
 		t.Fatalf("a new message in a recreated stream: %+v, %v; want committed", st, err)
+	}
+}
+
+// shortSink commits for real, then returns fewer outcomes than records: a
+// committer breaking the one-per-record contract.
+type shortSink struct{ inner committer }
+
+func (s shortSink) Commit(ctx context.Context, recs []sink.Record) ([]sink.Outcome, error) {
+	out, err := s.inner.Commit(ctx, recs)
+	if len(out) > 0 {
+		out = out[:len(out)-1]
+	}
+	return out, err
+}
+
+// TestOutcomeCountMismatch: outcomes that cannot be matched one to one are not
+// trusted: nothing is acked, everything is NAKed, and no index is out of range.
+func TestOutcomeCountMismatch(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.msg("evidence.u-81", 1), h.msg("evidence.u-82", 2)
+	_, err := processBatch(context.Background(), shortSink{h.sink}, r, asMessages(a, b), nil, &bytes.Buffer{})
+	if err == nil || a.state != "nak" || b.state != "nak" {
+		t.Fatalf("err %v, states %q %q; want an error and both NAKed", err, a.state, b.state)
 	}
 }

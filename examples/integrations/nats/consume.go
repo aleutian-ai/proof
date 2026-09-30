@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -31,7 +32,7 @@ type message interface {
 
 // committer is the part of sink.Sink the consumer uses.
 type committer interface {
-	Commit(ctx context.Context, records []sink.Record) ([]sink.Committed, error)
+	Commit(ctx context.Context, records []sink.Record) ([]sink.Outcome, error)
 }
 
 // router turns a NATS subject into the record's subject (the pseudonym the
@@ -101,7 +102,7 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 	afterCommit func(), log io.Writer) (stats, error) {
 	var st stats
 	var recs []sink.Record
-	bySubject := map[string][]message{}
+	var pending []message // pending[i] is the message of recs[i]
 
 	for _, m := range msgs {
 		pos, err := m.Position()
@@ -133,36 +134,48 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 			continue
 		}
 		recs = append(recs, rec)
-		bySubject[subject] = append(bySubject[subject], m)
+		pending = append(pending, m)
 	}
 	if len(recs) == 0 {
 		return st, nil
 	}
 
-	done, err := dst.Commit(ctx, recs)
-	if afterCommit != nil && len(done) > 0 {
+	out, err := dst.Commit(ctx, recs)
+	if out != nil && len(out) != len(recs) {
+		// Not the one-per-record contract: nothing can be matched to a message,
+		// so nothing is acked; everything is redelivered and recognised.
+		err = errors.Join(err, fmt.Errorf("the sink returned %d outcomes for %d records", len(out), len(recs)))
+		out = nil
+	}
+	// One outcome per record, in order: message i is acked exactly when record
+	// i is on its chain, and NAKed (redelivered later) otherwise. Nothing is
+	// matched by subject.
+	committed := 0
+	for _, o := range out {
+		if o.Committed {
+			committed++
+		}
+	}
+	if afterCommit != nil && committed > 0 {
 		afterCommit()
 	}
-	for _, c := range done {
-		st.committed += c.Entries
-		st.duplicates += c.Duplicates
-		// Messages were grouped by subject; the sink reports the subject it
-		// committed for each (opaque) chain.
-		for _, m := range bySubject[c.Subject] {
-			// An ack that fails is not lost evidence: the message comes back and
-			// is recognised as a duplicate.
-			if aerr := m.Ack(); aerr != nil {
-				fmt.Fprintf(log, "ack failed (%v): it will be redelivered and recognised\n", aerr)
-			}
+	for i, m := range pending {
+		if out == nil || !out[i].Committed {
+			_ = m.Nak()
+			continue
 		}
-		delete(bySubject, c.Subject)
+		if out[i].Duplicate {
+			st.duplicates++
+		} else {
+			st.committed++
+		}
+		// An ack that fails is not lost evidence: the message comes back and
+		// is recognised as a duplicate.
+		if aerr := m.Ack(); aerr != nil {
+			fmt.Fprintf(log, "ack failed (%v): it will be redelivered and recognised\n", aerr)
+		}
 	}
 	if err != nil {
-		for _, ms := range bySubject {
-			for _, m := range ms {
-				_ = m.Nak()
-			}
-		}
 		return st, fmt.Errorf("commit: %w", err)
 	}
 	return st, nil

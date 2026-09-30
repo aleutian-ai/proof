@@ -6,7 +6,6 @@ package sink
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -30,15 +29,8 @@ func TestSource_RedeliveryIsNotCommittedTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	summary := func(cs []Committed) string {
-		out := ""
-		for _, c := range cs {
-			out += fmt.Sprintf("%s:%d+%d ", c.Subject, c.Entries, c.Duplicates)
-		}
-		return out
-	}
-	if got, want := summary(got), "u-1:1+3 u-2:0+2 "; got != want {
-		t.Fatalf("redelivery: %s, want %s (subject:new+duplicates)", got, want)
+	if p, want := pattern(got), "DDDDDN"; p != want {
+		t.Fatalf("redelivery: %s, want %s (per record: N new, D duplicate)", p, want)
 	}
 	r := mustVerify(t, s, ring)
 	if a, b := chainReport(t, r, cid(t, s, "u-1")), chainReport(t, r, cid(t, s, "u-2")); a.Entries != 4 || b.Entries != 2 {
@@ -53,7 +45,7 @@ func TestSource_RepeatedWithinABatch(t *testing.T) {
 	}
 	r := sourced("u-1", 1, 7)[0]
 	got, err := s.Commit(context.Background(), []Record{r, r, r})
-	if err != nil || len(got) != 1 || got[0].Entries != 1 || got[0].Duplicates != 2 {
+	if err != nil || pattern(got) != "NDD" {
 		t.Fatalf("got %v, %v; want 1 committed, 2 duplicates", got, err)
 	}
 }
@@ -86,11 +78,11 @@ func TestSource_RecordedButNotAppended(t *testing.T) {
 
 	recs := sourced("u-1", 2, 1)
 	got, err := s.Commit(ctx, recs)
-	if err != nil || got[0].Entries != 2 || got[0].Duplicates != 0 {
+	if err != nil || pattern(got) != "NN" {
 		t.Fatalf("stale positions: %v, %v; want both committed", got, err)
 	}
 	got, err = s.Commit(ctx, recs)
-	if err != nil || got[0].Entries != 0 || got[0].Duplicates != 2 {
+	if err != nil || pattern(got) != "DD" {
 		t.Fatalf("after commit: %v, %v; want both recognised", got, err)
 	}
 	if n := len(entryIDs(t, s, cid(t, s, "u-1"))); n != 3 {
@@ -105,7 +97,7 @@ func TestSource_PerChain(t *testing.T) {
 	}
 	a, b := sourced("u-1", 1, 1)[0], sourced("u-2", 1, 1)[0] // same Source, different chains
 	got, err := s.Commit(context.Background(), []Record{a, b})
-	if err != nil || got[0].Entries != 1 || got[1].Entries != 1 {
+	if err != nil || pattern(got) != "NN" || cid(t, s, "u-1") == cid(t, s, "u-2") {
 		t.Fatalf("got %v, %v; the same source on two chains is two records", got, err)
 	}
 }
@@ -149,7 +141,7 @@ func TestSource_MixedBatchOnANonEmptyChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.Commit(ctx, src)
-	if err != nil || got[0].Entries != 0 || got[0].Duplicates != 2 {
+	if err != nil || pattern(got) != "DD" {
 		t.Fatalf("redelivery of the sourced records: %v, %v; want 2 duplicates", got, err)
 	}
 	if n := len(entryIDs(t, s, cid(t, s, "u-1"))); n != 7 {

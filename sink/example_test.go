@@ -29,24 +29,33 @@ func Example() {
 		fmt.Println("refused an email as a subject")
 	}
 
-	done, err := s.Commit(ctx, []sink.Record{
+	recs := []sink.Record{
 		{Class: "events", Subject: "u-81", Content: []byte(`{"event":"login"}`), Source: "EVIDENCE@1:1"},
 		{Class: "events", Subject: "u-82", Content: []byte(`{"event":"login"}`), Source: "EVIDENCE@1:2"},
 		{Class: "events", Subject: "u-81", Content: []byte(`{"event":"logout"}`), Source: "EVIDENCE@1:3"},
-	})
+	}
+	out, err := s.Commit(ctx, recs)
 	if err != nil {
 		panic(err)
 	}
-	// Chains are opaque ("events.7f3a…"): the subject is only in the secret index.
-	subjectOf := map[string]string{}
-	for _, d := range done {
-		subjectOf[d.Chain] = d.Subject
-		fmt.Printf("%s: %d committed to an opaque %s chain\n", d.Subject, d.Entries, d.Class)
-	}
+	// One outcome per record, in order, naming neither subject nor chain.
+	fmt.Println("committed:", out[0].Committed, out[1].Committed, out[2].Committed)
 
-	// The same records again, as after a crash between commit and ack.
-	again, _ := s.Commit(ctx, []sink.Record{{Class: "events", Subject: "u-81", Content: []byte(`{"event":"login"}`), Source: "EVIDENCE@1:1"}})
-	fmt.Printf("redelivered: %d committed, %d duplicate\n", again[0].Entries, again[0].Duplicates)
+	// Which chain holds whom is secret-index material, read deliberately. The
+	// demo keeps it only to label the report below.
+	rows, err := s.ChainSubjects(ctx)
+	if err != nil {
+		panic(err)
+	}
+	subjectOf := map[string]string{}
+	for _, r := range rows {
+		subjectOf[r.Chain] = r.Subject
+	}
+	fmt.Println("opaque chains:", len(rows))
+
+	// The first record again, as after a crash between commit and ack.
+	again, _ := s.Commit(ctx, recs[:1])
+	fmt.Printf("redelivered: committed %v, duplicate %v\n", again[0].Committed, again[0].Duplicate)
 
 	seed := make([]byte, keyfile.MLDSA65.SeedSize())
 	_, _ = rand.Read(seed)
@@ -75,9 +84,9 @@ func Example() {
 	fmt.Println("verifies:", rep.OK())
 	// Output:
 	// refused an email as a subject
-	// u-81: 2 committed to an opaque events chain
-	// u-82: 1 committed to an opaque events chain
-	// redelivered: 0 committed, 1 duplicate
+	// committed: true true true
+	// opaque chains: 2
+	// redelivered: committed true, duplicate true
 	// u-81: 0 opened, 2 erased
 	// u-82: 1 opened, 0 erased
 	// verifies: true

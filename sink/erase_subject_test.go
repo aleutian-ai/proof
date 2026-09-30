@@ -21,17 +21,17 @@ func multi(t *testing.T) (*Sink, map[string]string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	done, err := s.Commit(context.Background(), []Record{
+	recs := []Record{
 		{Class: "payments", Subject: "u-1", Content: []byte(`{"amount":42}`)},
 		{Class: "auth", Subject: "u-1", Content: []byte(`{"login":true}`)},
 		{Class: "payments", Subject: "u-2", Content: []byte(`{"amount":7}`)},
-	})
-	if err != nil {
+	}
+	if _, err := s.Commit(context.Background(), recs); err != nil {
 		t.Fatal(err)
 	}
 	chains := map[string]string{}
-	for _, d := range done {
-		chains[d.Class+"/"+d.Subject] = d.Chain
+	for _, r := range recs {
+		chains[r.Class+"/"+r.Subject] = cidIn(t, s, r.Class, r.Subject)
 	}
 	return s, chains
 }
@@ -127,24 +127,17 @@ func TestEraseSubjectClass_KeepsOtherClasses(t *testing.T) {
 		t.Fatal("a class-scoped erasure forgot the subject, which still has auth evidence")
 	}
 	// A new payments event for u-1 is a new chain; auth still goes to the old one.
-	done, err := s.Commit(ctx, []Record{
+	if _, err := s.Commit(ctx, []Record{
 		{Class: "payments", Subject: "u-1", Content: []byte(`{"amount":1}`)},
 		{Class: "auth", Subject: "u-1", Content: []byte(`{"login":false}`)},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range done {
-		switch d.Class {
-		case "payments":
-			if d.Chain == chains["payments/u-1"] {
-				t.Fatal("new payments evidence rejoined the erased payments chain")
-			}
-		case "auth":
-			if d.Chain != chains["auth/u-1"] {
-				t.Fatal("auth evidence moved chain after an unrelated class was erased")
-			}
-		}
+	if cidIn(t, s, "payments", "u-1") == chains["payments/u-1"] {
+		t.Fatal("new payments evidence rejoined the erased payments chain")
+	}
+	if cidIn(t, s, "auth", "u-1") != chains["auth/u-1"] {
+		t.Fatal("auth evidence moved chain after an unrelated class was erased")
 	}
 	invariant(t, s)
 }
@@ -166,11 +159,10 @@ func TestEraseSubject_CrashAfterForget(t *testing.T) {
 	}
 	invariant(t, s) // pending rows still account for both chains
 
-	done, err := s.Commit(ctx, []Record{{Class: "payments", Subject: "u-1", Content: []byte(`{"amount":9}`)}})
-	if err != nil {
+	if _, err := s.Commit(ctx, []Record{{Class: "payments", Subject: "u-1", Content: []byte(`{"amount":9}`)}}); err != nil {
 		t.Fatal(err)
 	}
-	if done[0].Chain == chains["payments/u-1"] {
+	if cidIn(t, s, "payments", "u-1") == chains["payments/u-1"] {
 		t.Fatal("a new event after the crash rejoined a pending (half-erased) chain")
 	}
 

@@ -157,12 +157,12 @@ func TestErase_DeletesSourcesAndForgetsThem(t *testing.T) {
 	}
 
 	got, err := s.Commit(ctx, recs)
-	if err != nil || got[0].Entries != 2 || got[0].Duplicates != 0 {
+	if err != nil || pattern(got) != "NN" {
 		t.Fatalf("redelivery after erasure: %v, %v; want committed again (decision (a))", got, err)
 	}
 	// ...on a NEW chain: the subject was forgotten (_69b), so the redelivery can
 	// never rejoin the erased history.
-	if got[0].Chain == cid(t, s, "u-1") {
+	if cidIn(t, s, testClass, "u-1") == cid(t, s, "u-1") {
 		t.Fatal("the redelivery was appended to the erased chain")
 	}
 	if n := len(entryIDs(t, s, cid(t, s, "u-1"))); n != 3 { // 2 events + erasure, untouched

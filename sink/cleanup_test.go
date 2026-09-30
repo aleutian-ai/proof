@@ -217,7 +217,7 @@ func TestAppendChain_MispredictedSequenceIsRepaired(t *testing.T) {
 	// The recorded positions were corrected: a redelivery is recognised, not
 	// committed again.
 	got, err := fx.s.Commit(context.Background(), recs)
-	if err != nil || got[0].Duplicates != 2 || got[0].Entries != 0 {
+	if err != nil || pattern(got) != "DD" {
 		t.Fatalf("redelivery after a mispredicted sequence: %+v, %v; want 2 duplicates", got, err)
 	}
 }

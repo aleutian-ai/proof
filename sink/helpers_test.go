@@ -87,16 +87,16 @@ func setup(t *testing.T) (*Sink, *anchor.MLDSA65Signer, *anchor.KeyRing) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Grouped per subject, in order of first appearance, each on its own
-	// opaque chain.
-	want := []string{"u-81 3", "u-82 2", "u-90 1"}
-	for i, c := range got {
-		if i >= len(want) || fmt.Sprintf("%s %d", c.Subject, c.Entries) != want[i] || !ValidChainID(c.Chain) {
-			t.Fatalf("Commit = %v, want subjects and counts %v on opaque chains", got, want)
-		}
+	// One outcome per record, in order; each subject on its own opaque chain.
+	if pattern(got) != "NNNNNN" {
+		t.Fatalf("Commit = %v, want every record newly committed", got)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("Commit = %v, want %d chains", got, len(want))
+	a81, a82, a90 := cid(t, s, "u-81"), cid(t, s, "u-82"), cid(t, s, "u-90")
+	if !ValidChainID(a81) || !ValidChainID(a82) || !ValidChainID(a90) || a81 == a82 || a81 == a90 || a82 == a90 {
+		t.Fatalf("chains %s %s %s: want three distinct opaque ids", a81, a82, a90)
+	}
+	if n := len(entryIDs(t, s, a81)); n != 3 {
+		t.Fatalf("u-81's chain holds %d entries, want 3", n)
 	}
 	if _, err := s.Checkpoint(context.Background(), signer, nil); err != nil {
 		t.Fatal(err)
@@ -172,6 +172,23 @@ func readChain(ctx context.Context, st *boltstore.Store, chain string) ([]verify
 	var out []verify.Entry
 	err := forEachEntry(ctx, st, chain, func(e store.Entry) { out = append(out, toVerifyEntry(e)) })
 	return out, err
+}
+
+// pattern renders a Commit call's outcomes, one letter per record: N newly
+// committed, D duplicate (skipped), - not committed.
+func pattern(out []Outcome) string {
+	b := make([]byte, len(out))
+	for i, o := range out {
+		switch {
+		case !o.Committed:
+			b[i] = '-'
+		case o.Duplicate:
+			b[i] = 'D'
+		default:
+			b[i] = 'N'
+		}
+	}
+	return string(b)
 }
 
 // testClass is the evidence class the tests commit under.

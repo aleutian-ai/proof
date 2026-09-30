@@ -1,5 +1,5 @@
-github.com/aleutian-ai/proof v0.3.1-0.20260929165125-458e746caed2 h1:RKcf4di2hLxzIetNMDe0DGVWQNV5kfSp8mY8rVQ4DN4=
-github.com/aleutian-ai/proof v0.3.1-0.20260929165125-458e746caed2/go.mod h1:BJYuAQWc+D3DBDCY/8akOZwLSQR4KqXVs9RjbvZfv60=
+github.com/aleutian-ai/proof v0.3.1-0.20260930024546-259c329621a8 h1:VWR3z1bBvzACJrgm92sK5cg/YJ/YhqdGIx6rOPH7WCM=
+github.com/aleutian-ai/proof v0.3.1-0.20260930024546-259c329621a8/go.mod h1:BJYuAQWc+D3DBDCY/8akOZwLSQR4KqXVs9RjbvZfv60=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=

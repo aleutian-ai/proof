@@ -91,4 +91,13 @@ echo "$out" | grep -q "all 3 chains verify" || exit 1
 total=$(echo "$out" | sed -n 's/.* \([0-9]*\) entr[a-z]*:.*/\1/p' | paste -sd+ - | bc)
 [ "$total" -eq 6 ] || { echo "expected 6 entries in total, found $total" >&2; exit 1; }
 
-say "done: nothing lost, nothing committed twice, the name was refused"
+say "erase one user: their chain says so, and no output names them"
+out="$(proof sink erase --dir sink-data --subject u-81)"
+printf '$ proof sink erase --dir sink-data --subject u-81\n%s\n' "$out"
+if grep -q "u-81" <<<"$out"; then echo "ERASE OUTPUT NAMES THE SUBJECT" >&2; exit 1; fi
+out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem)"
+printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem\n%s\n' "$out"
+echo "$out" | grep -q "all 3 chains verify" || exit 1
+echo "$out" | grep -q "subject erased (not yet checkpointed)" || { echo "NO ERASED CHAIN" >&2; exit 1; }
+
+say "done: nothing lost, nothing committed twice, the name was refused, one user erased"

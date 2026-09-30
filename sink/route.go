@@ -191,8 +191,9 @@ func RecordFromJSON(line []byte, f JSONFields) (Record, error) {
 			return Record{}, err
 		}
 		if !slices.Contains(f.Classes, class) {
-			return Record{}, fmt.Errorf("%w: %w: field %q holds a class not in the allowed list",
-				ErrInvalidRecord, ErrInvalidClass, f.ClassField)
+			return Record{}, fmt.Errorf("%w: field %q holds a class that is not in the allowed list "+
+				"(a class is public and never erased, so only listed classes are taken from data)",
+				ErrInvalidRecord, f.ClassField)
 		}
 	}
 	return Record{Class: class, Subject: subject, Content: append([]byte(nil), line...)}, nil

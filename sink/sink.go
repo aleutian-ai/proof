@@ -18,8 +18,9 @@
 //	                       evidence.db.subjects  subject ↔ chain index            SECRET
 //	                       content/<chain>/      the events themselves            SECRET
 //	            Checkpoint ─────────────────► anchors/<chain>/   one signed series per chain
-//	            Verify: every chain, on its own
+//	            Verify: every chain on its own, and the index accounts for every chain
 //	            EraseSubject: content, nonces and the index rows gone; the chains still verify
+//	            ChainSubjects: the one call that names subjects (secret-index material)
 //
 // Chain ids are random, never derived from the subject: only the secret subject
 // index links a subject to its chains, so the evidence file and checkpoints name

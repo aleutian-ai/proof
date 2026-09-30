@@ -20,35 +20,38 @@ import (
 	"github.com/aleutian-ai/proof/verify"
 )
 
-// Verify checks every chain in the evidence file, each on its own.
+// Verify checks every chain in the evidence file, each on its own, and that the
+// subject index accounts for every chain.
 //
 // # Description
 //
-// For every chain:
+// The steps are docs/sink-format.md §6, numbered as there:
 //
-//  1. The links are intact: no entry edited, reordered or removed mid-chain.
-//  2. Every checkpoint is signed by a key in keys, is for this chain, and binds
-//     the entries it covered. This is what catches entries removed from the
-//     front, which step 1 cannot.
-//  3. Every event's stored content opens its commitment with its nonce, and
-//     every erasure record matches its digest.
-//  4. Events before an erasure entry are gone: content and nonce both deleted.
-//     They count as erased. An event missing WITHOUT an erasure after it is a
-//     problem, not an erasure.
-//  5. The chain is accounted for by the subject index (read-only; see
-//     ChainReport.Index): bound to a pair (live), or with no row and ending in
-//     a genuine erasure entry (erased). A chain whose erasure was interrupted
-//     (pending), a chain with no row that does not end in an erasure
-//     (unaccounted), and a row that disagrees with the index (malformed) are
-//     problems. An index row with no chain yet (index-only: a first commit
-//     stopped before its append; the next commit of the pair reuses it) is
-//     reported, and is not a problem.
+//  1. Ids are valid before any path is built from them.
+//  2. Links: the chain's hashes recompute.
+//  3. Checkpoints: every checkpoint is signed by a key in keys, is for this
+//     chain, and binds the entries it covered. This is what catches entries
+//     removed from the front, which step 2 cannot.
+//  4. Entries: every event's stored content opens its commitment with its
+//     nonce, and every erasure record matches its digest. Events before the
+//     last GENUINE erasure entry are gone (content and nonce both deleted) and
+//     count as erased; an event missing WITHOUT a genuine erasure after it is a
+//     problem.
+//  5. Nothing left over: no content file that matches no entry.
+//  6. Nothing removed: no checkpoint or content folder for a chain the
+//     evidence file does not hold (unless the index binds it or has it
+//     pending, for content).
+//  7. Index accountability (read-only; ChainReport.Index): live, erased,
+//     erased-unanchored and index-only are not problems; pending, unaccounted,
+//     relinked and malformed are. "erased" needs a verified checkpoint over the
+//     erasure; until then it is erased-unanchored.
 //
-// The report never names a subject. ChainSubjects is the separate, deliberate
-// call that does.
+// The report never names a subject, nor prints an index key that is not a
+// valid chain id. ChainSubjects is the separate, deliberate call that names
+// subjects.
 //
-// Steps 1 and 2 need only the evidence file, the checkpoints and a public key.
-// Steps 3 and 5 need the content folder, the nonce file and the subject index,
+// Steps 2 and 3 need only the evidence file, the checkpoints and a public key.
+// Steps 4 to 7 need the content folder, the nonce file and the subject index,
 // which only the operator holds.
 //
 // # Inputs

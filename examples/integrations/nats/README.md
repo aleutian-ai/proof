@@ -1,19 +1,25 @@
-# NATS JetStream → proof: one chain per subject key
+# NATS JetStream → proof: one opaque chain per user
 
 NATS routes by **subject**. `nats-sink` reads a JetStream stream of
-`evidence.<key>` messages and commits each one to the proof chain named `<key>`,
-through [`proof/sink`](../../../sink). It **acknowledges a message only after its
-commit succeeds**, so a crash never loses evidence. A message redelivered after a
-crash is recognised, and it is **never committed twice**.
+`evidence.<key>` messages and commits each one through
+[`proof/sink`](../../../sink): the key is the record's subject (a user
+pseudonym), and the sink files it on that user's own **opaque** chain
+(`events.<random hex>`). Only the sink's secret index knows which chain is whose.
+It **acknowledges a message only after its commit succeeds**, so a crash never
+loses evidence. A message redelivered after a crash is recognised, and it is
+**never committed twice**.
 
 ```
-  publisher ──► stream EVIDENCE ──► durable consumer ──► proof/sink ──► one chain per key
-  evidence.u-81   (evidence.*)      commit, THEN ack
+  publisher ──► stream EVIDENCE ──► durable consumer ──► proof/sink ──► one opaque chain per (class, user)
+  evidence.u-81   (evidence.*)      commit, THEN ack message i
+                                    iff outcome i is committed
                                         │
                crash between commit and ack → redelivered → recognised → acked, not re-committed
 ```
 
-Checkpoint, verify and erase are `proof sink`'s, run on the same folder.
+Checkpoint, verify and erase are `proof sink`'s, run on the same folder. Every
+message is committed under one class, `-class` (default `events`), checked at
+startup.
 
 ## Run it
 
@@ -48,7 +54,7 @@ its subject.
 
 ```
 $ nats-sink consume -url nats://127.0.0.1:4222 -dir sink-data -ack-wait 5s -crash-after-commit
-refused EVIDENCE@1790641378694210056:4: the subject is not evidence.<key> with a valid chain id (lowercase letters, digits, . _ -, max 64). Terminated.
+refused EVIDENCE@1790737504858655669:4: the NATS subject is not evidence.<key> with a valid key (lowercase letters, digits, . _ -, max 128; no dots in NATS). Terminated.
 nats-sink: -crash-after-commit: exiting after the commit, before any ack
 ```
 
@@ -61,17 +67,35 @@ $ nats-sink consume -url nats://127.0.0.1:4222 -dir sink-data -ack-wait 5s
 committed 0 · already committed (redelivered) 6 · refused 0
 ```
 
-**Checkpoint and verify: exactly six entries**, one chain per user:
+**Checkpoint and verify: exactly six entries**, one opaque chain per user. No
+user is named: the chain ids are random.
 
 ```
 $ proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
-checkpoint anchors/u-81/0001.json signed over 3 entries
-checkpoint anchors/u-82/0001.json signed over 2 entries
-checkpoint anchors/u-90/0001.json signed over 1 entry
+checkpoint anchors/events.8590967393afd1b6327074b0be7ff0e0/0001.json signed over 3 entries
+checkpoint anchors/events.a3ece678b4460b4173deb233ffd887bb/0001.json signed over 1 entry
+checkpoint anchors/events.c9a51ae7f872a7403dff60bd2ad308c0/0001.json signed over 2 entries
 $ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem
-chain u-81         verifies 3 entries: 3 opened, 0 erased · 1 checkpoint, 0 unanchored
-chain u-82         verifies 2 entries: 2 opened, 0 erased · 1 checkpoint, 0 unanchored
-chain u-90         verifies 1 entry: 1 opened, 0 erased · 1 checkpoint, 0 unanchored
+chain events.8590967393afd1b6327074b0be7ff0e0 verifies 3 entries: 3 opened, 0 erased · 1 checkpoint, 0 unanchored
+chain events.a3ece678b4460b4173deb233ffd887bb verifies 1 entry: 1 opened, 0 erased · 1 checkpoint, 0 unanchored
+chain events.c9a51ae7f872a7403dff60bd2ad308c0 verifies 2 entries: 2 opened, 0 erased · 1 checkpoint, 0 unanchored
+all 3 chains verify
+```
+
+**Erase one user.** The sink forgets them first, then erases their chain. The
+output never names them, and every chain still verifies:
+
+```
+$ proof sink erase --dir sink-data --subject u-81
+erased 1 subject: 1 chain, 3 events. The subject is forgotten: nothing in this folder
+links it to the erased chains any more, and a later event for it starts a new chain.
+Content, nonces and source positions are deleted and the files rewritten; every chain still verifies.
+Not reached by this: backups or snapshots of sink-data/, SSD blocks, and anyone an event or nonce
+was disclosed to.
+$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem
+chain events.8590967393afd1b6327074b0be7ff0e0 verifies 4 entries: 0 opened, 3 erased · 1 checkpoint, 1 unanchored · subject erased (not yet checkpointed)
+chain events.a3ece678b4460b4173deb233ffd887bb verifies 1 entry: 1 opened, 0 erased · 1 checkpoint, 0 unanchored
+chain events.c9a51ae7f872a7403dff60bd2ad308c0 verifies 2 entries: 2 opened, 0 erased · 1 checkpoint, 0 unanchored
 all 3 chains verify
 ```
 
@@ -90,22 +114,30 @@ its chain: the entry id and the sequence. It keeps this in
 - **It does not:** the earlier attempt stopped before its append. It is
   committed now.
 
-The check costs one lookup, not a scan. Positions link a user's pseudonym to
-upstream messages, so they are deleted when that user is erased. A message
-redelivered after its user was erased is therefore committed again, visibly,
-after the erasure entry.
+The check costs one lookup, not a scan. The sink answers each commit with one
+outcome per record, in order (committed or not, duplicate or not), naming no
+chain and no user. The consumer acks message *i* exactly when outcome *i* is
+committed, and NAKs the rest; nothing is matched by user.
+
+Positions link a chain to upstream messages, so they are deleted when that user
+is erased. A message redelivered after its user was erased is therefore
+committed again, to the user's NEW chain (the old one is forgotten), visibly.
+Ack before you erase.
 
 ## What it proves, and what it doesn't
 
-- **Proves:** each consumed message is on its key's chain, unchanged since it was
-  committed. Messages for one key are in stream order. A crash between commit and
-  ack neither loses a message nor commits it twice.
+- **Proves:** each consumed message is on its user's chain, unchanged since it
+  was committed. Messages for one user are in stream order. A crash between
+  commit and ack neither loses a message nor commits it twice. An erased user's
+  chain proves the erasure (once a checkpoint covers it) and names nobody.
 - **Doesn't prove that every published message was consumed.** A message
   JetStream never delivered is never committed. The sources file holds enough to
   check for gaps in stream sequences later. That check is not built here.
-- **Doesn't prove the order across keys.** Each chain is ordered on its own.
-- **One checkpoint series per key.** Many keys means many signatures per
+- **Doesn't prove the order across users.** Each chain is ordered on its own.
+- **One checkpoint series per chain.** Many users means many signatures per
   checkpoint run, the same limit as the sink.
+- **Timing can link.** Chain ids are opaque, but an observer of the evidence
+  file may still link chains by timing (see the sink's correlation leakage).
 
 ## Notes
 

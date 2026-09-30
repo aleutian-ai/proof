@@ -7,14 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 
 	"github.com/aleutian-ai/proof/commitment"
-	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/linker"
 	"github.com/aleutian-ai/proof/store"
 )
@@ -24,11 +22,17 @@ import (
 // # Description
 //
 // Every record is validated before any file is touched. Records are then
-// grouped by chain, keeping their order, and each chain gets one atomic append.
-// For each record: a salted commitment goes on the chain, the content goes to
-// content/<chain>/, and the nonce to the nonce file. Content and nonces are
-// written BEFORE the append, and removed again if it fails: an entry whose
-// content was never stored could never be opened.
+// grouped by (class, subject), keeping their order. For each record: a salted
+// commitment goes on its chain, and the content and nonce go to the secrets file.
+// Content and nonces are written, durably, BEFORE the append, and removed again
+// if it fails: an entry whose content was never stored could never be opened.
+//
+// Each file is written ONCE per call, whatever the number of chains: the new
+// index rows in one transaction, content and nonces in one, the source positions in
+// one, and every chain's entries and head in ONE evidence transaction
+// (linker.AppendChains). That evidence transaction is the commit point
+// (docs/sink-format.md §7): the records are committed if and only if it
+// commits. Everything written before it is preparatory.
 //
 // Entry ids and timestamps are assigned here, never taken from the records.
 //
@@ -47,13 +51,23 @@ import (
 // # Outputs
 //
 //   - []Outcome: nil, or exactly one per record in the order given (see
-//     Outcome). Nil when nothing was attempted: an invalid record, or the files
-//     could not be opened. Otherwise non-nil, error or not: when a pair fails
-//     (its chain cannot be resolved or appended, or ctx is cancelled), the
-//     records of the pairs before it are Committed and the rest are not.
-//   - error: a *RecordError (nothing written); a file could not be opened (ErrBusy
-//     when another process holds it); or a pair failed, wrapped with its
-//     position in the batch. Each pair's chain is atomic; the batch is not.
+//     Outcome). Nil when nothing was attempted: a bad record count, an invalid
+//     record, or the files could not be opened. Otherwise non-nil, and on an
+//     error none is Committed.
+//   - error: on ANY returned error no record is committed, and the call leaves
+//     nothing new behind: its content, nonces, source positions and new index
+//     rows are removed (a cleanup failure is joined to the error). The one
+//     exception is an append whose outcome could not be checked: then nothing
+//     is removed, all of it erasable. Errors never name a chain (a chain id
+//     beside the caller's records would be a row of the secret index); they
+//     still unwrap to their cause. The kinds:
+//   - *RecordError: an invalid record.
+//   - *PairError: one (class, subject) pair's own stored state failed (an
+//     inconsistent index row, an index that re-links an erased chain, a
+//     chain id that could not be minted). Records names that pair's records:
+//     set them aside and retry the rest.
+//   - ErrBusy: another process holds the folder.
+//   - Anything else: a write failed; retry the call.
 //
 // # Example
 //
@@ -68,8 +82,12 @@ import (
 //
 // # Limitations
 //
-//   - Not atomic across pairs: a failure part-way leaves the earlier pairs
-//     committed (and reported so).
+//   - All-or-none on RETURNED errors, not across a crash: the files are
+//     separate, so a process crash or power loss can leave preparatory state
+//     (index rows, content, nonces, positions) without the entries. It is
+//     recoverable: the next Commit of the same records reuses or recommits it,
+//     erasure removes it, and Verify reports leftovers. It is never committed
+//     evidence.
 //   - A reused Source is taken as the same record (see Record.Source): its
 //     outcome is Committed and Duplicate even if its content differs.
 //
@@ -109,12 +127,12 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Outcome, error) 
 		return nil, err
 	}
 	defer f.Close()
-	st, ns, err := s.openFiles()
+	st, sec, err := s.openFiles()
 	if err != nil {
 		return nil, err
 	}
 	defer st.Close()
-	defer ns.Close()
+	defer sec.Close()
 	// Opened only when needed, so a sink that never sees a Source has no
 	// sources file.
 	var src *sourcesStore
@@ -140,62 +158,139 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Outcome, error) 
 	}
 
 	out := make([]Outcome, len(records))
+	// 1. Every pair's chain: looked up, or minted for a new pair (bound in 2).
+	// A failure here is the pair's own stored state: a *PairError naming its
+	// records, so a consumer can set those aside and retry the rest.
+	chains := make([]string, len(order))
+	var fresh []binding
+	minted := map[string]bool{}
+	for pi, p := range order {
+		chain, isNew, err := s.resolvePair(ctx, st, subj, p.class, p.subject, minted)
+		if err != nil {
+			return out, redact(fmt.Errorf("sink: %w; nothing was committed",
+				&PairError{Records: groups[p], Err: err}))
+		}
+		chains[pi] = chain
+		if isNew {
+			fresh = append(fresh, binding{subject: p.subject, class: p.class, chain: chain})
+			minted[chain] = true
+		}
+	}
+	// 2. The new pairs' index rows, in ONE transaction, BEFORE any of their
+	// chains gets an entry: a chain never exists without its row.
+	if len(fresh) > 0 {
+		if err := subj.bindAll(fresh); err != nil {
+			return out, redact(fmt.Errorf("sink: %w; nothing was committed", err))
+		}
+	}
+	// From here, a returned error also undoes step 2: the new pairs' rows and
+	// source positions go, so an error leaves nothing new behind.
+	fail := func(err error) ([]Outcome, error) {
+		if uerr := s.forgetFresh(subj, src, fresh); uerr != nil {
+			err = errors.Join(err, fmt.Errorf("cleanup: %w (the new index rows remain; erasing "+
+				"their subjects removes them)", uerr))
+		}
+		return out, redact(fmt.Errorf("sink: %w; nothing was committed", err))
+	}
+	// 3. Duplicates, per pair.
+	dups := make([][]bool, len(order))
+	var plans []pairPlan
 	for pi, p := range order {
 		idx := groups[p]
-		chain, err := s.resolveChain(ctx, st, subj, p.class, p.subject)
-		if err != nil {
-			return out, fmt.Errorf("sink: pair %d of %d: %w (the pairs before it in this batch were committed)",
-				pi+1, len(order), err)
-		}
 		recs := make([]Record, len(idx))
 		for j, i := range idx {
 			recs[j] = records[i]
 		}
-		dup, err := s.commitChain(ctx, l, st, ns, src, f, chain, recs)
+		keep, dup, err := dropDuplicates(ctx, st, src, chains[pi], recs)
 		if err != nil {
-			return out, fmt.Errorf("sink: pair %d of %d, chain %s: %w (the pairs before it in this batch "+
-				"were committed)", pi+1, len(order), chain, err)
+			return fail(&PairError{Records: idx, Err: err})
 		}
-		for j, i := range idx {
-			out[i].Committed, out[i].Duplicate = true, dup[j]
+		dups[pi] = dup
+		if len(keep) > 0 {
+			plans = append(plans, pairPlan{chain: chains[pi], recs: keep})
+		}
+	}
+	// 4. Content, nonces, positions, then every chain in ONE append.
+	if len(plans) > 0 {
+		var pw positionWriter
+		if src != nil {
+			pw = src
+		}
+		var ap chainsAppender = l
+		if s.wrapAppender != nil {
+			ap = s.wrapAppender(l)
+		}
+		var sw secretsWriter = sec
+		if s.wrapSecrets != nil {
+			sw = s.wrapSecrets(sec)
+		}
+		if err := s.commitPairs(ctx, ap, st, sw, pw, plans); err != nil {
+			if errors.Is(err, errUnknownOutcome) || errors.Is(err, errCleanupFailed) {
+				// Whether the append landed could not be checked, or this call's
+				// content could not be removed: keep the index rows, so that
+				// erasing the subject can still reach what is left.
+				return out, redact(fmt.Errorf("sink: %w", err))
+			}
+			return fail(err)
+		}
+	}
+	for pi, p := range order {
+		for j, i := range groups[p] {
+			out[i].Committed, out[i].Duplicate = true, dups[pi][j]
 		}
 	}
 	return out, nil
 }
 
-// resolveChain returns the chain of a (class, subject) pair, minting one when
-// the pair is new.
-//
-// A new pair's index rows are written HERE, before its chain has any entry:
-// so a chain never exists without its row, and erasing the subject always finds
-// it. A crash after this and before the append leaves a row with no chain, which
-// is harmless: the next commit of the pair reuses it, and erasing the subject
-// cleans it up.
-func (s *Sink) resolveChain(ctx context.Context, st *boltstore.Store, subj *subjectsStore,
-	class, subject string) (string, error) {
+// forgetFresh undoes this call's new bindings after a returned error: their
+// source positions first, then their index rows. If the positions cannot be
+// removed the rows stay, so that erasure can still find (and remove) both.
+func (s *Sink) forgetFresh(subj *subjectsStore, src *sourcesStore, fresh []binding) error {
+	if len(fresh) == 0 {
+		return nil
+	}
+	if src != nil {
+		for _, b := range fresh {
+			if _, err := src.deleteChain(b.chain); err != nil {
+				return fmt.Errorf("remove new chains' source positions: %w", err)
+			}
+		}
+	}
+	return subj.unbindAll(fresh)
+}
+
+// resolvePair returns the chain of a (class, subject) pair without writing
+// anything: the bound chain (isNew false), or a freshly minted, unused id
+// (isNew true) that the caller must bind. minted holds ids already minted in
+// this call, which are skipped too.
+func (s *Sink) resolvePair(ctx context.Context, st *boltstore.Store, subj *subjectsStore,
+	class, subject string, minted map[string]bool) (chain string, isNew bool, err error) {
 	chain, ok, err := subj.lookup(subject, class)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if ok {
 		// Never append to an erased history: a live row on a chain that ends with
 		// its erasure means the index was restored from before the erasure.
 		erased, err := endsWithGenuineErasure(ctx, st, chain)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		if erased {
-			return "", errors.New("sink: the subject index re-links an erased chain (restored from " +
-				"before an erasure?); nothing was committed; run `proof sink erase --resume`")
+			return "", false, errors.New("sink: the subject index re-links an erased chain (restored from " +
+				"before an erasure?); run `proof sink erase --resume`")
 		}
-		return chain, nil
+		return chain, false, nil
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		if chain, err = s.mintChainID(class); err != nil {
-			return "", err
+			return "", false, err
 		}
 		if !ValidChainID(chain) || !strings.HasPrefix(chain, class+".") {
-			return "", fmt.Errorf("sink: minted an invalid chain id for class %s; nothing was bound", class)
+			return "", false, fmt.Errorf("sink: minted an invalid chain id for class %s; nothing was bound", class)
+		}
+		if minted[chain] {
+			continue // already minted for another pair in this call
 		}
 		// 128 random bits do not collide in practice, but a collision would
 		// merge two subjects' histories, so it is checked, not assumed: the id
@@ -205,17 +300,18 @@ func (s *Sink) resolveChain(ctx context.Context, st *boltstore.Store, subj *subj
 			continue // the id has entries already: taken
 		}
 		if !errors.Is(terr, store.ErrEmptyChain) {
-			return "", fmt.Errorf("sink: check a new chain id is unused: %w", terr)
+			return "", false, fmt.Errorf("sink: check a new chain id is unused: %w", terr)
 		}
-		if taken, err := subj.taken(chain); err != nil || taken { // live OR pending
+		taken, err := subj.taken(chain) // live OR pending
+		if err != nil {
+			return "", false, fmt.Errorf("sink: check a new chain id is unused: %w", err)
+		}
+		if taken {
 			continue
 		}
-		if err := subj.bind(subject, class, chain); err != nil {
-			return "", err
-		}
-		return chain, nil
+		return chain, true, nil
 	}
-	return "", errors.New("sink: could not mint an unused chain id; the random source is suspect")
+	return "", false, errors.New("sink: could not mint an unused chain id; the random source is suspect")
 }
 
 // dropDuplicates removes records whose Source is already committed on the
@@ -260,146 +356,210 @@ func dropDuplicates(ctx context.Context, st *boltstore.Store, src *sourcesStore,
 	return keep, dup, nil
 }
 
-// commitChain appends one chain's records in a single atomic append. It
-// returns, per record, whether it was a duplicate (skipped).
-func (s *Sink) commitChain(ctx context.Context, l *linker.Linker, st *boltstore.Store,
-	ns *noncestore.Store, src *sourcesStore, f *folder, chain string, recs []Record) ([]bool, error) {
-	keep, dup, err := dropDuplicates(ctx, st, src, chain, recs)
-	if err != nil {
-		return nil, err
-	}
-	if len(keep) == 0 {
-		return dup, nil
-	}
-	if err := s.appendChain(ctx, l, st, ns, src, f, chain, keep); err != nil {
-		return nil, err
-	}
-	return dup, nil
+// pairPlan is one pair's records still to commit (duplicates dropped), on its
+// chain.
+type pairPlan struct {
+	chain string
+	recs  []Record
 }
 
-// The three writes appendChain makes, each as the smallest interface it needs.
+// The writes commitPairs makes, each as the smallest interface it needs.
 // Production passes the real stores; a test passes one that fails, to prove that
 // whatever failed part-way leaves nothing behind.
 type (
-	nonceWriter interface {
-		PutBatch(chain string, nonces map[string][]byte) error
-		DeleteBatch(chain string, entryIDs []string) error
+	secretsWriter interface {
+		putAll(rows map[string]map[string]secret) error
+		deleteRows(ids map[string][]string) error
 	}
 	positionWriter interface {
-		putBatch(chain string, positions map[string]position) error
+		putAll(positions map[string]map[string]position) error
 	}
-	appender interface {
+	chainsAppender interface {
+		AppendChains(ctx context.Context, batches []linker.ChainInputs) ([]linker.Result, error)
+	}
+	// oneAppender is erasure's append (one chain), as its smallest interface.
+	oneAppender interface {
 		Append(ctx context.Context, chain string, inputs []linker.Input) (linker.Result, error)
 	}
 )
 
-// appendChain writes content, nonces and source positions, then appends.
+// commitPairs writes every pair's content and nonces (ONE durable
+// transaction), then source positions (one transaction), then appends every
+// chain in ONE transaction: the commit point.
 //
-// Order and failure: content files, then nonces, then positions, then the
-// append. If any of them fails, everything written before it is removed:
-// content files and nonces (the secrets). Positions are left; a position with no
-// entry behind it is harmless, because the next Commit of that source checks the
+// Content and nonces are durable before any entry that commits to them exists.
+// If a later step fails, this call's content and nonce rows are removed (one
+// transaction), for EVERY pair. Positions are left: a position with no entry
+// behind it is harmless, because the next Commit of that source checks the
 // chain and commits it.
-func (s *Sink) appendChain(ctx context.Context, l appender, st *boltstore.Store,
-	ns nonceWriter, src positionWriter, f *folder, chain string, recs []Record) error {
-	if err := f.mkdirAll(filepath.Join("content", chain), 0o700); err != nil {
-		return fmt.Errorf("create content folder: %w", err)
+func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.Store,
+	sec secretsWriter, src positionWriter, plans []pairPlan) error {
+	// One plan per chain: two pairs on one chain means a corrupt index. Refused
+	// before anything is written.
+	seenChain := make(map[string]bool, len(plans))
+	for _, p := range plans {
+		if seenChain[p.chain] {
+			return fmt.Errorf("two pairs resolve to one chain (the subject index is inconsistent); nothing was written")
+		}
+		seenChain[p.chain] = true
 	}
-	// The sequence the first entry will get. Nothing else can append meanwhile:
-	// this process holds Sink.mu and the evidence file's lock.
-	next := int64(0)
-	if _, tail, err := st.ReadTail(ctx, chain); err == nil {
-		next = tail + 1
-	} else if !errors.Is(err, store.ErrEmptyChain) {
-		return fmt.Errorf("read chain tail: %w", err)
-	}
-	positions := map[string]position{}
-	// Stamped now, one microsecond apart: the linker orders a batch by arrival
-	// and hashes timestamps at microsecond precision. The chain's sequence, not
-	// these, is the authoritative order.
+	// Stamped now, one microsecond apart within a chain: the linker orders a
+	// batch by arrival and hashes timestamps at microsecond precision. The
+	// chain's sequence, not these, is the authoritative order.
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	inputs := make([]linker.Input, len(recs))
-	nonces := make(map[string][]byte, len(recs))
-	var written []string
-	cleanup := func() {
-		for _, p := range written {
-			_ = f.root.Remove(p)
+	batches := make([]linker.ChainInputs, len(plans))
+	next := make([]int64, len(plans))
+	rows := map[string]map[string]secret{}
+	positions := map[string]map[string]position{}
+
+	for k, p := range plans {
+		// The sequence the chain's first new entry will get. Nothing else can
+		// append meanwhile: this process holds Sink.mu and the evidence file.
+		n := int64(0)
+		if _, tail, err := st.ReadTail(ctx, p.chain); err == nil {
+			n = tail + 1
+		} else if !errors.Is(err, store.ErrEmptyChain) {
+			return fmt.Errorf("chain %s: read tail: %w", p.chain, err)
 		}
-		ids := make([]string, 0, len(nonces))
-		for id := range nonces {
-			ids = append(ids, id)
+		next[k] = n
+		inputs := make([]linker.Input, len(p.recs))
+		rows[p.chain] = map[string]secret{}
+		for i, r := range p.recs {
+			id, err := newEntryID()
+			if err != nil {
+				return err
+			}
+			// One copy, used for both the commitment and the stored row: the
+			// caller's slice could change before the row is written.
+			content := append([]byte(nil), r.Content...)
+			c, nonce, err := commitment.Salted(content)
+			if err != nil {
+				return err
+			}
+			rows[p.chain][id] = secret{content: content, nonce: nonce}
+			stamp := now.Add(time.Duration(i) * time.Microsecond)
+			inputs[i] = linker.Input{EntryID: id, EntryType: EntryTypeEvent,
+				Timestamp: stamp, ContentHash: c, IngestedAt: stamp}
+			if r.Source != "" {
+				// Strictly increasing stamps keep the linker's arrival order equal
+				// to this order, so entry i lands at n+i.
+				if positions[p.chain] == nil {
+					positions[p.chain] = map[string]position{}
+				}
+				positions[p.chain][r.Source] = position{entryID: id, seq: n + int64(i)}
+			}
 		}
-		_ = ns.DeleteBatch(chain, ids)
-		if next == 0 {
-			// A first commit created the folder: remove it too, or Verify would
-			// report a removed chain. Leftovers of an earlier attempt keep it
-			// (the removal fails on a non-empty folder), for erasure to find.
-			_ = f.root.Remove(filepath.Join("content", chain))
-		}
+		batches[k] = linker.ChainInputs{ChainID: p.chain, Inputs: inputs}
 	}
 
-	for i, r := range recs {
-		id, err := newEntryID()
-		if err != nil {
-			cleanup()
-			return err
+	// cleanup removes this call's content and nonce rows (one transaction). A
+	// failure is returned (joined): what it leaves is personal data, still
+	// erasable but not gone.
+	cleanup := func() error {
+		ids := map[string][]string{}
+		for chain, byEntry := range rows {
+			for id := range byEntry {
+				ids[chain] = append(ids[chain], id)
+			}
 		}
-		c, nonce, err := commitment.Salted(r.Content)
-		if err != nil {
-			cleanup()
-			return err
+		if err := sec.deleteRows(ids); err != nil {
+			return fmt.Errorf("cleanup: %w: %w", errCleanupFailed, err)
 		}
-		path := contentName(chain, id)
-		if err := f.writeNew(path, r.Content, 0o600); err != nil {
-			cleanup()
-			return err
-		}
-		written = append(written, path)
-		nonces[id] = nonce
-		stamp := now.Add(time.Duration(i) * time.Microsecond)
-		inputs[i] = linker.Input{EntryID: id, EntryType: EntryTypeEvent,
-			Timestamp: stamp, ContentHash: c, IngestedAt: stamp}
-		if r.Source != "" {
-			// Strictly increasing stamps keep the linker's arrival order equal to
-			// this order, so entry i lands at next+i.
-			positions[r.Source] = position{entryID: id, seq: next + int64(i)}
-		}
+		return nil
 	}
-	if err := ns.PutBatch(chain, nonces); err != nil {
-		cleanup()
-		return fmt.Errorf("store nonces: %w", err)
+	fail := func(err error) error {
+		return errors.Join(err, cleanup())
+	}
+
+	// Content and nonces: durable BEFORE the entries that commit to them.
+	if err := sec.putAll(rows); err != nil {
+		// One transaction: nothing was written.
+		return fmt.Errorf("store content and nonces: %w", err)
 	}
 	// Positions go down BEFORE the append. A position with no entry behind it is
 	// harmless: the next Commit of that source sees it is not on the chain. An
 	// entry with no position is the duplicate this exists to prevent.
 	if len(positions) > 0 {
-		if err := src.putBatch(chain, positions); err != nil {
-			cleanup()
-			return fmt.Errorf("record sources: %w", err)
+		if err := src.putAll(positions); err != nil {
+			return fail(fmt.Errorf("record sources: %w", err))
 		}
 	}
-	res, err := l.Append(ctx, chain, inputs)
-	if err != nil && !errors.Is(err, linker.ErrHeadStateStale) {
-		// ErrHeadStateStale means the entries ARE written; only the saved head
-		// record lags, and the next append repairs it. Anything else: nothing was
-		// written, so nothing may be left behind.
-		cleanup()
-		return fmt.Errorf("append: %w", err)
+	res, err := l.AppendChains(ctx, batches)
+	if err != nil {
+		// An error normally means the transaction rolled back. But a store can
+		// report an error after its commit reached the disk; deleting content
+		// and nonces then would leave committed entries that can never be
+		// opened. So check before cleaning up.
+		landed, cerr := appendLanded(ctx, st, batches, next)
+		switch {
+		case cerr != nil:
+			return fmt.Errorf("append: %w; whether it landed could not be checked (%v): %w; "+
+				"content and nonces are kept", err, cerr, errUnknownOutcome)
+		case !landed:
+			// Nothing was appended, so nothing may be left behind.
+			return fail(fmt.Errorf("append: %w", err))
+		}
+		// It landed: the records are committed. Positions were written before
+		// the append, as predicted, so there is nothing to repair.
+		return nil
 	}
-	if len(positions) > 0 && res.FirstSeq != next {
-		// Cannot happen while this process holds the file. If it ever does, the
-		// entries ARE committed, so this must not look like a failure (the caller
-		// would retry and commit twice). Re-record the positions from the actual
-		// sequence instead: the batch order is kept, so entry i is at FirstSeq+i.
-		for i, r := range recs {
+	// A chain that landed at an unpredicted sequence: cannot happen while this
+	// process holds the file. If it ever does, the entries ARE committed, so this
+	// must not look like a failure (the caller would retry and commit twice).
+	// Re-record its positions from the actual sequence: the batch order is kept,
+	// so entry i is at FirstSeq+i.
+	fix := map[string]map[string]position{}
+	for k, p := range plans {
+		if len(positions[p.chain]) == 0 || res[k].FirstSeq == next[k] {
+			continue
+		}
+		fix[p.chain] = map[string]position{}
+		for i, r := range p.recs {
 			if r.Source != "" {
-				positions[r.Source] = position{entryID: inputs[i].EntryID, seq: res.FirstSeq + int64(i)}
+				fix[p.chain][r.Source] = position{entryID: batches[k].Inputs[i].EntryID, seq: res[k].FirstSeq + int64(i)}
 			}
 		}
-		if err := src.putBatch(chain, positions); err != nil {
-			return fmt.Errorf("committed, but correcting the source positions failed: %w; "+
-				"a redelivery of this batch may be committed again", err)
-		}
+	}
+	if len(fix) > 0 {
+		// The records ARE committed; reporting an error now would make the
+		// caller NAK them, and the redelivery would be committed again. So a
+		// failed correction is not an error: its only cost is that a later
+		// redelivery of these records (which an acknowledged batch does not
+		// get) would not be recognised. This path needs a sequence the file lock
+		// makes impossible AND a failed write.
+		_ = src.putAll(fix)
 	}
 	return nil
+}
+
+// errCleanupFailed marks a failed call whose content and nonces could not be
+// removed: the index rows are kept, so the subject's erasure still reaches them.
+var errCleanupFailed = errors.New("this call's content and nonces could not be removed")
+
+// errUnknownOutcome marks an append whose error left it unclear whether it
+// landed: nothing is cleaned up, and nothing is unbound.
+var errUnknownOutcome = errors.New("the outcome of the append is unknown")
+
+// appendLanded reports whether every batch's first entry is on its chain at the
+// sequence predicted for it: the append committed although it returned an
+// error. Entry ids are random, so a match cannot be a coincidence.
+func appendLanded(ctx context.Context, st *boltstore.Store, batches []linker.ChainInputs,
+	next []int64) (bool, error) {
+	landed := 0
+	for k, b := range batches {
+		rows, err := st.Range(ctx, b.ChainID, next[k], next[k], 1)
+		if err != nil {
+			return false, err
+		}
+		if len(rows) == 1 && rows[0].EntryID == b.Inputs[0].EntryID {
+			landed++
+		}
+	}
+	switch landed {
+	case 0:
+		return false, nil
+	case len(batches):
+		return true, nil
+	}
+	return false, fmt.Errorf("%d of %d chains hold this call's entries", landed, len(batches))
 }

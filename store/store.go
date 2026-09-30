@@ -20,6 +20,11 @@ var (
 	// entries. It is a normal condition — every chain starts empty — and is
 	// distinct from ErrNotFound, which means a specific thing was missing.
 	ErrEmptyChain = errors.New("store: chain is empty")
+
+	// ErrChainLeased is returned by UpdateChains when another appender holds
+	// the lease on one of the chains. Nothing was written. Contention is
+	// retryable, like a lease that Acquire reports as held.
+	ErrChainLeased = errors.New("store: a chain is leased by another appender")
 )
 
 // Entry is one row of a chain: the hashed content plus its linkage fields.
@@ -210,6 +215,55 @@ type Lease interface {
 	// Release returns the lease. The token must match the one from Acquire, so a
 	// holder that has already lost the lease cannot release someone else's.
 	Release(ctx context.Context, chainID, token string) error
+}
+
+// Tail is one chain's continuation point: where its next entry links from.
+type Tail struct {
+	// ChainID identifies the chain.
+	ChainID string
+
+	// Empty is true when the chain has no entries yet. Hash and GlobalSeq are
+	// then meaningless and zero.
+	Empty bool
+
+	// Hash is the ChainHash of the chain's last entry.
+	Hash string
+
+	// GlobalSeq is the GlobalSeq of the chain's last entry. The next entry gets
+	// GlobalSeq + 1.
+	GlobalSeq int64
+}
+
+// ChainsUpdater appends to several chains in ONE atomic transaction.
+//
+// It reads every chain's tail, hands the tails to fn, and writes the entries
+// and head states fn returns — all under one write lock, so no other writer
+// can append between the read and the write. Either everything fn returns is
+// written, or nothing is.
+//
+// It is an optional capability, not part of Store: a store that cannot write
+// several chains in one transaction must not implement it.
+//
+// A chain whose lease is held (see Lease) makes the whole call return
+// ErrChainLeased without writing, so a linker using Acquire/Release on one
+// chain and another using UpdateChains cannot interleave on it.
+type ChainsUpdater interface {
+	// UpdateChains calls fn once with the tails of chainIDs, in the same order
+	// as chainIDs, and writes the entries and states it returns atomically.
+	//
+	// chainIDs must be non-empty, distinct, and free of NUL bytes. The callback
+	// rules, for every implementation:
+	//   - fn runs AT MOST once, inside the store's transaction. It is not called
+	//     when the input is invalid or a chain is leased.
+	//   - fn must not call back into the store: a nested transaction deadlocks
+	//     (bbolt) or re-locks a non-reentrant mutex (memory).
+	//   - What fn returns must be an append (CheckAppend): each chain's entries
+	//     continue its tail, and each state names its chain's last entry.
+	//     Anything else is refused, and nothing is written.
+	//
+	// If fn returns an error, nothing is written and that error is returned.
+	UpdateChains(ctx context.Context, chainIDs []string,
+		fn func(tails []Tail) (entries []Entry, states []State, err error)) error
 }
 
 // Store is every capability in one interface, for adapters that provide them all.

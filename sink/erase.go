@@ -4,7 +4,6 @@
 package sink
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
@@ -15,7 +14,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/linker"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
@@ -30,7 +28,7 @@ import (
 // consistency"):
 //
 //  1. Check first: every one of the subject's chains can be erased (a valid id,
-//     readable to its end, a content folder holding only files). If one cannot,
+//     readable to its end). If one cannot,
 //     the call refuses and nothing changes: the subject is never forgotten by an
 //     erasure already known to be stuck.
 //  2. Forget: in ONE index transaction, delete the subject's forward rows and
@@ -39,11 +37,14 @@ import (
 //     rejoin an erased history.
 //  3. Complete every pending erasure, this subject's and any an earlier call
 //     left: for each chain, a genuine erasure entry (unless the chain already
-//     ends with one), then its nonces, source positions and content go, then its
-//     index row. A chain that fails stays pending and the others go on.
-//  4. Rewrite the nonce, sources and subject-index files, so the deleted values
-//     are gone from the live files and not left in free pages. Every call does
-//     this, so a rewrite an earlier call missed is always redone.
+//     ends with one), then its content and nonce rows and source positions go.
+//     A chain that fails stays pending and the others go on.
+//  4. Rewrite the secrets, sources and subject-index files, so the deleted
+//     values are gone from the live files and not left in free pages. Every
+//     call does this, so a rewrite an earlier call missed is always redone.
+//  5. Only then clear the erased chains' pending markers (and rewrite the
+//     subject index once more). A chain stays pending until its content has
+//     left the live files, so a crash or a failed rewrite is always resumed.
 //
 // Afterwards the sink has no memory that it ever held the subject: the chains
 // remain, verifiable, under opaque ids that nothing in the folder links to it.
@@ -80,8 +81,10 @@ import (
 //
 //   - Reaches only the live files in this folder. Not backups, filesystem
 //     snapshots or journals, SSD wear-levelled blocks, copies made before the
-//     erasure, or anyone content or a nonce was disclosed to. Content files are
-//     unlinked, not overwritten.
+//     erasure, or anyone content or a nonce was disclosed to. Nor process memory
+//     or swap, or a rewrite's temporary copy left by a crash (removed by the
+//     next erasure). Deleted rows leave the live files when they are rewritten,
+//     not when deleted.
 //   - The erased chains keep their class, entry counts and timestamps, and each
 //     ends with a signed-to-be erasure entry: that a subject of that class was
 //     erased, and when, stays visible. Who it was does not.
@@ -150,15 +153,15 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	if _, err := os.Lstat(s.DBPath()); errors.Is(err, os.ErrNotExist) {
 		return out, fmt.Errorf("sink: %s: %w", s.dir, errNoSink)
 	}
-	st, ns, err := s.openFiles()
+	st, sec, err := s.openFiles()
 	if err != nil {
 		return out, err
 	}
 	defer st.Close()
-	nsOpen := true
+	secOpen := true
 	defer func() {
-		if nsOpen {
-			ns.Close()
+		if secOpen {
+			sec.Close()
 		}
 	}()
 	subj, err := openSubjects(s.subjectsPath(), s.lockTimeout)
@@ -199,7 +202,7 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 			return out, err
 		}
 		for _, chain := range chains {
-			if err := s.checkErasable(ctx, f, st, chain); err != nil {
+			if err := s.checkErasable(ctx, st, chain); err != nil {
 				return out, fmt.Errorf("%w; the subject was not forgotten and nothing was erased", err)
 			}
 		}
@@ -213,6 +216,7 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	// pending, and the rest go on: one stuck chain never blocks the others.
 	incomplete := &ErasureIncompleteError{Forgotten: !resumeOnly}
 	var errs []error
+	var erased []string // erased in step 3, their pending rows still set
 	for _, group := range []struct {
 		chains []string
 		into   *[]EraseResult
@@ -231,11 +235,12 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 					"mints (%q); the row was removed", chain))
 				continue
 			}
-			res, err := s.eraseChain(ctx, f, st, ns, l, chain)
+			res, err := s.eraseChain(ctx, st, sec, l, chain)
 			if err == nil {
-				if err = subj.clear(chain); err != nil {
-					err = fmt.Errorf("sink: chain %s erased, but clearing its index row failed: %w", chain, err)
-				}
+				// Its pending row is cleared only AFTER the files are rewritten
+				// (step 5): until then the erased values may still be in free
+				// pages, and the pending row is what says so, across a crash.
+				erased = append(erased, chain)
 			}
 			if err != nil {
 				errs = append(errs, err)
@@ -250,23 +255,61 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	// nothing was pending or a chain failed: a compaction that an earlier call
 	// failed, or crashed in, is then always redone. The evidence file is still
 	// held, so no other process can open these meanwhile.
-	ns.Close()
-	nsOpen = false
+	sec.Close()
+	secOpen = false
 	subj.Close()
 	subjOpen = false
 	incomplete.Compacted = true
-	for _, p := range []string{noncestore.PathFor(s.DBPath()), s.sourcesPath(), s.subjectsPath()} {
+	for _, p := range []string{s.secretsPath(), s.sourcesPath(), s.subjectsPath()} {
 		if err := s.compact(p, s.lockTimeout); err != nil {
 			incomplete.Compacted = false
 			errs = append(errs, fmt.Errorf("sink: rewriting %s failed: %w; the deleted values may "+
 				"still be in its free pages", filepath.Base(p), err))
 		}
 	}
+	// 5. Only now that the deleted values are out of the live files: clear the
+	// erased chains' pending rows. If the rewrite failed, they stay pending, so
+	// Verify reports them and the next erasure or resume rewrites again.
+	if incomplete.Compacted {
+		if err := s.clearErased(erased); err != nil {
+			errs = append(errs, err)
+			incomplete.Pending = append(incomplete.Pending, erased...)
+		} else if len(erased) > 0 {
+			// The cleared rows held only chain ids (a pending row holds no
+			// subject; the subject's rows went, and were rewritten away, above).
+			// Rewrite the index once more so those ids leave it too.
+			if err := s.compact(s.subjectsPath(), s.lockTimeout); err != nil {
+				errs = append(errs, fmt.Errorf("sink: rewriting %s after clearing erased chains failed: "+
+					"%w; their (opaque) ids may remain in its free pages", filepath.Base(s.subjectsPath()), err))
+			}
+		}
+	} else {
+		incomplete.Pending = append(incomplete.Pending, erased...)
+	}
 	if len(errs) == 0 {
 		return out, nil
 	}
 	incomplete.Err = errors.Join(errs...)
 	return out, incomplete
+}
+
+// clearErased removes the pending rows of chains whose erasure is complete and
+// whose values are out of the live files.
+func (s *Sink) clearErased(chains []string) error {
+	if len(chains) == 0 {
+		return nil
+	}
+	subj, err := openSubjects(s.subjectsPath(), s.lockTimeout)
+	if err != nil {
+		return fmt.Errorf("sink: clear erased chains' index rows: %w", err)
+	}
+	defer subj.Close()
+	for _, chain := range chains {
+		if err := subj.clear(chain); err != nil {
+			return fmt.Errorf("sink: chain %s erased, but clearing its index row failed: %w", chain, err)
+		}
+	}
+	return nil
 }
 
 // forgetRelinked turns every relinked chain's live row into a pending erasure.
@@ -319,35 +362,12 @@ func endsWithGenuineErasure(ctx context.Context, st *boltstore.Store, chain stri
 }
 
 // checkErasable runs, read-only, the checks eraseChain makes before it records
-// anything: a valid id, a chain that can be read to its end, and a content
-// folder holding only regular files.
-func (s *Sink) checkErasable(ctx context.Context, f *folder, st *boltstore.Store, chain string) error {
+// anything: a valid id, and a chain that can be read to its end.
+func (s *Sink) checkErasable(ctx context.Context, st *boltstore.Store, chain string) error {
 	if !ValidChainID(chain) {
 		return fmt.Errorf("sink: the index holds a chain id this sink never mints (%q)", chain)
 	}
-	if err := forEachEntry(ctx, st, chain, func(store.Entry) {}); err != nil {
-		return err
-	}
-	_, err := contentFiles(f, chain)
-	return err
-}
-
-// contentFiles lists a chain's content folder (none if it does not exist), and
-// refuses one holding anything but regular files: such a folder cannot be
-// cleared, so an erasure would fail on every retry.
-func contentFiles(f *folder, chain string) ([]os.DirEntry, error) {
-	dir := filepath.Join("content", chain)
-	files, err := f.list(dir)
-	if err != nil {
-		return nil, fmt.Errorf("sink: %w; chain %s was not erased", err, chain)
-	}
-	for _, e := range files {
-		if !e.Type().IsRegular() {
-			return nil, fmt.Errorf("sink: %s holds %q, which is not a regular file; remove it "+
-				"by hand, then erase again. Chain %s was not erased", dir, e.Name(), chain)
-		}
-	}
-	return files, nil
+	return forEachEntry(ctx, st, chain, func(store.Entry) {})
 }
 
 // eraseChain erases one chain: an erasure entry (unless the chain already ends
@@ -356,8 +376,8 @@ func contentFiles(f *folder, chain string) ([]os.DirEntry, error) {
 // not compact; the caller does, once, at the end.
 //
 // It is idempotent, so a crash at any point is repaired by running it again.
-func (s *Sink) eraseChain(ctx context.Context, f *folder, st *boltstore.Store, ns *noncestore.Store,
-	l *linker.Linker, chain string) (EraseResult, error) {
+func (s *Sink) eraseChain(ctx context.Context, st *boltstore.Store, sec *secretsStore,
+	l oneAppender, chain string) (EraseResult, error) {
 	if !ValidChainID(chain) {
 		return EraseResult{}, fmt.Errorf("sink: the index holds a chain id this sink never mints (%q)", chain)
 	}
@@ -374,7 +394,7 @@ func (s *Sink) eraseChain(ctx context.Context, f *folder, st *boltstore.Store, n
 		events         int
 		lastWasErasure bool
 		lastErasureID  string
-		keep           = map[string][]byte{} // content file name → the exact erasure record it must hold
+		keep           = map[string][]byte{} // entry id → the exact erasure record its row must hold
 	)
 	err := forEachEntry(ctx, st, chain, func(e store.Entry) {
 		genuine := false
@@ -382,7 +402,7 @@ func (s *Sink) eraseChain(ctx context.Context, f *folder, st *boltstore.Store, n
 			record := erasureRecord(lastSeq)
 			if e.ContentHash == erasureHash(record) {
 				genuine = true
-				keep[e.EntryID+".json"] = record
+				keep[e.EntryID] = record
 			}
 		}
 		seen++
@@ -403,112 +423,69 @@ func (s *Sink) eraseChain(ctx context.Context, f *folder, st *boltstore.Store, n
 		// append can have left content, nonces and positions behind. They are
 		// still personal data: remove them. No erasure entry: there is no chain
 		// to put it on.
-		n, err := s.eraseLeftovers(f, ns, chain)
+		n, err := s.eraseLeftovers(sec, chain)
 		if err != nil {
 			return EraseResult{}, err
 		}
 		return EraseResult{Chain: chain, Leftovers: n}, nil
 	}
 
-	// Check the content folder BEFORE recording anything: a folder that cannot be
-	// cleared (a symlink, a subdirectory) would fail step 3 on every retry, and
-	// every retry would add another erasure entry.
-	contentDir := filepath.Join("content", chain)
-	if _, err := contentFiles(f, chain); err != nil {
-		return EraseResult{}, err
-	}
-
 	id := lastErasureID
-	var record []byte
 	if !lastWasErasure {
-		// 1. The erasure goes on the record first.
+		// 1. The erasure goes on the record first: its record row (durable), then
+		// the entry.
 		if id, err = newEntryID(); err != nil {
 			return EraseResult{}, err
 		}
-		record = erasureRecord(lastSeq)
-		if err := f.mkdirAll(contentDir, 0o700); err != nil {
-			return EraseResult{}, fmt.Errorf("sink: %w; chain %s was not erased", err, chain)
-		}
-		path := contentName(chain, id)
-		if err := f.writeNew(path, record, 0o600); err != nil {
-			return EraseResult{}, err
+		record := erasureRecord(lastSeq)
+		if err := sec.putAll(map[string]map[string]secret{chain: {id: {content: record}}}); err != nil {
+			return EraseResult{}, fmt.Errorf("sink: store the erasure record of %s: %w; chain %s was not erased",
+				chain, err, chain)
 		}
 		now := time.Now().UTC().Truncate(time.Microsecond)
 		_, err = l.Append(ctx, chain, []linker.Input{{EntryID: id, EntryType: EntryTypeErasure,
 			Timestamp: now, ContentHash: erasureHash(record), IngestedAt: now}})
 		if err != nil && !errors.Is(err, linker.ErrHeadStateStale) {
-			_ = f.root.Remove(path)
-			return EraseResult{}, fmt.Errorf("sink: record the erasure of %s: %w", chain, err)
+			// A store can report an error after its commit reached the disk:
+			// only remove the record if the entry is really not on the chain.
+			rows, rerr := st.Range(ctx, chain, lastSeq+1, lastSeq+1, 1)
+			if rerr != nil || len(rows) != 1 || rows[0].EntryID != id {
+				_ = sec.deleteRows(map[string][]string{chain: {id}})
+				return EraseResult{}, fmt.Errorf("sink: record the erasure of %s: %w", chain, err)
+			}
 		}
-		keep[id+".json"] = record
+		keep[id] = record
 	}
 
-	// 2. Nonces (without one, a commitment can never be opened) and source
-	// positions. Every row of the chain, including leftovers of a stopped commit.
-	if _, err := ns.DeleteChain(chain); err != nil {
+	// 2. Nonces (without one, a commitment can never be opened) and content, in
+	// ONE transaction: every row of the chain except genuine erasure records,
+	// each kept only while it holds exactly its record (anything else in a
+	// record's place may be content). Leftovers of a stopped commit go too.
+	if _, err := sec.eraseChain(chain, keep); err != nil {
 		return EraseResult{}, fmt.Errorf("sink: chain %s: the erasure is recorded but deleting "+
-			"nonces failed: %w", chain, err)
+			"content and nonces failed: %w", chain, err)
 	}
+	// 3. Source positions.
 	if _, err := s.deleteSources(chain); err != nil {
 		return EraseResult{}, fmt.Errorf("sink: chain %s: the erasure is recorded but deleting "+
 			"source positions failed: %w", chain, err)
-	}
-
-	// 3. Content: every file in the chain's folder except genuine erasure
-	// records, each kept only if it holds exactly its record (anything else in a
-	// record's place may be content). Names come from this folder, never from the
-	// evidence file.
-	files, err := f.list(contentDir)
-	if err != nil {
-		return EraseResult{}, fmt.Errorf("sink: chain %s: the erasure is recorded but listing "+
-			"content failed: %w", chain, err)
-	}
-	for _, e := range files {
-		if want, ok := keep[e.Name()]; ok {
-			got, _, _, rerr := f.readSmall(filepath.Join(contentDir, e.Name()), int64(len(want)))
-			if rerr == nil && bytes.Equal(got, want) {
-				continue
-			}
-		}
-		if err := f.root.Remove(filepath.Join(contentDir, e.Name())); err != nil &&
-			!errors.Is(err, os.ErrNotExist) {
-			return EraseResult{}, fmt.Errorf("sink: chain %s: the erasure is recorded but deleting "+
-				"content failed: %w", chain, err)
-		}
 	}
 	return EraseResult{Chain: chain, Events: events, ErasureEntryID: id}, nil
 }
 
 // eraseLeftovers removes what a commit that never reached the chain left
-// behind: content files (and then their folder), nonces and source positions.
-// It returns how many items it removed.
-func (s *Sink) eraseLeftovers(f *folder, ns *noncestore.Store, chain string) (int, error) {
-	dir := filepath.Join("content", chain)
-	files, err := contentFiles(f, chain)
+// behind: content and nonce rows, and source positions. It returns how many it
+// removed.
+func (s *Sink) eraseLeftovers(sec *secretsStore, chain string) (int, error) {
+	n, err := sec.eraseChain(chain, nil)
 	if err != nil {
-		return 0, err
-	}
-	n, err := ns.DeleteChain(chain)
-	if err != nil {
-		return 0, fmt.Errorf("sink: delete leftover nonces: %w", err)
+		return 0, fmt.Errorf("sink: delete leftover content and nonces: %w", err)
 	}
 	positions, err := s.deleteSources(chain)
 	if err != nil {
-		return 0, fmt.Errorf("sink: delete leftover source positions: %w", err)
+		return n, fmt.Errorf("sink: delete leftover source positions: %w", err)
 	}
-	n += positions
-	for _, e := range files {
-		if err := f.root.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return n, fmt.Errorf("sink: delete leftover content: %w", err)
-		}
-		n++
-	}
-	// Empty now (or empty all along: a first commit that failed after creating
-	// it). Without this, Verify would report a removed chain forever.
-	if err := f.root.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return n, fmt.Errorf("sink: remove %s: %w", dir, err)
-	}
-	return n, nil
+	return n + positions, nil
 }
 
 // erasureDomain prefixes the hash of an erasure record.

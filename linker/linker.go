@@ -282,42 +282,9 @@ func (l *Linker) Append(ctx context.Context, chainID string, inputs []Input) (Re
 		return Result{}, err
 	}
 
-	entries := make([]store.Entry, len(batch))
-	for i := range batch {
-		seqNum := int64(i)
-		globalSeq := nextGlobalSeq + seqNum
-
-		var chainHash string
-		var hashErr error
-		if l.format == chainformat.FormatV2 {
-			chainHash, hashErr = chainformat.ComputeChainHash(
-				previousHash, runID, seqNum, batch[i].Timestamp, batch[i].ContentHash)
-		} else {
-			chainHash, hashErr = chainformat.ComputeChainHashV3(
-				previousHash, globalSeq, batch[i].Timestamp, batch[i].ContentHash)
-		}
-		if hashErr != nil {
-			return Result{}, fmt.Errorf(
-				"linker: entry %q at batch index %d: %w", batch[i].EntryID, i, hashErr)
-		}
-
-		entries[i] = store.Entry{
-			ChainID:       chainID,
-			EntryID:       batch[i].EntryID,
-			EntryType:     batch[i].EntryType,
-			FormatVersion: l.format,
-			GlobalSeq:     globalSeq,
-			Timestamp:     batch[i].Timestamp,
-			ContentHash:   batch[i].ContentHash,
-			PreviousHash:  previousHash,
-			ChainHash:     chainHash,
-		}
-		// v2 only: these are hash inputs there and meaningless noise in v3.
-		if l.format == chainformat.FormatV2 {
-			entries[i].RunID = runID
-			entries[i].SequenceNum = seqNum
-		}
-		previousHash = chainHash
+	entries, err := l.link(chainID, previousHash, nextGlobalSeq, runID, batch)
+	if err != nil {
+		return Result{}, err
 	}
 
 	if err := l.store.WriteBatch(ctx, entries); err != nil {
@@ -351,6 +318,52 @@ func (l *Linker) Append(ctx context.Context, chainID string, inputs []Input) (Re
 		LastSeq:  last.GlobalSeq,
 		HeadHash: last.ChainHash,
 	}, nil
+}
+
+// link computes a sorted batch's entries, linked onto previousHash from
+// nextGlobalSeq. It is the ONLY place chain hashes are computed: Append and
+// AppendChains both call it, so batching can never produce different hashes
+// from appending one chain at a time.
+func (l *Linker) link(chainID, previousHash string, nextGlobalSeq int64, runID string,
+	batch []Input) ([]store.Entry, error) {
+	entries := make([]store.Entry, len(batch))
+	for i := range batch {
+		seqNum := int64(i)
+		globalSeq := nextGlobalSeq + seqNum
+
+		var chainHash string
+		var hashErr error
+		if l.format == chainformat.FormatV2 {
+			chainHash, hashErr = chainformat.ComputeChainHash(
+				previousHash, runID, seqNum, batch[i].Timestamp, batch[i].ContentHash)
+		} else {
+			chainHash, hashErr = chainformat.ComputeChainHashV3(
+				previousHash, globalSeq, batch[i].Timestamp, batch[i].ContentHash)
+		}
+		if hashErr != nil {
+			return nil, fmt.Errorf(
+				"linker: entry %q at batch index %d: %w", batch[i].EntryID, i, hashErr)
+		}
+
+		entries[i] = store.Entry{
+			ChainID:       chainID,
+			EntryID:       batch[i].EntryID,
+			EntryType:     batch[i].EntryType,
+			FormatVersion: l.format,
+			GlobalSeq:     globalSeq,
+			Timestamp:     batch[i].Timestamp,
+			ContentHash:   batch[i].ContentHash,
+			PreviousHash:  previousHash,
+			ChainHash:     chainHash,
+		}
+		// v2 only: these are hash inputs there and meaningless noise in v3.
+		if l.format == chainformat.FormatV2 {
+			entries[i].RunID = runID
+			entries[i].SequenceNum = seqNum
+		}
+		previousHash = chainHash
+	}
+	return entries, nil
 }
 
 // continuation reads where the next entry links from.

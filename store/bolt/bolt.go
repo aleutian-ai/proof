@@ -271,6 +271,14 @@ func (s *Store) WriteBatch(ctx context.Context, entries []store.Entry) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := validateEntries(entries); err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error { return putEntries(tx, entries) })
+}
+
+// validateEntries refuses entries the store could not key or read back.
+func validateEntries(entries []store.Entry) error {
 	for i, e := range entries {
 		if e.ChainID == "" {
 			return fmt.Errorf("bolt: entry %d has an empty ChainID", i)
@@ -288,27 +296,29 @@ func (s *Store) WriteBatch(ctx context.Context, entries []store.Entry) error {
 			return fmt.Errorf("bolt: entry %d has a ChainID containing a NUL byte", i)
 		}
 	}
+	return nil
+}
 
-	return s.db.Update(func(tx *bolt.Tx) error {
-		be := tx.Bucket(bucketEntries)
-		for _, e := range entries {
-			raw, err := json.Marshal(e)
-			if err != nil {
-				return fmt.Errorf("encode entry %s: %w", e.EntryID, err)
-			}
-			key := entryKey(e.ChainID, e.GlobalSeq)
-
-			// A write at an occupied position REPLACES it — which is how erasure
-			// swaps an entry for its tombstone. Entries are keyed by chain and
-			// position only, so the replaced entry's id is gone from both key and
-			// value: there is no index in which it could still resolve
-			// (format-spec §5.4).
-			if err := be.Put(key, raw); err != nil {
-				return fmt.Errorf("put entry %s: %w", e.EntryID, err)
-			}
+// putEntries writes validated entries inside an open write transaction.
+func putEntries(tx *bolt.Tx, entries []store.Entry) error {
+	be := tx.Bucket(bucketEntries)
+	for _, e := range entries {
+		raw, err := json.Marshal(e)
+		if err != nil {
+			return fmt.Errorf("encode entry %s: %w", e.EntryID, err)
 		}
-		return nil
-	})
+		key := entryKey(e.ChainID, e.GlobalSeq)
+
+		// A write at an occupied position REPLACES it — which is how erasure
+		// swaps an entry for its tombstone. Entries are keyed by chain and
+		// position only, so the replaced entry's id is gone from both key and
+		// value: there is no index in which it could still resolve
+		// (format-spec §5.4).
+		if err := be.Put(key, raw); err != nil {
+			return fmt.Errorf("put entry %s: %w", e.EntryID, err)
+		}
+	}
+	return nil
 }
 
 // ReadTail returns the highest-sequence entry's chain hash and sequence.
@@ -316,34 +326,43 @@ func (s *Store) ReadTail(ctx context.Context, chainID string) (string, int64, er
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
 	}
-	var e store.Entry
-	found := false
+	var t store.Tail
 	err := s.db.View(func(tx *bolt.Tx) error {
-		c := tx.Bucket(bucketEntries).Cursor()
-		prefix := chainPrefix(chainID)
-
-		// Seek past the chain's last key, then step back — bolt has no
-		// "last key with prefix" primitive.
-		end := append(append([]byte(nil), prefix...), 0xFF)
-		k, v := c.Seek(end)
-		if k == nil {
-			k, v = c.Last()
-		} else {
-			k, v = c.Prev()
-		}
-		if k == nil || !bytes.HasPrefix(k, prefix) {
-			return nil
-		}
-		found = true
-		return json.Unmarshal(v, &e)
+		var err error
+		t, err = tailOf(tx, chainID)
+		return err
 	})
 	if err != nil {
 		return "", 0, fmt.Errorf("bolt: read tail: %w", err)
 	}
-	if !found {
+	if t.Empty {
 		return "", 0, store.ErrEmptyChain
 	}
-	return e.ChainHash, e.GlobalSeq, nil
+	return t.Hash, t.GlobalSeq, nil
+}
+
+// tailOf reads a chain's last entry inside an open transaction.
+func tailOf(tx *bolt.Tx, chainID string) (store.Tail, error) {
+	c := tx.Bucket(bucketEntries).Cursor()
+	prefix := chainPrefix(chainID)
+
+	// Seek past the chain's last key, then step back — bolt has no
+	// "last key with prefix" primitive.
+	end := append(append([]byte(nil), prefix...), 0xFF)
+	k, v := c.Seek(end)
+	if k == nil {
+		k, v = c.Last()
+	} else {
+		k, v = c.Prev()
+	}
+	if k == nil || !bytes.HasPrefix(k, prefix) {
+		return store.Tail{ChainID: chainID, Empty: true}, nil
+	}
+	var e store.Entry
+	if err := json.Unmarshal(v, &e); err != nil {
+		return store.Tail{}, err
+	}
+	return store.Tail{ChainID: chainID, Hash: e.ChainHash, GlobalSeq: e.GlobalSeq}, nil
 }
 
 // Predecessor returns the entry immediately before startSeq.
@@ -513,16 +532,131 @@ func (s *Store) PutState(ctx context.Context, st *store.State) error {
 	if st == nil {
 		return fmt.Errorf("bolt: PutState called with a nil state")
 	}
+	return s.db.Update(func(tx *bolt.Tx) error { return putState(tx, *st) })
+}
+
+// putState writes a chain's head state inside an open write transaction.
+func putState(tx *bolt.Tx, st store.State) error {
 	if st.ChainID == "" {
-		return fmt.Errorf("bolt: PutState called with an empty ChainID")
+		return fmt.Errorf("bolt: state with an empty ChainID")
 	}
 	raw, err := json.Marshal(st)
 	if err != nil {
 		return fmt.Errorf("bolt: encode state: %w", err)
 	}
-	return s.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(bucketState).Put([]byte(st.ChainID), raw)
+	return tx.Bucket(bucketState).Put([]byte(st.ChainID), raw)
+}
+
+// Compile-time check: the bolt store can append to several chains atomically.
+var _ store.ChainsUpdater = (*Store)(nil)
+
+// UpdateChains appends to several chains in one bbolt write transaction.
+//
+// # Description
+//
+// Inside ONE db.Update: refuse if any chain is leased, read every chain's tail
+// (in chainIDs order), call fn, then validate and write the entries and head
+// states it returns. bbolt runs one write transaction at a time and holds an
+// exclusive file lock, so nothing can append between the tail reads and the
+// writes. Any error, fn's included, rolls the whole transaction back.
+//
+// # Inputs
+//
+//   - ctx: checked before the transaction starts
+//   - chainIDs: non-empty, distinct, each a valid chain id (no NUL)
+//   - fn: receives the tails in chainIDs order; returns what to write. Every
+//     entry and state must belong to one of chainIDs: writing a chain whose
+//     tail was not read (and whose lease was not checked) is refused.
+//
+// # Outputs
+//
+//   - error: fn's error, unchanged; store.ErrChainLeased (wrapped) when a
+//     chain is leased; a validation or write error. Nothing is written on any
+//     error.
+//
+// # Example
+//
+//	err := st.UpdateChains(ctx, []string{"a", "b"},
+//	    func(tails []store.Tail) ([]store.Entry, []store.State, error) {
+//	        return link(tails) // the caller's linking
+//	    })
+//
+// # Limitations
+//
+//   - One transaction holds every chain's new entries in memory; the caller
+//     bounds the batch.
+//
+// # Assumptions
+//
+//   - fn does not call back into the store (bbolt would deadlock on a nested
+//     write transaction).
+func (s *Store) UpdateChains(ctx context.Context, chainIDs []string,
+	fn func(tails []store.Tail) ([]store.Entry, []store.State, error)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(chainIDs) == 0 {
+		return fmt.Errorf("bolt: UpdateChains needs at least one chain")
+	}
+	if fn == nil {
+		return fmt.Errorf("bolt: UpdateChains needs a function")
+	}
+	named := make(map[string]bool, len(chainIDs))
+	for i, id := range chainIDs {
+		if id == "" || bytes.IndexByte([]byte(id), keySep) >= 0 {
+			return fmt.Errorf("bolt: chain %d has an empty id or one containing a NUL byte", i)
+		}
+		if named[id] {
+			return fmt.Errorf("bolt: chain %q appears twice", id)
+		}
+		named[id] = true
+	}
+	var fnErr error
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		leases := tx.Bucket(bucketLeases)
+		for _, id := range chainIDs {
+			if leases.Get([]byte(id)) != nil {
+				return fmt.Errorf("bolt: chain %q: %w", id, store.ErrChainLeased)
+			}
+		}
+		tails := make([]store.Tail, len(chainIDs))
+		for i, id := range chainIDs {
+			t, err := tailOf(tx, id)
+			if err != nil {
+				return fmt.Errorf("bolt: read tail of %q: %w", id, err)
+			}
+			tails[i] = t
+		}
+		entries, states, err := fn(tails)
+		if err != nil {
+			fnErr = err
+			return err
+		}
+		if err := validateEntries(entries); err != nil {
+			return err
+		}
+		// An append, nothing else: no overwrite of history, no gap, no head
+		// that no entry produced.
+		if err := store.CheckAppend(tails, entries, states); err != nil {
+			return err
+		}
+		if err := putEntries(tx, entries); err != nil {
+			return err
+		}
+		for _, st := range states {
+			if err := putState(tx, st); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
+	if fnErr != nil {
+		return fnErr
+	}
+	if err != nil {
+		return fmt.Errorf("bolt: update chains: %w", err)
+	}
+	return nil
 }
 
 // Acquire takes the append lease for a chain.

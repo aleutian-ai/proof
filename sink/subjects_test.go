@@ -124,9 +124,8 @@ func TestIndexRowWithoutChainIsReused(t *testing.T) {
 // the same chain.
 func TestFailedAppendKeepsTheBinding(t *testing.T) {
 	fx := newFixture(t)
-	rn := &recordingNonces{Store: fx.ns}
-	err := fx.s.appendChain(context.Background(), appendThen{real: fx.l, err: errors.New("injected")},
-		fx.st, rn, fx.src, fx.f, fx.chain, sourced("u-1", 2, 1))
+	err := fx.s.commitPairs(context.Background(), failingAppend{errors.New("injected")},
+		fx.st, fx.sec, fx.src, []pairPlan{{chain: fx.chain, recs: sourced("u-1", 2, 1)}})
 	if err == nil {
 		t.Fatal("the injected failure was not reported")
 	}
@@ -193,5 +192,84 @@ func TestNewChainIDIsCheckedUnused(t *testing.T) {
 	}
 	if c := cid(t, s, "u-1"); c != taken {
 		t.Fatalf("u-1's binding changed: %s", c)
+	}
+}
+
+// Two NEW pairs in one Commit whose minter returns the same id: the second pair
+// must get a different, unused id (ids are bound together, after minting, so
+// the index alone cannot catch this in time).
+func TestCommit_NewPairsInOneCallGetDistinctChains(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	same := testClass + "." + strings.Repeat("a", 32)
+	other := testClass + "." + strings.Repeat("b", 32)
+	queue := []string{same, same, other}
+	s.mintChainID = func(string) (string, error) {
+		id := queue[0]
+		queue = queue[1:]
+		return id, nil
+	}
+	out, err := s.Commit(ctx, append(events("u-1", 1), events("u-2", 1)...))
+	if err != nil || pattern(out) != "NN" {
+		t.Fatalf("Commit = %s, %v", pattern(out), err)
+	}
+	if a, b := cid(t, s, "u-1"), cid(t, s, "u-2"); a != same || b != other {
+		t.Fatalf("chains %s, %s; want %s then %s", a, b, same, other)
+	}
+}
+
+// bindAll has bind's rules for every pair, and binds all or none.
+func TestBindAllRefusesOverwriteAndIsAtomic(t *testing.T) {
+	subj, err := openSubjects(filepath.Join(t.TempDir(), "subjects"), DefaultLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subj.Close()
+	a, b, c := "events."+strings.Repeat("a", 32), "events."+strings.Repeat("b", 32), "events."+strings.Repeat("c", 32)
+	if err := subj.bindAll([]binding{{"u-1", "events", a}}); err != nil {
+		t.Fatal(err)
+	}
+	for name, pairs := range map[string][]binding{
+		"pair already bound":  {{"u-2", "events", b}, {"u-1", "events", c}},
+		"chain already bound": {{"u-2", "events", b}, {"u-3", "events", a}},
+		"pair twice in call":  {{"u-2", "events", b}, {"u-2", "events", c}},
+		"chain twice in call": {{"u-2", "events", b}, {"u-3", "events", b}},
+	} {
+		if err := subj.bindAll(pairs); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+		if _, ok, _ := subj.lookup("u-2", "events"); ok {
+			t.Fatalf("%s: a refused call bound part of its pairs", name)
+		}
+	}
+	if c1, ok, _ := subj.lookup("u-1", "events"); !ok || c1 != a {
+		t.Fatalf("the refused calls changed u-1's row: %s", c1)
+	}
+}
+
+// unbindAll removes only rows that still name exactly the pair and chain it was
+// given: a row that changed since is never touched.
+func TestUnbindAllTouchesOnlyUnchangedRows(t *testing.T) {
+	subj, err := openSubjects(filepath.Join(t.TempDir(), "subjects"), DefaultLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subj.Close()
+	a, b := "events."+strings.Repeat("a", 32), "events."+strings.Repeat("b", 32)
+	if err := subj.bindAll([]binding{{"u-1", "events", a}, {"u-2", "events", b}}); err != nil {
+		t.Fatal(err)
+	}
+	// u-2's pair is stale (wrong chain): its rows must survive.
+	if err := subj.unbindAll([]binding{{"u-1", "events", a}, {"u-2", "events", a}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := subj.lookup("u-1", "events"); ok {
+		t.Fatal("u-1 was not unbound")
+	}
+	if c, ok, _ := subj.lookup("u-2", "events"); !ok || c != b {
+		t.Fatalf("u-2's row was touched by a stale unbind: %s %v", c, ok)
 	}
 }

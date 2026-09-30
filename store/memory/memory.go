@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/aleutian-ai/proof/store"
@@ -98,7 +99,12 @@ func (s *Store) WriteBatch(ctx context.Context, entries []store.Entry) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.upsertLocked(entries)
+	return nil
+}
 
+// upsertLocked writes entries; the caller holds s.mu.
+func (s *Store) upsertLocked(entries []store.Entry) {
 	for _, e := range entries {
 		// UPSERT by (ChainID, GlobalSeq). Appending unconditionally would leave
 		// two rows at one position after an erasure rewrites an entry in place,
@@ -120,6 +126,103 @@ func (s *Store) WriteBatch(ctx context.Context, entries []store.Entry) error {
 		sort.Slice(s.entries[chainID], func(i, j int) bool {
 			return s.entries[chainID][i].GlobalSeq < s.entries[chainID][j].GlobalSeq
 		})
+	}
+}
+
+// compile-time proof that this store can append to several chains atomically.
+var _ store.ChainsUpdater = (*Store)(nil)
+
+// UpdateChains appends to several chains atomically, under the store's mutex.
+//
+// # Description
+//
+// Under s.mu: refuse if any chain is leased, read every chain's tail (in
+// chainIDs order), call fn, validate everything it returns, and only then
+// write it. Validation runs before the first write, so a bad entry or state
+// leaves the store untouched: all or nothing, like the bolt store's single
+// transaction.
+//
+// # Inputs
+//
+//   - ctx: checked before starting
+//   - chainIDs: non-empty and distinct
+//   - fn: receives the tails in chainIDs order; every entry and state it
+//     returns must belong to one of chainIDs
+//
+// # Outputs
+//
+//   - error: fn's error, unchanged; store.ErrChainLeased (wrapped); a
+//     validation error. Nothing is written on any error.
+//
+// # Example
+//
+//	err := s.UpdateChains(ctx, []string{"a", "b"}, link)
+//
+// # Limitations
+//
+//   - Holds the store's mutex while fn runs.
+//
+// # Assumptions
+//
+//   - fn does not call back into the store (s.mu is not re-entrant).
+func (s *Store) UpdateChains(ctx context.Context, chainIDs []string,
+	fn func(tails []store.Tail) ([]store.Entry, []store.State, error)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(chainIDs) == 0 {
+		return fmt.Errorf("memory: UpdateChains needs at least one chain")
+	}
+	if fn == nil {
+		return fmt.Errorf("memory: UpdateChains needs a function")
+	}
+	named := make(map[string]bool, len(chainIDs))
+	for i, id := range chainIDs {
+		// NUL is refused as the bolt store refuses it (its keys would collide),
+		// so the two adapters accept the same inputs.
+		if id == "" || strings.IndexByte(id, 0) >= 0 {
+			return fmt.Errorf("memory: chain %d has an empty id or one containing a NUL byte", i)
+		}
+		if named[id] {
+			return fmt.Errorf("memory: chain %q appears twice", id)
+		}
+		named[id] = true
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range chainIDs {
+		if _, held := s.leases[id]; held {
+			return fmt.Errorf("memory: chain %q: %w", id, store.ErrChainLeased)
+		}
+	}
+	tails := make([]store.Tail, len(chainIDs))
+	for i, id := range chainIDs {
+		es := s.entries[id]
+		if len(es) == 0 {
+			tails[i] = store.Tail{ChainID: id, Empty: true}
+			continue
+		}
+		last := es[len(es)-1]
+		tails[i] = store.Tail{ChainID: id, Hash: last.ChainHash, GlobalSeq: last.GlobalSeq}
+	}
+	entries, states, err := fn(tails)
+	if err != nil {
+		return err
+	}
+	for i, e := range entries {
+		if e.ChainID == "" || e.EntryID == "" {
+			return fmt.Errorf("memory: entry %d has an empty ChainID or EntryID", i)
+		}
+	}
+	// An append, nothing else: no overwrite of history, no gap, no head that
+	// no entry produced.
+	if err := store.CheckAppend(tails, entries, states); err != nil {
+		return err
+	}
+	s.upsertLocked(entries)
+	for _, st := range states {
+		s.state[st.ChainID] = st
 	}
 	return nil
 }

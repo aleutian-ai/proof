@@ -19,7 +19,6 @@ import (
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 
-	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/verify"
 )
 
@@ -31,6 +30,7 @@ func (s *Sink) openStore(readOnly bool) (*boltstore.Store, error) {
 		return nil, fmt.Errorf("sink: %w", err)
 	}
 	opts := []boltstore.Option{boltstore.WithLockTimeout(s.lockTimeout)}
+	isNew := !readOnly && created(s.DBPath())
 	if readOnly {
 		if _, err := os.Lstat(s.DBPath()); errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("sink: %s: %w", s.dir, errNoSink)
@@ -41,44 +41,27 @@ func (s *Sink) openStore(readOnly bool) (*boltstore.Store, error) {
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", s.DBPath(), err))
 	}
+	if err := syncNewFile(s.DBPath(), isNew); err != nil {
+		st.Close()
+		return nil, err
+	}
 	return st, nil
 }
 
-// openFiles opens the evidence file, then the nonce file, both read-write.
-// Always in that order (then the sources file, when needed), so two processes
-// cannot each hold one while waiting for the other.
-func (s *Sink) openFiles() (*boltstore.Store, *noncestore.Store, error) {
+// openFiles opens the evidence file, then the secrets file, both read-write.
+// The evidence file first, as every operation does: its lock is what
+// serializes writers.
+func (s *Sink) openFiles() (*boltstore.Store, *secretsStore, error) {
 	st, err := s.openStore(false)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := regularOrAbsent(noncestore.PathFor(s.DBPath())); err != nil {
-		st.Close()
-		return nil, nil, fmt.Errorf("sink: %w", err)
-	}
-	ns, err := noncestore.Open(noncestore.PathFor(s.DBPath()), s.lockTimeout)
+	sec, err := openSecrets(s.secretsPath(), s.lockTimeout)
 	if err != nil {
 		st.Close()
-		return nil, nil, busy(fmt.Errorf("sink: %w", err))
+		return nil, nil, err
 	}
-	return st, ns, nil
-}
-
-// openNoncesReadOnly opens the nonce file for reading, or returns nil when there
-// is none (every event then reports as unopenable, which is the truth).
-func (s *Sink) openNoncesReadOnly() (*noncestore.Store, error) {
-	path := noncestore.PathFor(s.DBPath())
-	if err := regularOrAbsent(path); err != nil {
-		return nil, fmt.Errorf("sink: %w", err)
-	}
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	ns, err := noncestore.OpenReadOnly(path, s.lockTimeout)
-	if err != nil {
-		return nil, busy(fmt.Errorf("sink: %w", err))
-	}
-	return ns, nil
+	return st, sec, nil
 }
 
 // toVerifyEntry is a stored entry in the form verify reads.
@@ -152,12 +135,14 @@ func compactFile(path string, lockTimeout time.Duration) error {
 	if err := regularOrAbsent(path); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+	// Leftover copies of an interrupted compaction go first, even when the file
+	// itself is gone: each is a copy of a secret file.
 	dir, base := filepath.Split(path)
 	if err := removeCompactLeftovers(dir, base); err != nil {
 		return err
+	}
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
 	// A fresh file with an unpredictable name, created exclusively: nothing
 	// planted in the folder beforehand can receive the copy.
@@ -212,6 +197,25 @@ func removeCompactLeftovers(dir, base string) error {
 				return fmt.Errorf("remove an earlier compaction's leftover: %w", err)
 			}
 		}
+	}
+	return nil
+}
+
+// created reports whether path does not exist yet, and syncNewFile makes a
+// just-created file's name durable: bbolt fsyncs a file's contents, never the
+// folder entry that names it, so after a power loss a new file could vanish
+// while files written after it survive.
+func created(path string) bool {
+	_, err := os.Lstat(path)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+func syncNewFile(path string, isNew bool) error {
+	if !isNew {
+		return nil
+	}
+	if err := syncFile(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sink: make %s durable: %w", filepath.Base(path), err)
 	}
 	return nil
 }

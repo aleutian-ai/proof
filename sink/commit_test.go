@@ -11,9 +11,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/aleutian-ai/proof/internal/noncestore"
-	bolt "go.etcd.io/bbolt"
 )
 
 func TestLifecycle(t *testing.T) {
@@ -120,16 +117,10 @@ func TestCommit_CancelledContextWritesNothing(t *testing.T) {
 	if err != nil || len(chains) != 0 {
 		t.Fatalf("chains written by a cancelled commit: %v, %v", chains, err)
 	}
-	// Nonce file: the only keys were for this batch, so nothing for u-1 can remain.
-	raw, err := bolt.Open(noncestore.PathFor(s.DBPath()), 0o600, &bolt.Options{Timeout: DefaultLockTimeout})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
-	n := 0
-	_ = raw.View(func(tx *bolt.Tx) error { n = tx.Bucket([]byte("nonces")).Stats().KeyN; return nil })
-	if n != 0 {
-		t.Fatalf("%d nonces left behind by a failed append", n)
+	// Secrets file: the only rows were for this batch, so nothing can remain.
+	n, err := secretRowCount(s)
+	if err != nil || n != 0 {
+		t.Fatalf("%d content or nonce rows left behind by a cancelled commit (%v)", n, err)
 	}
 }
 

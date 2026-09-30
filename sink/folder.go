@@ -19,13 +19,13 @@ import (
 )
 
 // A sink folder may come from someone else's archive, and the evidence file may
-// have been shared and crafted. So every file under content/ and anchors/ is
-// reached through an os.Root, which no name and no symlink can escape. And
-// every directory is Lstat-checked to be a real directory: a symlink that stays
-// inside the root (content/u-81 → content/u-82) would otherwise make erasing
-// one chain delete another's files.
+// have been shared and crafted. So every file under anchors/ (the only files a
+// sink reads by name; event content lives in evidence.db.secrets) is reached
+// through an os.Root, which no name and no symlink can escape. And every
+// directory is Lstat-checked to be a real directory: a symlink that stays inside
+// the root (anchors/a → anchors/b) would otherwise mix two chains' series.
 //
-// The three bbolt files are opened by path (bbolt takes a path), so each is
+// The four bbolt files are opened by path (bbolt takes a path), so each is
 // checked to be a regular file, or absent, first.
 
 // maxAnchorBytes caps one checkpoint file. A v6 anchor is about 5 KiB.
@@ -136,7 +136,7 @@ func (f *folder) list(name string) ([]os.DirEntry, error) {
 }
 
 // writeNew creates a file that must not already exist (O_EXCL also refuses a
-// symlink in its place).
+// symlink in its place). Checkpoints are written with it.
 func (f *folder) writeNew(name string, data []byte, mode os.FileMode) error {
 	w, err := f.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {

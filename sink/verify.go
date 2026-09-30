@@ -8,13 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/commitment"
-	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
@@ -37,10 +35,11 @@ import (
 //     last GENUINE erasure entry are gone (content and nonce both deleted) and
 //     count as erased; an event missing WITHOUT a genuine erasure after it is a
 //     problem.
-//  5. Nothing left over: no content file that matches no entry.
-//  6. Nothing removed: no checkpoint or content folder for a chain the
+//  5. Nothing left over: no content or nonce row that matches no entry, and
+//     no row keyed outside the sink's layout (counted, never shown).
+//  6. Nothing removed: no checkpoint folder or secrets rows for a chain the
 //     evidence file does not hold (unless the index binds it or has it
-//     pending, for content).
+//     pending, for secrets rows).
 //  7. Index accountability (read-only; ChainReport.Index): live, erased,
 //     erased-unanchored and index-only are not problems; pending, unaccounted,
 //     relinked and malformed are. "erased" needs a verified checkpoint over the
@@ -51,7 +50,7 @@ import (
 // subjects.
 //
 // Steps 2 and 3 need only the evidence file, the checkpoints and a public key.
-// Steps 4 to 7 need the content folder, the nonce file and the subject index,
+// Steps 4 to 7 need the secrets file and the subject index,
 // which only the operator holds.
 //
 // # Inputs
@@ -82,12 +81,13 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 		return Report{}, err
 	}
 	defer st.Close()
-	ns, err := s.openNoncesReadOnly()
+	// No secrets file: every event reports as unopenable, which is the truth.
+	sec, err := openSecretsReadOnly(s.secretsPath(), s.lockTimeout)
 	if err != nil {
 		return Report{}, err
 	}
-	if ns != nil {
-		defer ns.Close()
+	if sec != nil {
+		defer sec.Close()
 	}
 	// No index file means no rows: every live chain is then unaccounted.
 	subj, err := openSubjectsReadOnly(s.subjectsPath(), s.lockTimeout)
@@ -122,7 +122,7 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 				Problems: []string{"the evidence file holds a chain id this sink never writes; it was not read"}})
 			continue
 		}
-		cr, err := s.verifyChain(ctx, st, ns, f, chain, keys, ix.state(chain))
+		cr, err := s.verifyChain(ctx, st, sec, f, chain, keys, ix.state(chain))
 		if err != nil {
 			return rep, err
 		}
@@ -179,44 +179,69 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 		return rep, fmt.Errorf("sink: read the subject index: %w", err)
 	}
 
-	// A chain removed from the evidence file leaves its checkpoints and content
-	// behind. They are the only trace of it, so look for them.
-	for _, sub := range []string{"anchors", "content"} {
-		dirs, err := f.list(sub)
-		if errors.Is(err, errNotRealDir) {
-			rep.Chains = append(rep.Chains, ChainReport{Chain: sub + "/", Anomaly: "invalid-folder",
-				Problems: []string{fmt.Sprintf("%s/ is %v", sub, errNotRealDir)}})
+	// A chain removed from the evidence file leaves its checkpoints and its
+	// secrets behind. They are the only trace of it, so look for them.
+	reportFor := func(name string) *ChainReport {
+		i, known := reported[name]
+		if !known {
+			reported[name] = len(rep.Chains)
+			rep.Chains = append(rep.Chains, ChainReport{Chain: name, Class: classOf(name)})
+			i = len(rep.Chains) - 1
+		}
+		return &rep.Chains[i]
+	}
+	dirs, err := f.list("anchors")
+	switch {
+	case errors.Is(err, errNotRealDir):
+		rep.Chains = append(rep.Chains, ChainReport{Chain: "anchors/", Anomaly: "invalid-folder",
+			Problems: []string{fmt.Sprintf("anchors/ is %v", errNotRealDir)}})
+	case err != nil:
+		return rep, fmt.Errorf("sink: %w", err)
+	}
+	for _, d := range dirs {
+		if inStore[d.Name()] {
 			continue
 		}
+		// Checkpoints are written only for chains with entries: whatever the
+		// index says, entries were removed.
+		cr := reportFor(d.Name())
+		cr.Anomaly = "removed"
+		cr.Problems = append(cr.Problems, "anchors/ has checkpoints for this chain, but the "+
+			"evidence file has no entries for it: the chain was REMOVED")
+	}
+	if sec != nil {
+		withRows, err := sec.chainsWithRows()
 		if err != nil {
-			return rep, fmt.Errorf("sink: %w", err)
+			return rep, fmt.Errorf("sink: read the secrets file: %w", err)
 		}
-		for _, d := range dirs {
-			name := d.Name()
+		invalidSecrets := 0
+		if n, err := sec.malformedKeys(); err != nil {
+			return rep, fmt.Errorf("sink: read the secrets file: %w", err)
+		} else if n > 0 {
+			invalidSecrets++
+			rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid secrets row #%d>", invalidSecrets),
+				Anomaly: "removed", Problems: []string{fmt.Sprintf("the secrets file holds %d rows whose key "+
+					"this sink never writes; an erasure may not reach them: remove them by hand", n)}})
+		}
+		for _, name := range withRows {
 			if inStore[name] {
 				continue
 			}
-			i, known := reported[name]
-			if !known {
-				reported[name] = len(rep.Chains)
-				rep.Chains = append(rep.Chains, ChainReport{Chain: name, Anomaly: "removed"})
-				i = len(rep.Chains) - 1
-			}
-			cr := &rep.Chains[i]
-			if sub == "anchors" {
-				// Checkpoints are written only for chains with entries: whatever
-				// the index says, entries were removed.
-				cr.Anomaly = "removed"
-				cr.Problems = append(cr.Problems, "anchors/ has checkpoints for this chain, but the "+
-					"evidence file has no entries for it: the chain was REMOVED")
+			if !ValidChainID(name) {
+				// Never shown: a crafted key could hold anything.
+				invalidSecrets++
+				rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid secrets row #%d>", invalidSecrets),
+					Anomaly: "removed", Problems: []string{"the secrets file holds content or nonces under an " +
+						"id this sink never mints; remove them by hand"}})
 				continue
 			}
+			cr := reportFor(name)
 			if cr.Index != IndexOnly && cr.Index != IndexPending {
 				cr.Anomaly = "removed"
 			}
-			cr.Problems = append(cr.Problems, "content/ has a folder for this chain, but the evidence "+
-				"file has no entries for it: the chain was removed, or a first commit stopped before "+
-				"its append; "+remedy(cr.Index))
+			cr.Problems = append(cr.Problems, "the secrets file holds content or nonces for this chain, "+
+				"but the evidence file has no entries for it: the chain was removed, or a first commit "+
+				"stopped before its append; "+remedy(cr.Index))
 		}
 	}
 	sort.Slice(rep.Chains, func(i, j int) bool { return rep.Chains[i].Chain < rep.Chains[j].Chain })
@@ -259,7 +284,7 @@ func classOf(chain string) string {
 // verifyChain verifies one chain in two paged passes, never holding it whole:
 // the first counts it and finds its last erasure; the second walks it, binding
 // each checkpoint as the walk reaches its end, and checks each entry's content.
-func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, ns *noncestore.Store, f *folder,
+func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secretsStore, f *folder,
 	chain string, keys anchor.KeySource, row IndexState) (ChainReport, error) {
 	cr := ChainReport{Chain: chain, Class: classOf(chain)}
 	anchors, problem, err := f.readAnchors(chain)
@@ -307,20 +332,16 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, ns *noncest
 			"writer added the chain)")
 	}
 
-	// The content folder, as a set of names to tick off. The folder first:
-	// under a symlinked folder every read would be refused as an escape.
-	contentDir := filepath.Join("content", chain)
-	files, err := f.list(contentDir)
-	if errors.Is(err, errNotRealDir) {
-		cr.Problems = append(cr.Problems, fmt.Sprintf("content/%s is %v", chain, errNotRealDir))
-		return cr, nil
-	}
-	if err != nil {
-		return cr, fmt.Errorf("sink: %w", err)
-	}
-	unmatched := make(map[string]bool, len(files))
-	for _, fi := range files {
-		unmatched[fi.Name()] = true
+	// The chain's content and nonce rows, as a set of entry ids to tick off.
+	unmatched := map[string]bool{}
+	if sec != nil {
+		ids, err := sec.rowIDs(chain)
+		if err != nil {
+			return cr, fmt.Errorf("sink: read the secrets file: %w", err)
+		}
+		for _, id := range ids {
+			unmatched[id] = true
+		}
 	}
 
 	// Pass 2: walk, bind checkpoints, check content.
@@ -340,7 +361,7 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, ns *noncest
 			series.reached(w)
 		}
 		if contentErr == nil {
-			contentErr = s.checkEntry(&cr, ns, f, ve, i, lastErasure, prevSeq, unmatched)
+			contentErr = s.checkEntry(&cr, sec, ve, i, lastErasure, prevSeq, unmatched)
 		}
 		prevSeq = e.GlobalSeq
 		i++
@@ -367,16 +388,27 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, ns *noncest
 		cr.Index = IndexErased
 	}
 
-	// A file matching no entry is content that was never committed: a commit
+	// A content or nonce row matching no entry was never committed: a commit
 	// that stopped before its append. It is still personal data, so say so.
+	// Only a valid entry id is shown; any other (a crafted file could put
+	// anything there, even a subject) is counted.
 	names := make([]string, 0, len(unmatched))
+	odd := 0
 	for n := range unmatched {
-		names = append(names, n)
+		if entryIDPattern.MatchString(n) {
+			names = append(names, n)
+		} else {
+			odd++
+		}
 	}
 	sort.Strings(names)
 	for _, n := range names {
-		cr.Problems = append(cr.Problems, fmt.Sprintf("content file %q matches no entry (a commit "+
-			"that did not finish?); %s", n, remedy(cr.Index)))
+		cr.Problems = append(cr.Problems, fmt.Sprintf("stored content or nonce for %s matches no entry "+
+			"(a commit that did not finish?); %s", n, remedy(cr.Index)))
+	}
+	if odd > 0 {
+		cr.Problems = append(cr.Problems, fmt.Sprintf("%d stored rows under an entry id this sink never "+
+			"assigns; %s", odd, remedy(cr.Index)))
 	}
 	return cr, nil
 }
@@ -464,32 +496,28 @@ func (c *seriesCheck) finish(total int) {
 
 // checkEntry checks one entry's content against the rules of
 // docs/sink-format.md §6, given the index of the chain's last erasure and the
-// previous entry's sequence. It ticks the entry's file off unmatched.
-func (s *Sink) checkEntry(cr *ChainReport, ns *noncestore.Store, f *folder, e verify.Entry, i, lastErasure int,
+// previous entry's sequence. It ticks the entry's content row off unmatched.
+func (s *Sink) checkEntry(cr *ChainReport, sec *secretsStore, e verify.Entry, i, lastErasure int,
 	prevSeq int64, unmatched map[string]bool) error {
 	if !entryIDPattern.MatchString(e.EntryID) {
 		cr.Problems = append(cr.Problems, fmt.Sprintf("entry %q has an id this sink never assigns; "+
 			"it was not read", e.EntryID))
 		return nil
 	}
-	delete(unmatched, e.EntryID+".json")
-	content, missing, problem, err := f.readSmall(contentName(cr.Chain, e.EntryID), MaxContentBytes)
-	if err != nil {
-		return fmt.Errorf("sink: %w", err)
-	}
-	if problem != "" {
-		cr.Problems = append(cr.Problems, fmt.Sprintf("entry %s: its content: %s", e.EntryID, problem))
-		return nil
-	}
-	var nonce []byte
-	noNonce := true // no nonce file at all: nothing can be opened
-	if ns != nil {
-		var nerr error
-		nonce, nerr = ns.Get(cr.Chain, e.EntryID)
-		noNonce = errors.Is(nerr, noncestore.ErrNotFound)
-		if nerr != nil && !noNonce {
-			return fmt.Errorf("sink: nonce for %s: %w", e.EntryID, nerr)
+	delete(unmatched, e.EntryID)
+	var content, nonce []byte
+	tooBig := false
+	if sec != nil { // no secrets file at all: nothing can be opened
+		var err error
+		if content, nonce, tooBig, err = sec.get(cr.Chain, e.EntryID); err != nil {
+			return fmt.Errorf("sink: read the secrets of %s: %w", e.EntryID, err)
 		}
+	}
+	missing, noNonce := content == nil && !tooBig, nonce == nil
+	if tooBig {
+		cr.Problems = append(cr.Problems, fmt.Sprintf("entry %s: its content is %d bytes, over the "+
+			"%d byte limit; it was not checked", e.EntryID, MaxContentBytes+1, MaxContentBytes))
+		return nil
 	}
 
 	switch {
@@ -503,6 +531,10 @@ func (s *Sink) checkEntry(cr *ChainReport, ns *noncestore.Store, f *folder, e ve
 			return nil
 		}
 		want := erasureRecord(prevSeq)
+		if !noNonce {
+			cr.Problems = append(cr.Problems, fmt.Sprintf("erasure record %s has a nonce stored "+
+				"beside it; the sink never writes one", e.EntryID))
+		}
 		if missing || !bytes.Equal(content, want) || erasureHash(want) != e.ContentHash {
 			cr.Problems = append(cr.Problems, fmt.Sprintf("erasure record %s is missing, MODIFIED, "+
 				"or not the erasure record for its position", e.EntryID))

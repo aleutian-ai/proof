@@ -26,6 +26,12 @@
 //     writers, because the CONTRACT is what matters: one appender per chain at a
 //     time. An adapter that cannot enforce it must document that rather than
 //     quietly satisfying the interface.
+//   - [ChainsUpdater] is optional: an adapter that can append to several chains
+//     in ONE atomic transaction implements it, and one that cannot must not.
+//     There the transaction is the lock, not a lease; a chain whose lease is
+//     held is refused ([ErrChainLeased]), so the two mechanisms never
+//     interleave on one chain. What its callback returns must be an append
+//     ([CheckAppend]).
 //
 // # Assumptions
 //

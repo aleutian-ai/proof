@@ -13,10 +13,9 @@
 // …) are consumers in front of this package and nothing more.
 //
 //	records ──► Commit ──► evidence.db           opaque chains <class>.<32 hex>   shareable
-//	            (salted)   evidence.db.nonces    the secret half, per entry       SECRET
+//	            (salted)   evidence.db.secrets   each event + its nonce           SECRET
 //	                       evidence.db.sources   upstream positions, idempotency  SECRET
 //	                       evidence.db.subjects  subject ↔ chain index            SECRET
-//	                       content/<chain>/      the events themselves            SECRET
 //	            Checkpoint ─────────────────► anchors/<chain>/   one signed series per chain
 //	            Verify: every chain on its own, and the index accounts for every chain
 //	            EraseSubject: content, nonces and the index rows gone; the chains still verify
@@ -197,8 +196,8 @@ type ChainReport struct {
 	Index IndexState `json:"index,omitempty"`
 	// Anomaly is set when this is not an ordinary chain: "invalid-id" (the
 	// evidence file holds an id this sink never writes; nothing was read) or
-	// "removed" (checkpoint or content folders exist, but no entries), or
-	// "invalid-folder" (content/ or anchors/ is not a real directory).
+	// "removed" (checkpoints, or content and nonces, exist but no entries), or
+	// "invalid-folder" (anchors/ is not a real directory).
 	Anomaly     string `json:"anomaly,omitempty"`
 	Entries     int    `json:"entries"`
 	Opened      int    `json:"opened"`      // events whose stored content opens their commitment
@@ -278,7 +277,7 @@ type EraseResult struct {
 	// when the chain had no entries (see Leftovers).
 	ErasureEntryID string `json:"erasure_entry_id,omitempty"`
 	// Leftovers counts what was removed for a chain with NO entries: content
-	// files, nonces and source positions left by a first commit that stopped
+	// and nonce rows, and source positions, left by a first commit that stopped
 	// before its append. No erasure entry is written: there is no chain to hold it.
 	Leftovers int `json:"leftovers,omitempty"`
 }
@@ -307,6 +306,12 @@ type Sink struct {
 	// compact rewrites one secret file: compactFile, always, outside tests. A
 	// field so a test can make one compaction fail.
 	compact func(path string, lockTimeout time.Duration) error
+	// wrapAppender, when set, wraps Commit's appender: nil, always, outside
+	// tests. A field so a test can make one Commit's append fail after
+	// everything before it was written.
+	wrapAppender func(chainsAppender) chainsAppender
+	// wrapSecrets, likewise, wraps Commit's secrets writer: nil outside tests.
+	wrapSecrets func(secretsWriter) secretsWriter
 }
 
 // Open opens a sink folder, creating it if needed.
@@ -320,7 +325,7 @@ type Sink struct {
 //
 // # Inputs
 //
-//   - dir: the folder. It holds secrets (the nonce file), so Commit creates it 0700.
+//   - dir: the folder. It holds secrets (evidence.db.secrets), so Commit creates it 0700.
 //   - opts: e.g. WithLockTimeout
 //
 // # Outputs
@@ -352,22 +357,15 @@ func Open(dir string, opts ...Option) (*Sink, error) {
 
 // DBPath returns the path of the evidence file: the chains, holding no event
 // content (but see docs/sink-format.md for what it does reveal).
-// It is the file to export from (`proof export --db`) or to share. The nonce and
-// sources files sit beside it as DBPath()+".nonces" and DBPath()+".sources".
+// It is the file to export from (`proof export --db`) or to share. The
+// secrets, sources and subjects files sit beside it as DBPath()+".secrets",
+// ".sources" and ".subjects", all SECRET.
 func (s *Sink) DBPath() string { return filepath.Join(s.dir, dbName) }
-
-// contentName is a content file's name inside the sink folder (for os.Root).
-func contentName(chain, entryID string) string {
-	return filepath.Join("content", chain, entryID+".json")
-}
-
-// contentPath is a content file's full path (tests use it to tamper).
-func (s *Sink) contentPath(chain, entryID string) string {
-	return filepath.Join(s.dir, "content", chain, entryID+".json")
-}
 
 func (s *Sink) anchorDir(chain string) string { return filepath.Join(s.dir, "anchors", chain) }
 
 func (s *Sink) subjectsPath() string { return s.DBPath() + ".subjects" }
 
 func (s *Sink) sourcesPath() string { return s.DBPath() + ".sources" }
+
+func (s *Sink) secretsPath() string { return s.DBPath() + ".secrets" }

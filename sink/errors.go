@@ -6,6 +6,7 @@ package sink
 import (
 	"errors"
 	"fmt"
+	"regexp"
 
 	bolt "go.etcd.io/bbolt"
 
@@ -57,8 +58,8 @@ type ErasureIncompleteError struct {
 	Forgotten bool
 	// Pending are the chains whose erasure is still incomplete.
 	Pending []string
-	// Compacted is true when all three secret files (nonces, sources, subjects)
-	// were rewritten after the last deletion.
+	// Compacted is true when all three secret files (secrets, sources,
+	// subjects) were rewritten after the last deletion.
 	Compacted bool
 	// Err joins every failure.
 	Err error
@@ -80,4 +81,48 @@ func busy(err error) error {
 		return fmt.Errorf("%w: %v", ErrBusy, err)
 	}
 	return err
+}
+
+// PairError reports that one (class, subject) pair of a Commit call could not
+// be committed because of that pair's own stored state: an inconsistent index
+// row, an index that re-links an erased chain, or a chain id that could not be
+// minted. Nothing in the call was committed.
+//
+// Records are the indexes (in the records passed to Commit) of every record of
+// that pair. A streaming consumer can set exactly those aside (dead-letter
+// them) and retry the rest: the fault is in stored state, so redelivering them
+// would fail again, and fail every batch they are in.
+type PairError struct {
+	Records []int // indexes into the records passed to Commit
+	Err     error
+}
+
+func (e *PairError) Error() string {
+	return fmt.Sprintf("records %v (one class and subject): %v", e.Records, e.Err)
+}
+
+// Unwrap returns the underlying failure.
+func (e *PairError) Unwrap() error { return e.Err }
+
+// chainIDInText matches a chain id anywhere in a message.
+var chainIDInText = regexp.MustCompile(`[a-z0-9][a-z0-9_-]{0,30}\.[0-9a-f]{32}`)
+
+// redactedError is an error whose message has every chain id replaced, and
+// which still unwraps to the original (so errors.Is and errors.As reach the
+// cause). Commit returns its errors this way: next to the caller's own
+// records, a chain id in a logged error would be a row of the secret index
+// (docs/sink-format.md §7).
+type redactedError struct{ err error }
+
+func (e redactedError) Error() string {
+	return chainIDInText.ReplaceAllString(e.err.Error(), "<chain>")
+}
+func (e redactedError) Unwrap() error { return e.err }
+
+// redact wraps err so its message names no chain; nil stays nil.
+func redact(err error) error {
+	if err == nil {
+		return nil
+	}
+	return redactedError{err}
 }

@@ -12,10 +12,10 @@ needed to open, checkpoint and erase each chain on its own.
 ```
   sink-data/
     evidence.db                  the chains (proof store)        no event content; shareable, still personal data (below)
-    evidence.db.nonces           one nonce per event             SECRET
+    evidence.db.secrets          each event's content + nonce,   SECRET: the events (which name their subject) and
+                                 and the erasure records          what opens their commitments
     evidence.db.sources          upstream positions              SECRET: links chains to upstream messages
     evidence.db.subjects         subject ↔ chain index           SECRET: the only link from a subject to its chains
-    content/<chain>/<entry>.json the events and erasure records  SECRET: the events (which name their subject)
     anchors/<chain>/NNNN.json    signed checkpoints              no event content; publish these (§5)
 ```
 
@@ -57,7 +57,7 @@ The keywords MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 | Identifier | Rule |
 |---|---|
 | class | `^[a-z0-9][a-z0-9_-]{0,30}$`: the kind of evidence (payments, auth, events), never a person. **Public and permanent:** it is the chain id's prefix, so it is in `evidence.db`, every checkpoint and folder names, and no erasure removes it. A writer MUST NOT take a class from record data unless it is one of an explicit allowlist, and MUST refuse a record whose class equals its subject. |
-| subject | `^[a-z0-9][a-z0-9._-]{0,127}$`: who the record is about, a pseudonym. Stored ONLY in `evidence.db.subjects` (and in the events themselves, in `content/`). **The pattern checks characters only:** it refuses an email address or anything upper-case, but `john.smith` passes. Pseudonymizing is the caller's job, upstream. A subject that does not match MUST be refused, never transformed. |
+| subject | `^[a-z0-9][a-z0-9._-]{0,127}$`: who the record is about, a pseudonym. Stored ONLY in `evidence.db.subjects` (and in the events themselves, in `evidence.db.secrets`). **The pattern checks characters only:** it refuses an email address or anything upper-case, but `john.smith` passes. Pseudonymizing is the caller's job, upstream. A subject that does not match MUST be refused, never transformed. |
 | chain id | `^[a-z0-9][a-z0-9_-]{0,30}\.[0-9a-f]{32}$`: `<class>.<32 hex>`, the class and 128 random bits. Minted when a (class, subject) pair first commits, and checked unused (in `evidence.db` and the index) before it is bound. It MUST NOT be derived from the subject, a source, the content or the time: anything derived would be a correlator in the shareable files. |
 | entry id | `^sink-[0-9a-f]{32}$`: 16 random bytes, assigned by the sink, never by the caller. |
 
@@ -72,7 +72,7 @@ Every entry in a sink chain is one of two types. The type tells a verifier which
 check the entry's `content_hash` needs (format-spec §8: the chain itself does not
 show it).
 
-| `entry_type` | `content_hash` | content file |
+| `entry_type` | `content_hash` | stored content |
 |---|---|---|
 | `sink.event` | salted commitment of the event bytes (format-spec §8) | the event, byte-for-byte as committed |
 | `sink.erasure` | `hex(SHA-512("aleutian.sink.erasure.v1:" ‖ record))`: domain-separated, see below | the erasure record (§4.1) |
@@ -107,14 +107,16 @@ chain's sequence is the order.
 
 ## 3. Content and nonces
 
-- `content/<chain>/<entry id>.json` holds the exact bytes committed. The `.json`
-  suffix is a convention; the bytes are opaque to the sink. Size: 1 to 65,536
-  bytes. Mode `0600`. A verifier MUST refuse a content file that is not a
-  regular file (a symlink could point anywhere), or that is larger than 65,536
-  bytes, rather than read it.
+- An event's content is the exact bytes committed, 1 to 65,536 bytes, opaque
+  to the sink. It is stored with the event's nonce in `evidence.db.secrets`
+  (§8), keyed by chain and entry id. A verifier MUST refuse to check content
+  larger than 65,536 bytes.
 - The nonce for event *e* on chain *c* is 32 bytes, fresh per event. Opening *e*
   means: `commitment(nonce, content) == e.content_hash`, exactly as in
   format-spec §8.
+- **Content and nonces are written in ONE durable transaction, before the
+  entries that commit to them** (§7). A crash, or a power loss, can never leave
+  a committed entry whose content never reached the disk.
 
 ## 4. The subject index and erasure
 
@@ -160,9 +162,9 @@ A subject is erased in every class, or in one class (its other classes are
 kept, and it stays known through them). In this order:
 
 1. **Check before forgetting.** Every chain of the subject in scope must be
-   erasable: a valid id, readable to its end, a content folder holding only
-   regular files. If one is not, the call refuses and nothing changes: a
-   subject is never forgotten by an erasure already known to be stuck.
+   erasable: a valid id, and readable to its end. If one is not, the call
+   refuses and nothing changes: a subject is never forgotten by an erasure
+   already known to be stuck.
 2. **Forget.** In ONE index transaction, delete the subject's forward rows in
    scope and turn each of their chains' reverse rows into the pending marker.
    From here, a new event for the subject gets a NEW chain: it can never rejoin
@@ -172,21 +174,26 @@ kept, and it stays known through them). In this order:
    1. **append a genuine erasure entry** (§2), unless the chain already ends
       with one, or has no entries (a first commit that never reached it: its
       leftover files are removed instead);
-   2. **delete every nonce** of the chain, **and every source position**
-      recorded for it (§7): a position maps the chain to exact upstream
-      messages, so keeping it would undo the erasure;
-   3. **delete every content file** in `content/<chain>/` except the records of
-      its genuine erasure entries, each kept only if it holds exactly its
-      record; a content folder left empty goes too;
-   4. **clear** the chain's pending row.
+   2. **delete every nonce and every content row** of the chain, in one
+      transaction, except the records of its genuine erasure entries, each kept
+      only while it holds exactly its record. A genuine erasure entry whose
+      record row is missing gets it back in the same transaction (the record is
+      public and fixed);
+   3. **delete every source position** recorded for it (§7): a position maps
+      the chain to exact upstream messages, so keeping it would undo the
+      erasure.
 
    A chain that fails stays pending, and the others go on.
-4. **Rewrite the nonce, sources and subject-index files** into fresh copies
+4. **Rewrite the secrets, sources and subject-index files** into fresh copies
    (fsync, atomic rename), on every erasure call that got past step 1, even
    when nothing was pending, and even when a chain failed: deleting a key in
    bbolt leaves its bytes in free pages, and a rewrite an earlier call failed or
    crashed in is then always redone. (A call refused at step 1 changed nothing,
    and rewrites nothing; resume always rewrites.)
+5. **Only after the rewrite succeeds, clear** the pending rows of the chains
+   completed in step 3, and rewrite the subject index once more. If the rewrite
+   failed, they stay pending. A chain therefore stops being pending only when its
+   content and nonces have left the live files.
 
 Appending first means a crash part-way leaves a chain that says "erased, but
 something is still here" (run erase again), never one that looks tampered with.
@@ -195,10 +202,12 @@ The erasure entry is itself covered by the next checkpoint.
 **The recovery invariant.** When an erasure call succeeds: the index holds no
 row of the subject in scope; every chain it had there is erased as in step 3;
 every erasure pending when the call began is complete; and the three files were
-rewritten after the last deletion. When a call fails after forgetting, it
-reports which chains are still pending (their rows hold no subject) and whether
-the files were rewritten; any later erasure call, or a resume, completes them
-without re-linking the subject.
+rewritten after the last deletion. A pending marker is cleared only after that
+rewrite, so a chain that is not pending has no erased content in the live files.
+When a call fails (or crashes) after forgetting, the chains not finished,
+including those whose rewrite failed, are still pending (their rows hold no
+subject); the error says which, and whether the files were rewritten. Any later
+erasure call, or a resume, completes them without re-linking the subject.
 
 ### 4.4 Resume
 
@@ -211,11 +220,15 @@ pending erasure.
 **What erasure does not reach.** Only the live files in this folder. Not:
 - backups, including backups of `evidence.db.subjects` (see Correlation
   leakage);
-- filesystem snapshots or journals, or SSD wear-levelled blocks (content files
-  are unlinked, not overwritten, and the old files' blocks are freed, not
-  zeroed);
+- filesystem snapshots or journals, or SSD wear-levelled blocks (the rewritten
+  files' old blocks are freed, not zeroed);
 - copies taken before the erasure;
-- anyone an event or nonce was disclosed to.
+- anyone an event or nonce was disclosed to;
+- process memory or swap of anything that read the content;
+- a rewrite's temporary copy left behind by a crash (the next erasure call
+  removes it);
+- deleted rows in the window before the rewrite (a crash there leaves the chain
+  pending, and the next call rewrites).
 
 The chain id stays: in the chain, every checkpoint, and folder names. So do the
 number of entries and their timestamps. The erasure entry itself is a signed
@@ -259,7 +272,7 @@ checked on its own, and the index accounts for every chain:
    |---|---|---|
    | `sink.erasure` | not the first entry; content is exactly the §4.1 record for the previous entry's sequence; `content_hash` = the domain-separated hash of it | ok |
    | `sink.erasure` | anything else | problem: missing, MODIFIED, or not the erasure record for its position |
-   | `sink.event`, before *E* | content file AND nonce both absent | **erased** |
+   | `sink.event`, before *E* | content AND nonce both absent | **erased** |
    | `sink.event`, before *E* | either still present | problem: erasure incomplete |
    | `sink.event`, after *E* | content absent | problem: **MISSING** (no erasure recorded) |
    | `sink.event`, after *E* | nonce absent | problem: cannot be opened |
@@ -267,15 +280,19 @@ checked on its own, and the index accounts for every chain:
    | `sink.event`, after *E* | opens | **opened** |
    | any other type | | problem |
 
-5. **Nothing left over:** a file in `content/<chain>/` that matches no entry is a
-   problem (a commit that stopped before its append, leaving personal data
-   behind).
+5. **Nothing left over:** a content or nonce row that matches no entry of its
+   chain is a problem (a commit that stopped before its append, leaving
+   personal data behind), and so is a nonce stored beside an erasure record.
+   Entry ids are printed only when they have the sink's shape; others are
+   counted. A row whose key is not `chain ‖ 0x00 ‖ entry id` with a valid chain
+   id and entry id is reported by number only (`<invalid secrets row #n>`).
 6. **Nothing removed:** a folder in `anchors/` for a chain with no entries in
    `evidence.db` is a problem: the chain was removed (checkpoints are written
-   only for chains with entries). A folder in `content/` for a chain with no
-   entries is a problem too: leftover personal data. It is reported as a
-   removed chain unless the index binds the chain (`index-only`) or has it
-   pending, where it is the leftovers of a first commit.
+   only for chains with entries). Content or nonces for a chain with no entries
+   are a problem too: leftover personal data. That is reported as a removed
+   chain unless the index binds the chain (`index-only`) or has it pending,
+   where it is the leftovers of a first commit. Rows under an id this sink
+   never mints are reported by number only.
 7. **Index accountability.** Each chain in `evidence.db`, and each index row,
    gets one state:
 
@@ -297,18 +314,16 @@ checked on its own, and the index accounts for every chain:
    subjects is a separate, explicit operator action (`--show-subjects`), whose
    output is secret-index material.
 
-**How files are reached.** A verifier (and a writer) MUST reach every file
-under `content/` and `anchors/` without escaping the sink folder, and MUST
-refuse any directory there that is not a real directory. A symlinked
-`content/<chain>` pointing at another chain's folder would otherwise let one
-chain's erasure delete another's files. Content and checkpoint files MUST be
-read with the type and size checked on the file actually opened, not only by
-name beforehand. This implementation uses Go's `os.Root`, `O_NONBLOCK` (a FIFO
-cannot hang it) and a capped read.
+**How files are reached.** Checkpoints are the only files a sink reads by
+name. A verifier (and a writer) MUST reach every file under `anchors/` without
+escaping the sink folder, and MUST refuse any directory there that is not a
+real directory. Checkpoint files MUST be read with the type and size checked
+on the file actually opened, not only by name beforehand. This implementation
+uses Go's `os.Root`, `O_NONBLOCK` (a FIFO cannot hang it) and a capped read.
 
-**Verification changes nothing.** It opens the evidence, nonce and index files
-read-only, creates no file or folder (a mistyped folder is an error, not a new
-sink), reports a missing nonce file as events that cannot be opened, and a
+**Verification changes nothing.** It opens the evidence, secrets and index
+files read-only, creates no file or folder (a mistyped folder is an error, not a
+new sink), reports a missing secrets file as events whose content is gone, and a
 missing index as chains with no row. Opening a crafted `evidence.db` with bbolt
 is still parsing untrusted input with a library that may panic on corruption:
 to verify a folder from someone else, use an exported bundle (future work,
@@ -326,8 +341,7 @@ ticket `_72`), not the files.
 - which subject a chain belonged to once it is erased, by design.
 
 Steps 2 and 3 need only `evidence.db`, the checkpoints and a public key. Steps 4
-to 7 need the content folder, the nonces and the index, which only the operator
-holds.
+to 7 need the secrets file and the index, which only the operator holds.
 
 ## 7. Idempotent commits
 
@@ -357,9 +371,33 @@ duplicate; nothing else. It names neither a chain nor a subject: next to the
 caller's own record, a chain id would be a row of the secret index, easily
 logged beside the message. A consumer acknowledges upstream exactly the records
 reported committed, and treats a report whose length differs from its records as
-a failure (acknowledging nothing). Each (class, subject) pair's chain is
-appended atomically; a call as a whole is not: after a failure, the pairs before
-it are committed and reported so.
+a failure (acknowledging nothing).
+
+**Commit point and atomicity.** A call's content and nonces are written first,
+in one durable transaction of the secrets file. The records are then committed
+by ONE transaction that appends every chain's entries and heads together: that
+transaction is the commit point. For ordinary returned errors, a call is
+all-or-none across its records: on any error no record is committed, and the
+call leaves nothing new behind (its content and nonce rows, source positions and
+new index rows are removed; if removal itself fails, the error says so). The one
+exception: when an append fails and whether it landed cannot be checked,
+nothing is removed.
+
+A failure that belongs to one (class, subject) pair's stored state (an
+inconsistent index row, an index restored from before an erasure) names that
+pair's records, so a consumer can set those aside and retry the rest; every
+other failure is retried whole. Errors never name a chain.
+
+The files are separate, so this is not crash atomicity: a crash (or a failed
+removal) may leave preparatory state (index rows, content, nonces, source
+positions) in individual files. It is never committed evidence until the
+append succeeds. It persists until the same records are committed again (which
+reuses or replaces it) or the subject is erased (which removes all of it: the
+index rows come first, so everything is reachable). If removing a failed call's
+rows itself fails, the new index rows are kept, so the subject's erasure still
+reaches them. Rows a failed commit deleted stay in the secrets file's free pages
+until the next erasure call rewrites it. Verify reports leftover content and
+nonce rows and index-only rows; it does not read source positions.
 
 ## 8. The Go implementation's files (informative, not an interface)
 
@@ -371,7 +409,8 @@ exported bundle, not these files.
 | File | Bucket | Key | Value |
 |---|---|---|---|
 | `evidence.db` | proof's bolt store (`store/bolt`) | `chain ‖ 0x00 ‖ BE uint64(seq)` | entry |
-| `evidence.db.nonces` | `nonces` | `chain ‖ 0x00 ‖ entry id` | 32-byte nonce |
+| `evidence.db.secrets` | `content` | `chain ‖ 0x00 ‖ entry id` | the exact bytes committed, or an erasure record |
+| `evidence.db.secrets` | `nonces` | `chain ‖ 0x00 ‖ entry id` | 32-byte nonce (none for an erasure record) |
 | `evidence.db.sources` | `sources` | `chain ‖ 0x00 ‖ source` | `entry id ‖ BE uint64(seq)` |
 | `evidence.db.subjects` | `forward` | `subject ‖ 0x00 ‖ class` | chain id |
 | `evidence.db.subjects` | `reverse` | chain id | `class ‖ 0x00 ‖ subject`, or the pending marker `0x00 "pending-erasure"` |
@@ -380,7 +419,8 @@ The pending marker cannot be mistaken for a live row: a live row starts with a
 class, which starts with `[a-z0-9]`.
 
 Each MUST be a regular file: bbolt follows a symlink and would write wherever it
-points. Every operation opens `evidence.db` first: writers with an exclusive
+points. When a file is created, its folder is fsynced, so the file's name is as
+durable as its contents. Every operation opens `evidence.db` first: writers with an exclusive
 lock, which is what serializes them (holding it, a writer opens the secret files
 in any order without deadlock); readers with a shared lock, so none can hold a
 secret file while a writer holds the evidence file. Each file is locked while an

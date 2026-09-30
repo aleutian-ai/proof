@@ -18,7 +18,6 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
-	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/linker"
 	"github.com/aleutian-ai/proof/store"
 )
@@ -43,15 +42,28 @@ func failCompaction(s *Sink, suffix string) func() {
 // files belong. unstick undoes it.
 func stick(t *testing.T, s *Sink, chain string) (unstick func()) {
 	t.Helper()
-	dir := filepath.Join(s.dir, "content", chain, "stuck")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// An entry that cannot be decoded, just past the chain's tail: the chain can
+	// no longer be read to its end, so it cannot be erased.
+	st, err := s.openStore(true)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return func() {
-		if err := os.Remove(dir); err != nil {
+	next := int64(entryCount(t, st, chain))
+	st.Close()
+	key := append(append([]byte(chain), 0), make([]byte, 8)...)
+	binary.BigEndian.PutUint64(key[len(chain)+1:], uint64(next))
+	put := func(fn func(b *bolt.Bucket) error) {
+		db, err := bolt.Open(s.DBPath(), 0o600, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if err := db.Update(func(tx *bolt.Tx) error { return fn(tx.Bucket([]byte("entries"))) }); err != nil {
 			t.Fatal(err)
 		}
 	}
+	put(func(b *bolt.Bucket) error { return b.Put(key, []byte("not an entry")) })
+	return func() { put(func(b *bolt.Bucket) error { return b.Delete(key) }) }
 }
 
 // chainErased asserts condition 2 of the invariant for one chain: it ends with
@@ -76,20 +88,28 @@ func chainErased(t *testing.T, s *Sink, chain string) {
 	if last.EntryType != EntryTypeErasure || last.ContentHash != erasureHash(erasureRecord(prev.GlobalSeq)) {
 		t.Fatalf("chain %s does not end with a genuine erasure entry", chain)
 	}
-	files, _ := os.ReadDir(filepath.Join(s.dir, "content", chain))
-	for _, f := range files {
-		raw, err := os.ReadFile(filepath.Join(s.dir, "content", chain, f.Name()))
-		if err != nil || !bytes.HasPrefix(raw, []byte(`{"erased":`)) {
-			t.Fatalf("chain %s kept %s, which is not an erasure record", chain, f.Name())
-		}
-	}
-	ns, err := noncestore.OpenReadOnly(noncestore.PathFor(s.DBPath()), DefaultLockTimeout)
+	sec, err := openSecretsReadOnly(s.secretsPath(), DefaultLockTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ns.Close()
+	ids, err := sec.contentIDs(chain)
+	sec.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		raw, err := readContent(s, chain, id)
+		if err != nil || !bytes.HasPrefix(raw, []byte(`{"erased":`)) {
+			t.Fatalf("chain %s kept %s, which is not an erasure record", chain, id)
+		}
+	}
+	sec2, err := openSecretsReadOnly(s.secretsPath(), DefaultLockTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sec2.Close()
 	for _, e := range entries {
-		if _, err := ns.Get(chain, e.EntryID); !errors.Is(err, noncestore.ErrNotFound) {
+		if _, nonce, _, err := sec2.get(chain, e.EntryID); err != nil || nonce != nil {
 			t.Fatalf("chain %s: nonce of %s still stored (%v)", chain, e.EntryID, err)
 		}
 	}
@@ -153,33 +173,41 @@ func TestErasureRecovery_StateMachine(t *testing.T) {
 	unstick := stick(t, s, u3)
 
 	// State 2: erase u-1 while the subject index cannot be rewritten. u-3's stuck
-	// chain must not block u-1, and u-1's chains are erased.
+	// chain must not block u-1, and u-1's chains are erased. But the files were
+	// not all rewritten, so u-1's chains STAY PENDING (E1): the pending rows are
+	// what says, across a crash, that a rewrite is still owed.
 	restore := failCompaction(s, ".subjects")
 	res, err := s.EraseSubject(ctx, "u-1")
 	ie := incomplete(t, err)
-	if !ie.Forgotten || ie.Compacted || !slices.Equal(ie.Pending, []string{u3}) {
-		t.Fatalf("incomplete = {Forgotten:%v Compacted:%v Pending:%v}; want {true false [%s]}",
-			ie.Forgotten, ie.Compacted, ie.Pending, u3)
+	u1Chains := []string{chains["payments/u-1"], chains["auth/u-1"]}
+	wantPending := append([]string{u3}, u1Chains...)
+	slices.Sort(wantPending)
+	gotPending := append([]string(nil), ie.Pending...)
+	slices.Sort(gotPending)
+	if !ie.Forgotten || ie.Compacted || !slices.Equal(gotPending, wantPending) {
+		t.Fatalf("incomplete = {Forgotten:%v Compacted:%v Pending:%v}; want {true false %v}",
+			ie.Forgotten, ie.Compacted, ie.Pending, wantPending)
 	}
 	if len(res.Erased) != 2 {
 		t.Fatalf("erased %d of u-1's chains, want 2 (a stuck earlier chain must not block them)", len(res.Erased))
 	}
 	chainErased(t, s, chains["payments/u-1"])
 	chainErased(t, s, chains["auth/u-1"])
-	if got := pendingChains(t, s); !slices.Equal(got, []string{u3}) {
-		t.Fatalf("pending = %v, want only u-3's chain", got)
+	if got := pendingChains(t, s); !slices.Equal(got, wantPending) {
+		t.Fatalf("pending = %v, want u-3's and u-1's chains (the rewrite is owed)", got)
 	}
 	if strings.Contains(err.Error(), "u-1") {
 		t.Fatal("the incomplete-erasure error names the subject")
 	}
 	restore()
 
-	// State 3: resume while u-3's chain is still stuck. Nothing is re-linked,
-	// and the index is rewritten this time (the compaction the last call owed).
+	// State 3: resume while u-3's chain is still stuck. Nothing is re-linked, the
+	// index is rewritten this time (the compaction the last call owed), and u-1's
+	// chains are completed (already erased: nothing appended) and cleared.
 	before := statSubjects(t, s)
 	resumed, err := s.ResumeErasures(ctx)
 	ie = incomplete(t, err)
-	if ie.Forgotten || !ie.Compacted || !slices.Equal(ie.Pending, []string{u3}) || len(resumed) != 0 {
+	if ie.Forgotten || !ie.Compacted || !slices.Equal(ie.Pending, []string{u3}) || len(resumed) != 2 {
 		t.Fatalf("resume = %v, {Forgotten:%v Compacted:%v Pending:%v}", resumed, ie.Forgotten, ie.Compacted, ie.Pending)
 	}
 	if sameFile(t, before, statSubjects(t, s)) {
@@ -374,15 +402,14 @@ func TestEraseSubject_RelabelledEventIsNotAnErasure(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.Close()
-	fakePath := s.contentPath(chain, fake)
-	if err := os.WriteFile(fakePath, []byte(`{"amount":"plaintext"}`), 0o600); err != nil {
+	if err := writeContent(s, chain, fake, []byte(`{"amount":"plaintext"}`)); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := s.EraseSubject(ctx, "u-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(fakePath); !errors.Is(err, os.ErrNotExist) {
+	if _, err := statContent(s, chain, fake); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the relabelled event's content was kept as an erasure record: %v", err)
 	}
 	chainErased(t, s, chain)
@@ -467,7 +494,7 @@ func TestResolveChain_RefusesInvalidMint(t *testing.T) {
 
 // Erasing a chain whose first commit never reached it removes its (empty)
 // content folder, so Verify does not report a removed chain forever (A7).
-func TestEraseSubject_RemovesEmptyContentFolder(t *testing.T) {
+func TestEraseSubject_RemovesLeftoverContentOfAnEmptyChain(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -477,27 +504,28 @@ func TestEraseSubject_RemovesEmptyContentFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	chain := bindChain(t, s, "u-1")
-	if err := os.MkdirAll(filepath.Join(s.dir, "content", chain), 0o700); err != nil {
+	stray := "sink-" + strings.Repeat("5", 32)
+	if err := writeContent(s, chain, stray, []byte(`{"user":"u-1"}`)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.EraseSubject(ctx, "u-1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(s.dir, "content", chain)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the empty content folder survived the erasure: %v", err)
+	if _, err := statContent(s, chain, stray); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the leftover content survived the erasure: %v", err)
 	}
 }
 
-// A first commit that fails removes the content folder it created (A7).
-func TestAppendChain_FailedFirstCommitRemovesFolder(t *testing.T) {
+// A first commit that fails leaves no content or nonce rows behind.
+func TestCommitPairs_FailedFirstCommitLeavesNoRows(t *testing.T) {
 	fx := newFixture(t)
-	err := fx.s.appendChain(context.Background(), appendThen{real: fx.l, err: errors.New("injected")},
-		fx.st, fx.ns, fx.src, fx.f, fx.chain, sourced("u-1", 2, 1))
+	err := fx.s.commitPairs(context.Background(), failingAppend{errors.New("injected")},
+		fx.st, fx.sec, fx.src, []pairPlan{{chain: fx.chain, recs: sourced("u-1", 2, 1)}})
 	if err == nil {
 		t.Fatal("the injected failure was not reported")
 	}
-	if _, err := os.Stat(filepath.Join(fx.s.dir, "content", fx.chain)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the failed first commit left its content folder: %v", err)
+	if chains, _ := fx.sec.chainsWithRows(); len(chains) != 0 {
+		t.Fatalf("the failed first commit left content or nonces for %v", chains)
 	}
 }
 
@@ -545,9 +573,9 @@ func TestCompactFile_IgnoresPlantedTempLink(t *testing.T) {
 }
 
 // Commit returns one outcome per record, in the order given, and never the
-// subject. When a later pair fails, the records of the pairs before it are
-// committed and say so; the failed pair's records, and every later one's, do
-// not: a consumer acks exactly the committed ones.
+// subject. When any pair fails, the call commits NOTHING (all-or-none on a
+// returned error, _74a): every outcome says not committed, and a consumer acks
+// none of them.
 func TestCommit_OutcomesPerRecordOnPartialFailure(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(t.TempDir())
@@ -562,14 +590,15 @@ func TestCommit_OutcomesPerRecordOnPartialFailure(t *testing.T) {
 	recs[2].Content = []byte(`{"user":"u-1","i":9}`)
 	s.mintChainID = func(string) (string, error) { return taken, nil } // u-2 cannot get a chain
 	out, err := s.Commit(ctx, recs)
-	if err == nil || !strings.Contains(err.Error(), "pair 2 of 3") {
-		t.Fatalf("err = %v; want the failed pair named by position", err)
+	var pe *PairError
+	if !errors.As(err, &pe) || len(pe.Records) != 1 || pe.Records[0] != 1 || !strings.Contains(err.Error(), "nothing was committed") {
+		t.Fatalf("err = %v; want a *PairError naming record 1, and nothing committed", err)
 	}
-	if len(out) != len(recs) || pattern(out) != "N-N-" {
-		t.Fatalf("outcomes = %s (%+v); want N-N-: u-1's two committed, u-2 and u-3 not", pattern(out), out)
+	if len(out) != len(recs) || pattern(out) != "----" {
+		t.Fatalf("outcomes = %s (%+v); want ----: nothing committed", pattern(out), out)
 	}
-	if n := len(entryIDs(t, s, taken)); n != 3 {
-		t.Fatalf("u-1's chain holds %d entries, want 3", n)
+	if n := len(entryIDs(t, s, taken)); n != 1 {
+		t.Fatalf("u-1's chain holds %d entries, want only the earlier 1", n)
 	}
 	raw, err := json.Marshal(out)
 	if err != nil || bytes.Contains(raw, []byte("u-")) || bytes.Contains(raw, []byte(testClass+".")) {
@@ -633,7 +662,7 @@ func TestEraseSubject_CrashAfterErasureEntry(t *testing.T) {
 	}
 	id := "sink-" + strings.Repeat("e", 32)
 	record := erasureRecord(tail)
-	if err := os.WriteFile(s.contentPath(chain, id), record, 0o600); err != nil {
+	if err := writeContent(s, chain, id, record); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -658,7 +687,7 @@ func TestEraseSubject_CrashAfterErasureEntry(t *testing.T) {
 		t.Fatalf("resume appended a second erasure entry: %d → %d", before, after)
 	}
 	chainErased(t, s, chain)
-	if _, err := os.Stat(s.contentPath(chain, id)); err != nil {
+	if _, err := statContent(s, chain, id); err != nil {
 		t.Fatalf("the genuine erasure record was removed: %v", err)
 	}
 }
@@ -715,8 +744,8 @@ func TestEraseChain_KeepsOnlyExactErasureRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := s.contentPath(chain, res.Erased[0].ErasureEntryID)
-	if err := os.WriteFile(record, []byte(`{"login":"plaintext"}`), 0o600); err != nil {
+	record := res.Erased[0].ErasureEntryID
+	if err := writeContent(s, chain, record, []byte(`{"login":"plaintext"}`)); err != nil {
 		t.Fatal(err)
 	}
 	// Pending again (as after a crash), so the next call erases it again.
@@ -733,13 +762,16 @@ func TestEraseChain_KeepsOnlyExactErasureRecords(t *testing.T) {
 	if _, err := s.ResumeErasures(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(record); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("content in an erasure record's place was kept: %v", err)
+	// The plaintext is gone, and the genuine record is back in its place (a
+	// missing record is restored: it is public and fixed).
+	got, err := readContent(s, chain, record)
+	if err != nil || bytes.Contains(got, []byte("plaintext")) || !bytes.HasPrefix(got, []byte(`{"erased":`)) {
+		t.Fatalf("the row in the erasure record's place = %q, %v; want the record, not the plaintext", got, err)
 	}
 }
 
-// A pair whose APPEND fails (not its chain resolution) is not committed, nor is
-// a duplicate among its records, nor any later pair; the pairs before it are.
+// A failure in the WRITE phase (after every chain resolved) commits nothing, for
+// any pair: not the pair before it, not a duplicate, not a later pair.
 func TestCommit_OutcomesWhenAnAppendFails(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(t.TempDir())
@@ -751,18 +783,24 @@ func TestCommit_OutcomesWhenAnAppendFails(t *testing.T) {
 	}
 	// u-2's chain gets a known id, and a FILE where its content folder must go.
 	doomed := testClass + "." + strings.Repeat("d", 32)
-	s.mintChainID = func(string) (string, error) { return doomed, nil }
-	if err := os.WriteFile(filepath.Join(s.dir, "content", doomed), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
+	ids := []string{doomed, testClass + "." + strings.Repeat("e", 32)} // u-2, then u-3
+	s.mintChainID = func(string) (string, error) {
+		id := ids[0]
+		ids = ids[1:]
+		return id, nil
 	}
+	failAppends(s)
 	u2 := sourced("u-2", 1, 70)[0]
 	recs := []Record{sourced("u-1", 1, 60)[0], u2, u2, sourced("u-3", 1, 80)[0]}
 	out, err := s.Commit(ctx, recs)
-	if err == nil || !strings.Contains(err.Error(), "pair 2 of 3") {
-		t.Fatalf("err = %v; want the failed pair named by position", err)
+	if err == nil || strings.Contains(err.Error(), doomed) || !strings.Contains(err.Error(), "nothing was committed") {
+		t.Fatalf("err = %v; want an error that names no chain, and nothing committed", err)
 	}
-	if pattern(out) != "N---" {
-		t.Fatalf("outcomes %s; want N---: u-2 (and its duplicate) and u-3 not committed", pattern(out))
+	if pattern(out) != "----" {
+		t.Fatalf("outcomes %s; want ----: nothing committed", pattern(out))
+	}
+	if n := len(entryIDs(t, s, cid(t, s, "u-1"))); n != 1 {
+		t.Fatalf("u-1's chain holds %d entries, want only the earlier 1", n)
 	}
 }
 

@@ -60,6 +60,13 @@
 // claiming the same predecessor; the lease makes that impossible. Contention
 // returns [ErrChainBusy] rather than blocking.
 //
+// [Linker.AppendChains] appends to several chains at once. It takes no lease:
+// the store reads every tail and writes every chain's entries and head in ONE
+// transaction ([store.ChainsUpdater]), which no other writer can interleave
+// with. A chain leased by an Append in progress makes it return [ErrChainBusy].
+// Both paths hash through the same code, so for FormatV3 appending chains
+// together or one at a time produces the same entries.
+//
 // A Linker is safe for concurrent use by multiple goroutines.
 //
 // # Limitations
@@ -68,8 +75,9 @@
 //   - Orders a batch by IngestedAt, which is REQUIRED on every input and is not
 //     persisted — it decides position and is then discarded, so a caller that
 //     needs it afterwards must keep it themselves.
-//   - Appends to one chain at a time, by design. The lease is what stops two
-//     appenders linking from the same tail.
+//   - Append appends to one chain at a time, by design: the lease is what stops
+//     two appenders linking from the same tail. AppendChains needs a store
+//     implementing store.ChainsUpdater; there is no non-atomic fallback.
 //
 // # Assumptions
 //

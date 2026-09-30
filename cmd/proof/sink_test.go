@@ -4,6 +4,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"fmt"
 	"os"
@@ -135,13 +137,7 @@ func TestSink_EndToEnd(t *testing.T) {
 	c82 := m[1]
 
 	// Tampering: verify exits 1 (a finding, like a broken chain), naming the chain.
-	files, err := os.ReadDir(filepath.Join(dir, "content", c82))
-	if err != nil || len(files) != 1 {
-		t.Fatalf("u-82 content: %v %v", files, err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "content", c82, files[0].Name()), []byte(`{"user":"u-82"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	editContent(t, dir, c82, []byte(`{"user":"u-82"}`))
 	code, out, _ = sinkRun(t, "", "verify", "--dir", dir, "--key", pub)
 	if code != exitBroken || !strings.Contains(out, "chain "+c82) || !strings.Contains(out, "MODIFIED") {
 		t.Fatalf("verify after tampering: exit %d\n%s", code, out)
@@ -275,18 +271,57 @@ func TestSink_TrustAfterRotation(t *testing.T) {
 	_ = newPub
 }
 
-// contentChains lists the sink's chains, by their content folders.
+// contentChains lists the sink's chains, from the evidence file.
 func contentChains(t *testing.T, dir string) []string {
 	t.Helper()
-	es, err := os.ReadDir(filepath.Join(dir, "content"))
+	st, err := boltstore.Open(filepath.Join(dir, "evidence.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []string
-	for _, e := range es {
-		out = append(out, e.Name())
+	defer st.Close()
+	chains, err := st.Chains(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	return out
+	return chains
+}
+
+// editContent replaces the first content row of a chain in the secrets file,
+// as someone editing the sink by hand would.
+func editContent(t *testing.T, dir, chain string, data []byte) {
+	t.Helper()
+	db, err := bbolt.Open(filepath.Join(dir, "evidence.db.secrets"), 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.Update(func(tx *bbolt.Tx) error {
+		prefix := append([]byte(chain), 0)
+		k, _ := tx.Bucket([]byte("content")).Cursor().Seek(prefix)
+		if k == nil || !bytes.HasPrefix(k, prefix) {
+			return fmt.Errorf("no content for chain %s", chain)
+		}
+		return tx.Bucket([]byte("content")).Put(append([]byte(nil), k...), data)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stickChain makes a chain unreadable past its tail (an undecodable entry), so
+// it cannot be erased.
+func stickChain(t *testing.T, dir, chain string) {
+	t.Helper()
+	db, err := bbolt.Open(filepath.Join(dir, "evidence.db"), 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	key := append(append([]byte(chain), 0), 0, 0, 0, 0, 0, 0, 0, 99)
+	if err := db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket([]byte("entries")).Put(key, []byte("not an entry"))
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // noSubjects fails if CLI output names a subject: which chain holds whom is the
@@ -337,9 +372,7 @@ func TestSink_EraseRefusalNamesNoSubject(t *testing.T) {
 	if code, _, e := sinkRun(t, `{"user":"u-1"}`+"\n", "commit", "--dir", dir, "--class", "events", "--subject-field", "user"); code != exitOK {
 		t.Fatalf("commit: %d %s", code, e)
 	}
-	if err := os.Mkdir(filepath.Join(dir, "content", contentChains(t, dir)[0], "stuck"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	stickChain(t, dir, contentChains(t, dir)[0])
 	code, out, e := sinkRun(t, "", "erase", "--dir", dir, "--subject", "u-1")
 	if code != exitIOError || !strings.Contains(e, "not forgotten") {
 		t.Fatalf("exit %d\n%s%s", code, out, e)

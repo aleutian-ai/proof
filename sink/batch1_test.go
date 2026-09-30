@@ -16,7 +16,6 @@ import (
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/anchor/build"
-	"github.com/aleutian-ai/proof/internal/noncestore"
 )
 
 func problems(t *testing.T, s *Sink, ring anchor.KeySource, chain string) string {
@@ -30,60 +29,10 @@ func problems(t *testing.T, s *Sink, ring anchor.KeySource, chain string) string
 
 // ---- 1.4: nothing outside the folder, and no chain's files through another's
 
-func TestSymlinkedContentDir_OutsideTheSink(t *testing.T) {
-	s, _, ring := setup(t)
-	outside := t.TempDir()
-	victim := filepath.Join(outside, "precious.txt")
-	if err := os.WriteFile(victim, []byte("not the sink's"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(s.dir, "content", cid(t, s, "u-81"))
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, dir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Commit(context.Background(), events("u-81", 1)); err == nil {
-		t.Fatal("Commit wrote content through a symlinked folder")
-	}
-	if _, err := eraseOne(t, s, "u-81"); err == nil {
-		t.Fatal("Erase went ahead through a symlinked content folder")
-	}
-	if _, err := os.Stat(victim); err != nil {
-		t.Fatalf("Erase deleted a file outside the sink: %v", err)
-	}
-	if n := len(entryIDs(t, s, cid(t, s, "u-81"))); n != 3 {
-		t.Fatalf("a refused Erase still appended an erasure entry (%d entries)", n)
-	}
-	if p := problems(t, s, ring, cid(t, s, "u-81")); !strings.Contains(p, "not a real directory") {
-		t.Fatalf("Verify did not report the symlinked folder: %q", p)
-	}
-}
-
-func TestSymlinkedContentDir_InsideTheSink(t *testing.T) {
-	s, _, _ := setup(t)
-	before, _ := os.ReadDir(filepath.Join(s.dir, "content", cid(t, s, "u-82")))
-	dir := filepath.Join(s.dir, "content", cid(t, s, "u-81"))
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(filepath.Join(s.dir, "content", cid(t, s, "u-82")), dir); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := eraseOne(t, s, "u-81"); err == nil {
-		t.Fatal("erasing u-81 went ahead through a link to u-82's folder")
-	}
-	after, _ := os.ReadDir(filepath.Join(s.dir, "content", cid(t, s, "u-82")))
-	if len(after) != len(before) {
-		t.Fatal("erasing u-81 deleted u-82's content")
-	}
-}
-
 func TestSymlinkedBoltFileIsRefused(t *testing.T) {
 	s, _, _ := setup(t)
 	target := filepath.Join(t.TempDir(), "elsewhere.db")
-	np := noncestore.PathFor(s.DBPath())
+	np := s.secretsPath()
 	if err := os.Rename(np, target); err != nil {
 		t.Fatal(err)
 	}
@@ -133,9 +82,9 @@ func TestAnchors_StrayFileAndGap(t *testing.T) {
 // A FIFO in place of a file would hang a plain open; /dev/zero would never end.
 func TestFIFOsDoNotHang(t *testing.T) {
 	s, _, ring := setup(t)
-	content := s.contentPath(cid(t, s, "u-82"), entryIDs(t, s, cid(t, s, "u-82"))[0])
+	// (Content is no longer a file (_74c); checkpoints still are.)
 	anchorFile := filepath.Join(s.anchorDir(cid(t, s, "u-90")), "0001.json")
-	for _, p := range []string{content, anchorFile} {
+	for _, p := range []string{anchorFile} {
 		if err := os.Remove(p); err != nil {
 			t.Fatal(err)
 		}
@@ -145,11 +94,11 @@ func TestFIFOsDoNotHang(t *testing.T) {
 	}
 	done := make(chan string, 1)
 	go func() {
-		done <- problems(t, s, ring, cid(t, s, "u-82")) + " | " + problems(t, s, ring, cid(t, s, "u-90"))
+		done <- problems(t, s, ring, cid(t, s, "u-90"))
 	}()
 	select {
 	case p := <-done:
-		if strings.Count(p, "not a regular file") != 2 {
+		if strings.Count(p, "not a regular file") != 1 {
 			t.Fatalf("FIFOs not reported as such: %q", p)
 		}
 	case <-time.After(10 * time.Second):
@@ -161,7 +110,7 @@ func TestFIFOsDoNotHang(t *testing.T) {
 
 func TestVerify_IsReadOnly(t *testing.T) {
 	s, _, ring := setup(t)
-	files := []string{s.DBPath(), noncestore.PathFor(s.DBPath())}
+	files := []string{s.DBPath(), s.secretsPath()}
 	var before [][]byte
 	for _, f := range files {
 		b, _ := os.ReadFile(f)
@@ -197,15 +146,15 @@ func TestReadVerbsCreateNothing(t *testing.T) {
 		t.Fatal("a read verb created the folder")
 	}
 
-	// A sink with no nonce file: Verify reports events as unopenable and does
-	// not create the nonce file.
+	// A sink with no secrets file: Verify reports its events' content as gone
+	// (MISSING) and does not create the file.
 	s2, _, ring2 := setup(t)
-	np := noncestore.PathFor(s2.DBPath())
+	np := s2.secretsPath()
 	if err := os.Remove(np); err != nil {
 		t.Fatal(err)
 	}
-	if p := problems(t, s2, ring2, cid(t, s2, "u-82")); !strings.Contains(p, "nonce is gone") {
-		t.Fatalf("missing nonce file not reported: %q", p)
+	if p := problems(t, s2, ring2, cid(t, s2, "u-82")); !strings.Contains(p, "MISSING") {
+		t.Fatalf("missing secrets file not reported: %q", p)
 	}
 	if _, err := os.Stat(np); !os.IsNotExist(err) {
 		t.Fatal("Verify created a nonce file")
@@ -279,7 +228,7 @@ func TestCheckpointSeriesMustGrowAndLink(t *testing.T) {
 // swapped for a FIFO before the open. The check on the open handle catches it.
 func TestReadSmall_SwapAfterCheck(t *testing.T) {
 	s, _, ring := setup(t)
-	target := contentName(cid(t, s, "u-82"), entryIDs(t, s, cid(t, s, "u-82"))[0])
+	target := filepath.Join("anchors", cid(t, s, "u-82"), "0001.json") // checkpoints are still files
 	afterLstat = func(name string) {
 		if name != target {
 			return
@@ -300,26 +249,5 @@ func TestReadSmall_SwapAfterCheck(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("hung on a FIFO swapped in after the check")
-	}
-}
-
-// TestErase_PreflightRefusesBeforeRecording: an entry in the content folder
-// that cannot be removed (a subdirectory) is refused BEFORE the erasure entry
-// is appended, so retries do not pile up erasure entries.
-func TestErase_PreflightRefusesBeforeRecording(t *testing.T) {
-	s, _, _ := setup(t)
-	if err := os.Mkdir(filepath.Join(s.dir, "content", cid(t, s, "u-81"), "stuck"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	// The first attempt forgets the subject, then refuses the chain; the second
-	// finds it pending and refuses again. Neither appends an erasure entry.
-	for i := 0; i < 2; i++ {
-		if _, err := s.EraseSubject(context.Background(), "u-81"); err == nil ||
-			!strings.Contains(err.Error(), "was not erased") {
-			t.Fatalf("attempt %d: %v", i, err)
-		}
-	}
-	if n := len(entryIDs(t, s, cid(t, s, "u-81"))); n != 3 {
-		t.Fatalf("refused erasures appended entries: %d, want 3", n)
 	}
 }

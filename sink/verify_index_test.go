@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -180,7 +179,7 @@ func TestVerifyIndex_IndexOnlyIsANote(t *testing.T) {
 	}
 	// With leftover content beside it, the leftovers are a problem, and the
 	// remedy is the subject's erasure.
-	if err := os.MkdirAll(filepath.Join(s.dir, "content", chain), 0o700); err != nil {
+	if err := writeContent(s, chain, "sink-"+strings.Repeat("6", 32), []byte(`{"user":"u-1"}`)); err != nil {
 		t.Fatal(err)
 	}
 	r = verifyAll(t, s)
@@ -446,18 +445,12 @@ func TestVerify_RelabelledErasureErasesNothing(t *testing.T) {
 	}
 	st.Close()
 	// The event's content AND nonce gone: what a real erasure leaves.
-	if err := os.Remove(s.contentPath(chain, first)); err != nil {
+	if err := removeContent(s, chain, first); err != nil {
 		t.Fatal(err)
 	}
-	st2, ns, err := s.openFiles()
-	if err != nil {
+	if err := removeNonce(s, chain, first); err != nil {
 		t.Fatal(err)
 	}
-	if err := ns.DeleteBatch(chain, []string{first}); err != nil {
-		t.Fatal(err)
-	}
-	ns.Close()
-	st2.Close()
 	cr := chainReport(t, verifyAll(t, s), chain)
 	if cr.Erased != 0 || !hasProblem(cr, "MISSING") {
 		t.Fatalf("a relabelled erasure counted %d events as erased: %+v", cr.Erased, cr)

@@ -49,6 +49,7 @@ func openSources(path string, lockTimeout time.Duration) (*sourcesStore, error) 
 	if err := regularOrAbsent(path); err != nil {
 		return nil, fmt.Errorf("sink: %w", err)
 	}
+	isNew := created(path)
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout})
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
@@ -59,6 +60,10 @@ func openSources(path string, lockTimeout time.Duration) (*sourcesStore, error) 
 	}); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sink: initialise %s: %w", path, err)
+	}
+	if err := syncNewFile(path, isNew); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return &sourcesStore{db: db}, nil
 }
@@ -91,16 +96,19 @@ func (s *sourcesStore) get(chain, source string) (position, bool, error) {
 	return p, found, err
 }
 
-// putBatch records positions for one chain in one transaction.
-func (s *sourcesStore) putBatch(chain string, positions map[string]position) error {
+// putAll records positions for several chains (chain → source → position) in
+// ONE transaction.
+func (s *sourcesStore) putAll(positions map[string]map[string]position) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(sourcesBucket)
-		for src, p := range positions {
-			v := make([]byte, 0, len(p.entryID)+8)
-			v = append(v, p.entryID...)
-			v = binary.BigEndian.AppendUint64(v, uint64(p.seq))
-			if err := b.Put(sourceKey(chain, src), v); err != nil {
-				return fmt.Errorf("sink: record source: %w", err)
+		for chain, bySource := range positions {
+			for src, p := range bySource {
+				v := make([]byte, 0, len(p.entryID)+8)
+				v = append(v, p.entryID...)
+				v = binary.BigEndian.AppendUint64(v, uint64(p.seq))
+				if err := b.Put(sourceKey(chain, src), v); err != nil {
+					return fmt.Errorf("sink: record source: %w", err)
+				}
 			}
 		}
 		return nil

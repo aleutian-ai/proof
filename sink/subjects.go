@@ -39,6 +39,7 @@ func openSubjects(path string, lockTimeout time.Duration) (*subjectsStore, error
 	if err := regularOrAbsent(path); err != nil {
 		return nil, fmt.Errorf("sink: %w", err)
 	}
+	isNew := created(path)
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout})
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
@@ -53,6 +54,10 @@ func openSubjects(path string, lockTimeout time.Duration) (*subjectsStore, error
 	}); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("sink: initialise %s: %w", path, err)
+	}
+	if err := syncNewFile(path, isNew); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return &subjectsStore{db: db}, nil
 }
@@ -158,22 +163,52 @@ func (s *subjectsStore) chainsOf(subject, class string) ([]string, error) {
 	return chains, err
 }
 
-// bind records that chain holds the (subject, class) pair's evidence: forward
-// and reverse rows, one transaction. It refuses to overwrite either: a pair
-// has one chain, and a chain one pair.
-func (s *subjectsStore) bind(subject, class, chain string) error {
+// binding is a new (subject, class) → chain pair, for bindAll.
+type binding struct{ subject, class, chain string }
+
+// bindAll records several new pairs in ONE transaction, with bind's rules for
+// each: it refuses to overwrite a forward or reverse row, and refuses a pair or
+// a chain named twice in the call. Either every pair is bound or none is.
+func (s *subjectsStore) bindAll(pairs []binding) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		fw, rv := tx.Bucket(forwardBucket), tx.Bucket(reverseBucket)
-		if fw.Get(forwardKey(subject, class)) != nil {
-			return fmt.Errorf("sink: the subject already has a chain in class %s", class)
+		for _, p := range pairs {
+			if fw.Get(forwardKey(p.subject, p.class)) != nil {
+				return fmt.Errorf("sink: the subject already has a chain in class %s", p.class)
+			}
+			if rv.Get([]byte(p.chain)) != nil {
+				return fmt.Errorf("sink: chain %s is already bound", p.chain)
+			}
+			if err := fw.Put(forwardKey(p.subject, p.class), []byte(p.chain)); err != nil {
+				return fmt.Errorf("sink: bind: %w", err)
+			}
+			if err := rv.Put([]byte(p.chain), reverseValue(p.class, p.subject)); err != nil {
+				return fmt.Errorf("sink: bind: %w", err)
+			}
 		}
-		if rv.Get([]byte(chain)) != nil {
-			return fmt.Errorf("sink: chain %s is already bound", chain)
+		return nil
+	})
+}
+
+// unbindAll removes pairs bindAll recorded, in ONE transaction: each row is
+// deleted only while it still names exactly that pair and chain, so a row that
+// has changed since is never touched.
+func (s *subjectsStore) unbindAll(pairs []binding) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		fw, rv := tx.Bucket(forwardBucket), tx.Bucket(reverseBucket)
+		for _, p := range pairs {
+			if bytes.Equal(fw.Get(forwardKey(p.subject, p.class)), []byte(p.chain)) {
+				if err := fw.Delete(forwardKey(p.subject, p.class)); err != nil {
+					return fmt.Errorf("sink: unbind: %w", err)
+				}
+			}
+			if bytes.Equal(rv.Get([]byte(p.chain)), reverseValue(p.class, p.subject)) {
+				if err := rv.Delete([]byte(p.chain)); err != nil {
+					return fmt.Errorf("sink: unbind: %w", err)
+				}
+			}
 		}
-		if err := fw.Put(forwardKey(subject, class), []byte(chain)); err != nil {
-			return err
-		}
-		return rv.Put([]byte(chain), reverseValue(class, subject))
+		return nil
 	})
 }
 

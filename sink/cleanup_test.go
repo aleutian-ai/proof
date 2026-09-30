@@ -6,25 +6,24 @@ package sink
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/linker"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 )
 
-// fixture opens a sink's files the way Commit does, for calling appendChain
-// directly with one dependency swapped for a failing one.
+// fixture opens a sink's files the way Commit does, for calling commitPairs
+// directly with one dependency swapped for a failing one. Two pairs are bound:
+// a failure must leave nothing behind for EITHER.
 type fixture struct {
-	s     *Sink
-	chain string // the chain bound to (testClass, "u-1") in the subject index
-	f     *folder
-	st    *boltstore.Store
-	ns    *noncestore.Store
-	src   *sourcesStore
-	l     *linker.Linker
+	s      *Sink
+	chain  string // bound to (testClass, "u-1")
+	chain2 string // bound to (testClass, "u-2")
+	f      *folder
+	st     *boltstore.Store
+	sec    *secretsStore
+	src    *sourcesStore
+	l      *linker.Linker
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -33,11 +32,18 @@ func newFixture(t *testing.T) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return newFixtureOn(t, s)
+}
+
+// newFixtureOn opens the fixture on an existing sink, reusing its bindings.
+func newFixtureOn(t *testing.T, s *Sink) *fixture {
+	t.Helper()
+	var err error
 	fx := &fixture{s: s}
 	if fx.f, err = s.openFolder(true); err != nil {
 		t.Fatal(err)
 	}
-	if fx.st, fx.ns, err = s.openFiles(); err != nil {
+	if fx.st, fx.sec, err = s.openFiles(); err != nil {
 		t.Fatal(err)
 	}
 	if fx.src, err = openSources(s.sourcesPath(), DefaultLockTimeout); err != nil {
@@ -51,6 +57,9 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	fx.chain, err = s.resolveChain(context.Background(), fx.st, subj, testClass, "u-1")
+	if err == nil {
+		fx.chain2, err = s.resolveChain(context.Background(), fx.st, subj, testClass, "u-2")
+	}
 	subj.Close()
 	if err != nil {
 		t.Fatal(err)
@@ -64,9 +73,9 @@ func (fx *fixture) close() {
 		fx.src.Close()
 		fx.src = nil
 	}
-	if fx.ns != nil {
-		fx.ns.Close()
-		fx.ns = nil
+	if fx.sec != nil {
+		fx.sec.Close()
+		fx.sec = nil
 	}
 	if fx.st != nil {
 		fx.st.Close()
@@ -78,146 +87,145 @@ func (fx *fixture) close() {
 	}
 }
 
-// nothingLeft asserts that a failed appendChain left no content file, no nonce
-// and no entry.
-func (fx *fixture) nothingLeft(t *testing.T, chain string, nonces *recordingNonces) {
-	t.Helper()
-	files, _ := os.ReadDir(filepath.Join(fx.s.dir, "content", chain))
-	if len(files) != 0 {
-		t.Fatalf("content left behind: %v", files)
+// plans is the two pairs' records: u-1 ×3 and u-2 ×2, all sourced.
+func (fx *fixture) plans() []pairPlan {
+	return []pairPlan{
+		{chain: fx.chain, recs: sourced("u-1", 3, 1)},
+		{chain: fx.chain2, recs: sourced("u-2", 2, 10)},
 	}
-	for _, id := range nonces.ids {
-		if _, err := fx.ns.Get(chain, id); !errors.Is(err, noncestore.ErrNotFound) {
-			t.Fatalf("nonce for %s left behind: %v", id, err)
+}
+
+// nothingLeft asserts that a failed commitPairs left no content row, no nonce
+// and no entry, on EITHER chain.
+func (fx *fixture) nothingLeft(t *testing.T) {
+	t.Helper()
+	for _, chain := range []string{fx.chain, fx.chain2} {
+		if ids, _ := fx.sec.contentIDs(chain); len(ids) != 0 {
+			t.Fatalf("chain %s: %d content rows left behind", chain, len(ids))
+		}
+		if rows, _ := fx.st.Range(context.Background(), chain, 0, 1<<62, 0); len(rows) != 0 {
+			t.Fatalf("chain %s: %d entries written by a failed commit", chain, len(rows))
 		}
 	}
-	if rows, _ := fx.st.Range(context.Background(), chain, 0, 1<<62, 0); len(rows) != 0 {
-		t.Fatalf("%d entries written by a failed append", len(rows))
+	if chains, _ := fx.sec.chainsWithRows(); len(chains) != 0 {
+		t.Fatalf("content or nonces left behind for %v", chains)
 	}
 }
 
-// recordingNonces is the real nonce store, remembering which ids it stored, and
-// optionally failing PutBatch.
-type recordingNonces struct {
-	*noncestore.Store
-	ids  []string
-	fail bool
+// recordingSecrets is the real secrets store, remembering which chains it was
+// asked to write, and optionally failing putAll or deleteRows.
+type recordingSecrets struct {
+	*secretsStore
+	chains     map[string]int
+	fail       bool
+	failDelete bool
 }
 
-func (r *recordingNonces) PutBatch(chain string, n map[string][]byte) error {
-	for id := range n {
-		r.ids = append(r.ids, id)
+func (r *recordingSecrets) putAll(rows map[string]map[string]secret) error {
+	if r.chains == nil {
+		r.chains = map[string]int{}
+	}
+	for chain, byEntry := range rows {
+		r.chains[chain] += len(byEntry)
 	}
 	if r.fail {
-		return errors.New("injected: nonce store failed")
+		return errors.New("injected: secrets store failed")
 	}
-	return r.Store.PutBatch(chain, n)
+	return r.secretsStore.putAll(rows)
+}
+
+func (r *recordingSecrets) deleteRows(ids map[string][]string) error {
+	if r.failDelete {
+		return errors.New("injected: secrets delete failed")
+	}
+	return r.secretsStore.deleteRows(ids)
 }
 
 type failingPositions struct{}
 
-func (failingPositions) putBatch(string, map[string]position) error {
+func (failingPositions) putAll(map[string]map[string]position) error {
 	return errors.New("injected: sources store failed")
 }
 
-// appendThen runs the real append, then returns the given error: a failure
-// before it (committed=false) or after it (committed=true).
-type appendThen struct {
-	real      *linker.Linker
-	committed bool
-	err       error
+// failingAppend fails without appending, as a refused transaction does.
+type failingAppend struct{ err error }
+
+func (a failingAppend) AppendChains(context.Context, []linker.ChainInputs) ([]linker.Result, error) {
+	return nil, a.err
 }
 
-func (a appendThen) Append(ctx context.Context, chain string, in []linker.Input) (linker.Result, error) {
-	if !a.committed {
-		return linker.Result{}, a.err
-	}
-	res, err := a.real.Append(ctx, chain, in)
-	if err != nil {
-		return res, err
-	}
-	return res, a.err
-}
-
-func TestAppendChain_FailuresLeaveNothing(t *testing.T) {
-	cases := map[string]func(fx *fixture) (nonceWriter, positionWriter, appender, *recordingNonces){
-		"nonce store fails": func(fx *fixture) (nonceWriter, positionWriter, appender, *recordingNonces) {
-			rn := &recordingNonces{Store: fx.ns, fail: true}
-			return rn, fx.src, fx.l, rn
+func TestCommitPairs_FailuresLeaveNothing(t *testing.T) {
+	cases := map[string]func(fx *fixture) (secretsWriter, positionWriter, chainsAppender, *recordingSecrets){
+		"secrets store fails": func(fx *fixture) (secretsWriter, positionWriter, chainsAppender, *recordingSecrets) {
+			rs := &recordingSecrets{secretsStore: fx.sec, fail: true}
+			return rs, fx.src, fx.l, rs
 		},
-		"sources store fails": func(fx *fixture) (nonceWriter, positionWriter, appender, *recordingNonces) {
-			rn := &recordingNonces{Store: fx.ns}
-			return rn, failingPositions{}, fx.l, rn
+		"sources store fails": func(fx *fixture) (secretsWriter, positionWriter, chainsAppender, *recordingSecrets) {
+			rs := &recordingSecrets{secretsStore: fx.sec}
+			return rs, failingPositions{}, fx.l, rs
 		},
-		"append fails": func(fx *fixture) (nonceWriter, positionWriter, appender, *recordingNonces) {
-			rn := &recordingNonces{Store: fx.ns}
-			return rn, fx.src, appendThen{real: fx.l, err: errors.New("injected: append failed")}, rn
+		"append fails": func(fx *fixture) (secretsWriter, positionWriter, chainsAppender, *recordingSecrets) {
+			rs := &recordingSecrets{secretsStore: fx.sec}
+			return rs, fx.src, failingAppend{errors.New("injected: append failed")}, rs
 		},
 	}
 	for name, deps := range cases {
 		t.Run(name, func(t *testing.T) {
 			fx := newFixture(t)
-			ns, src, l, rn := deps(fx)
-			err := fx.s.appendChain(context.Background(), l, fx.st, ns, src, fx.f, fx.chain, sourced("u-1", 3, 1))
+			sec, src, l, rs := deps(fx)
+			err := fx.s.commitPairs(context.Background(), l, fx.st, sec, src, fx.plans())
 			if err == nil {
 				t.Fatal("the injected failure was not reported")
 			}
-			if len(rn.ids) == 0 && name != "nonce store fails" {
-				t.Fatal("test setup: no nonces were stored before the failure")
+			if rs.chains[fx.chain] == 0 || rs.chains[fx.chain2] == 0 {
+				t.Fatal("test setup: both pairs' secrets were not attempted before the failure")
 			}
-			fx.nothingLeft(t, fx.chain, rn)
+			fx.nothingLeft(t)
 		})
 	}
 }
 
-// ErrHeadStateStale means the entries ARE on the chain: nothing may be cleaned
-// up, or committed entries would lose their content and nonces.
-func TestAppendChain_HeadStateStaleKeepsEverything(t *testing.T) {
+// Content and nonces for EVERY pair go in one transaction: a failure writing
+// them writes nothing for any pair (there is no "earlier pair" to clean up).
+func TestCommitPairs_SecretsAreOneTransaction(t *testing.T) {
 	fx := newFixture(t)
-	rn := &recordingNonces{Store: fx.ns}
-	l := appendThen{real: fx.l, committed: true, err: linker.ErrHeadStateStale}
-	if err := fx.s.appendChain(context.Background(), l, fx.st, rn, fx.src, fx.f, fx.chain, sourced("u-1", 2, 1)); err != nil {
-		t.Fatalf("a committed append with a stale head record was reported as a failure: %v", err)
+	rs := &recordingSecrets{secretsStore: fx.sec, fail: true}
+	if err := fx.s.commitPairs(context.Background(), fx.l, fx.st, rs, fx.src, fx.plans()); err == nil {
+		t.Fatal("the failure was not reported")
 	}
-	rows, _ := fx.st.Range(context.Background(), fx.chain, 0, 1<<62, 0)
-	if len(rows) != 2 {
-		t.Fatalf("%d entries, want 2", len(rows))
+	if len(rs.chains) != 2 {
+		t.Fatalf("the call made %d secrets writes' worth of chains, want both pairs in one", len(rs.chains))
 	}
-	for _, r := range rows {
-		if _, err := os.Stat(fx.s.contentPath(fx.chain, r.EntryID)); err != nil {
-			t.Fatalf("content of a committed entry was removed: %v", err)
-		}
-		if _, err := fx.ns.Get(fx.chain, r.EntryID); err != nil {
-			t.Fatalf("nonce of a committed entry was removed: %v", err)
-		}
-	}
+	fx.nothingLeft(t)
 }
 
-// interloper appends one foreign entry before the batch, so the batch lands one
-// sequence later than predicted. That cannot happen while one process holds the
-// file, which is why the repair was never exercised; it must still be correct.
+// interloper appends one foreign entry to the first chain before the real
+// batch, so that chain lands one sequence later than predicted. That cannot
+// happen while one process holds the file, which is why the repair is never
+// exercised otherwise; it must still be correct.
 type interloper struct{ real *linker.Linker }
 
-func (i interloper) Append(ctx context.Context, chain string, in []linker.Input) (linker.Result, error) {
-	now := in[0].IngestedAt.Add(-1)
-	if _, err := i.real.Append(ctx, chain, []linker.Input{{EntryID: "sink-" + "0123456789abcdef0123456789abcdef",
-		EntryType: EntryTypeEvent, Timestamp: now, IngestedAt: now, ContentHash: in[0].ContentHash}}); err != nil {
-		return linker.Result{}, err
+func (i interloper) AppendChains(ctx context.Context, batches []linker.ChainInputs) ([]linker.Result, error) {
+	first := batches[0]
+	now := first.Inputs[0].IngestedAt.Add(-1)
+	if _, err := i.real.Append(ctx, first.ChainID, []linker.Input{{EntryID: "sink-" + "0123456789abcdef0123456789abcdef",
+		EntryType: EntryTypeEvent, Timestamp: now, IngestedAt: now, ContentHash: first.Inputs[0].ContentHash}}); err != nil {
+		return nil, err
 	}
-	return i.real.Append(ctx, chain, in)
+	return i.real.AppendChains(ctx, batches)
 }
 
-func TestAppendChain_MispredictedSequenceIsRepaired(t *testing.T) {
+func TestCommitPairs_MispredictedSequenceIsRepaired(t *testing.T) {
 	fx := newFixture(t)
-	recs := sourced("u-1", 2, 40)
-	if err := fx.s.appendChain(context.Background(), interloper{real: fx.l}, fx.st, fx.ns, fx.src, fx.f, fx.chain, recs); err != nil {
+	plans := fx.plans()
+	if err := fx.s.commitPairs(context.Background(), interloper{real: fx.l}, fx.st, fx.sec, fx.src, plans); err != nil {
 		t.Fatalf("a committed batch at a mispredicted sequence must not fail: %v", err)
 	}
 	fx.close()
 	// The recorded positions were corrected: a redelivery is recognised, not
-	// committed again.
-	got, err := fx.s.Commit(context.Background(), recs)
-	if err != nil || pattern(got) != "DD" {
-		t.Fatalf("redelivery after a mispredicted sequence: %+v, %v; want 2 duplicates", got, err)
+	// committed again, on both chains.
+	got, err := fx.s.Commit(context.Background(), append(plans[0].recs, plans[1].recs...))
+	if err != nil || pattern(got) != "DDDDD" {
+		t.Fatalf("redelivery after a mispredicted sequence: %s, %v; want 5 duplicates", pattern(got), err)
 	}
 }

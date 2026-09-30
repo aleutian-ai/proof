@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aleutian-ai/proof/internal/noncestore"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 )
 
@@ -28,15 +27,11 @@ func TestErase_ForgedErasureIsRejected(t *testing.T) {
 	victim, forged := ids[0], ids[1]
 
 	// The writer knows event k's content and nonce (it wrote them).
-	content, err := os.ReadFile(s.contentPath(cid(t, s, "u-81"), forged))
+	content, err := readContent(s, cid(t, s, "u-81"), forged)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ns, err := noncestore.Open(noncestore.PathFor(s.DBPath()), DefaultLockTimeout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonce, err := ns.Get(cid(t, s, "u-81"), forged)
+	nonce, err := readNonce(s, cid(t, s, "u-81"), forged)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,16 +54,15 @@ func TestErase_ForgedErasureIsRejected(t *testing.T) {
 	st.Close()
 
 	// k's content becomes the preimage; the victim before it is deleted by hand.
-	if err := os.WriteFile(s.contentPath(cid(t, s, "u-81"), forged), preimage, 0o600); err != nil {
+	if err := writeContent(s, cid(t, s, "u-81"), forged, preimage); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(s.contentPath(cid(t, s, "u-81"), victim)); err != nil {
+	if err := removeContent(s, cid(t, s, "u-81"), victim); err != nil {
 		t.Fatal(err)
 	}
-	if err := ns.Delete(cid(t, s, "u-81"), victim); err != nil {
+	if err := removeNonce(s, cid(t, s, "u-81"), victim); err != nil {
 		t.Fatal(err)
 	}
-	ns.Close()
 
 	r, err := s.Verify(ctx, ring)
 	if err != nil {
@@ -89,14 +83,9 @@ func TestErase_ForgedErasureIsRejected(t *testing.T) {
 func TestErase_RemovesNoncesFromTheFile(t *testing.T) {
 	s, _, _ := setup(t)
 	nonces := func(chain string) [][]byte {
-		ns, err := noncestore.Open(noncestore.PathFor(s.DBPath()), DefaultLockTimeout)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer ns.Close()
 		var out [][]byte
 		for _, id := range entryIDs(t, s, chain) {
-			n, err := ns.Get(chain, id)
+			n, err := readNonce(s, chain, id)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,13 +98,18 @@ func TestErase_RemovesNoncesFromTheFile(t *testing.T) {
 	if _, err := eraseOne(t, s, "u-81"); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(noncestore.PathFor(s.DBPath()))
+	raw, err := os.ReadFile(s.secretsPath())
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The erased events' plaintext is gone from the file's bytes too: content
+	// lives in the same file and is rewritten out of it (_74c), not unlinked.
+	if bytes.Contains(raw, []byte(`"user":"u-81"`)) {
+		t.Fatal("an erased event's plaintext is still in the secrets file's bytes")
+	}
 	for _, n := range erased {
 		if bytes.Contains(raw, n) {
-			t.Fatalf("an erased nonce is still in the nonce file's bytes")
+			t.Fatalf("an erased nonce is still in the secrets file's bytes")
 		}
 	}
 	for _, n := range kept { // control: the scan does find live nonces
@@ -206,7 +200,7 @@ func TestErase_ForgedErasureWithTheRightRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	relabel(t, s, cid(t, s, "u-81"), 1, EntryTypeErasure)
-	if err := os.WriteFile(s.contentPath(cid(t, s, "u-81"), ids[1]), erasureRecord(rows[0].GlobalSeq), 0o600); err != nil {
+	if err := writeContent(s, cid(t, s, "u-81"), ids[1], erasureRecord(rows[0].GlobalSeq)); err != nil {
 		t.Fatal(err)
 	}
 	r, err := s.Verify(context.Background(), ring)

@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/aleutian-ai/proof/internal/noncestore"
 )
 
 // TestErase is the ticket's erasure criterion: the erased chain still verifies,
@@ -31,19 +29,14 @@ func TestErase(t *testing.T) {
 	}
 
 	// Erased items cannot be opened: no nonce and no content, for any of them.
-	ns, err := noncestore.Open(noncestore.PathFor(s.DBPath()), DefaultLockTimeout)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, id := range before {
-		if _, err := ns.Get(cid(t, s, "u-81"), id); !errors.Is(err, noncestore.ErrNotFound) {
+		if has, err := hasNonce(s, cid(t, s, "u-81"), id); err != nil || has {
 			t.Errorf("nonce for erased %s still stored: %v", id, err)
 		}
-		if _, err := os.Stat(s.contentPath(cid(t, s, "u-81"), id)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := statContent(s, cid(t, s, "u-81"), id); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("content for erased %s still on disk: %v", id, err)
 		}
 	}
-	ns.Close()
 
 	// Every chain still verifies, the erased one included, and its old
 	// checkpoint still binds.
@@ -113,33 +106,22 @@ func TestErase_Refusals(t *testing.T) {
 func TestErase_RemovesLeftovers(t *testing.T) {
 	s, _, ring := setup(t)
 	strayID := "sink-" + strings.Repeat("e", 32)
-	if err := os.WriteFile(s.contentPath(cid(t, s, "u-81"), strayID), []byte(`{"user":"u-81"}`), 0o600); err != nil {
+	if err := writeContent(s, cid(t, s, "u-81"), strayID, []byte(`{"user":"u-81"}`)); err != nil {
 		t.Fatal(err)
 	}
-	ns, err := noncestore.Open(noncestore.PathFor(s.DBPath()), DefaultLockTimeout)
-	if err != nil {
+	if err := writeNonce(s, cid(t, s, "u-81"), strayID, make([]byte, 32)); err != nil {
 		t.Fatal(err)
 	}
-	if err := ns.PutBatch(cid(t, s, "u-81"), map[string][]byte{strayID: make([]byte, 32)}); err != nil {
-		t.Fatal(err)
-	}
-	ns.Close()
 
 	if _, err := eraseOne(t, s, "u-81"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(s.contentPath(cid(t, s, "u-81"), strayID)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := statContent(s, cid(t, s, "u-81"), strayID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("leftover content survived erasure: %v", err)
 	}
-	ns, err = noncestore.Open(noncestore.PathFor(s.DBPath()), DefaultLockTimeout)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ns.Close()
-	if _, err := ns.Get(cid(t, s, "u-81"), strayID); !errors.Is(err, noncestore.ErrNotFound) {
+	if has, err := hasNonce(s, cid(t, s, "u-81"), strayID); err != nil || has {
 		t.Fatalf("leftover nonce survived erasure: %v", err)
 	}
-	ns.Close()
 	mustVerify(t, s, ring)
 }
 
@@ -156,18 +138,13 @@ func TestErase_LeftoversOfAnInterruptedFirstCommit(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(s.dir, "content", cid(t, s, "u-99")), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(s.contentPath(cid(t, s, "u-99"), id), []byte(`{"user":"u-99"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ns, err := noncestore.Open(noncestore.PathFor(s.DBPath()), DefaultLockTimeout)
-	if err != nil {
+	if err := writeContent(s, cid(t, s, "u-99"), id, []byte(`{"user":"u-99"}`)); err != nil {
 		t.Fatal(err)
 	}
 	nonce := bytes.Repeat([]byte{0x5a}, 32)
-	if err := ns.PutBatch(cid(t, s, "u-99"), map[string][]byte{id: nonce}); err != nil {
+	if err := writeNonce(s, cid(t, s, "u-99"), id, nonce); err != nil {
 		t.Fatal(err)
 	}
-	ns.Close()
 	src, err := openSources(s.sourcesPath(), DefaultLockTimeout)
 	if err != nil {
 		t.Fatal(err)
@@ -184,12 +161,14 @@ func TestErase_LeftoversOfAnInterruptedFirstCommit(t *testing.T) {
 	if err != nil || res.Leftovers != 3 || res.ErasureEntryID != "" {
 		t.Fatalf("Erase of leftovers = %+v, %v; want 3 removed and no erasure entry", res, err)
 	}
-	if _, err := os.Stat(filepath.Join(s.dir, "content", cid(t, s, "u-99"))); !os.IsNotExist(err) {
-		t.Fatal("the leftover content folder is still there")
-	}
-	raw, _ := os.ReadFile(noncestore.PathFor(s.DBPath()))
+	// Erasure rewrites the secrets file: neither the leftover nonce nor the
+	// leftover plaintext is in its BYTES any more (not just deleted rows).
+	raw, _ := os.ReadFile(s.secretsPath())
 	if bytes.Contains(raw, nonce) {
-		t.Fatal("the leftover nonce is still in the nonce file's bytes")
+		t.Fatal("the leftover nonce is still in the secrets file's bytes")
+	}
+	if bytes.Contains(raw, []byte(`{"user":"u-99"}`)) {
+		t.Fatal("the leftover plaintext is still in the secrets file's bytes")
 	}
 	if raw, _ := os.ReadFile(s.sourcesPath()); bytes.Contains(raw, []byte("EVIDENCE@1:77")) {
 		t.Fatal("the leftover source position is still in the sources file's bytes")

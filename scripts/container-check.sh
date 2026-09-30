@@ -427,6 +427,7 @@ if podman run --rm -v "$REPO_ROOT:/src:ro" "$IMAGE" sh -c '
 set -e
 cp -r /src /work && cd /work
 go build -o /usr/local/bin/proof ./cmd/proof
+go build -tags sinktamper -o /usr/local/bin/sinktamper ./scripts/sinktamper
 cd /tmp
 proof keygen --alg ml-dsa-65 --out-dir keys >/dev/null
 printf "%s\n" \
@@ -437,8 +438,8 @@ proof sink commit --class events --subject-field user < events.jsonl > commit.ou
 # Counts only: which chain holds whom belongs in the secret index alone.
 grep -q "committed 5 entries on 3 chains" commit.out
 if grep -q "u-[0-9]" commit.out; then echo "commit output names a subject" >&2; exit 1; fi
-# The test reads the (secret) content to learn which opaque chain is whose.
-chain_of() { basename "$(dirname "$(grep -l "\"$1\"" sink-data/content/*/*.json | head -1)")"; }
+# The test asks the secret index, deliberately, which opaque chain is whose.
+chain_of() { proof sink verify --key keys/ml-dsa-65-public.pem --show-subjects 2>/dev/null | sed -n "s/^chain \([^ ]*\) .*· subject $1\$/\1/p"; }
 c81=$(chain_of u-81); c82=$(chain_of u-82)
 [ -n "$c81" ] && [ -n "$c82" ] && [ "$c81" != "$c82" ] || { cat commit.out >&2; exit 1; }
 proof sink checkpoint --key keys/ml-dsa-65-private.pem
@@ -460,8 +461,7 @@ echo "$out" | grep "chain $c81" | grep -q "0 opened, 3 erased"
 if echo "{\"user\":\"jo@example.com\"}" | proof sink commit --class events --subject-field user 2>/dev/null; then
     echo "AN EMAIL WAS ACCEPTED AS A SUBJECT" >&2; exit 1
 fi
-f=$(ls "sink-data/content/$c82" | head -1)
-echo "{\"user\":\"u-82\",\"event\":\"edited\"}" > "sink-data/content/$c82/$f"
+sinktamper --dir sink-data --chain "$c82" --content "{\"user\":\"u-82\",\"event\":\"edited\"}"
 rc=0; out=$(proof sink verify --key keys/ml-dsa-65-public.pem) || rc=$?
 [ "$rc" -eq 1 ] || { echo "EDITED EVENT VERIFIED (exit $rc)" >&2; exit 1; }
 [ "$(echo "$out" | grep -c FAILS)" -eq 1 ] && echo "$out" | grep "chain $c82" | grep -q FAILS \

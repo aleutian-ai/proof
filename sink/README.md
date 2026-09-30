@@ -15,10 +15,9 @@ verification rules are specified in [`docs/sink-format.md`](../docs/sink-format.
 ```
   events.jsonl                     proof sink                            sink-data/
   {"user":"u-81","kind":"auth",…} ──► (class, subject) ──► commit ──►  evidence.db           opaque chains <class>.<hex>
-  {"user":"u-82","kind":"auth",…}     validated            (salted)    evidence.db.nonces    secret, per event
+  {"user":"u-82","kind":"auth",…}     validated            (salted)    evidence.db.secrets   secret, each event + its nonce
                                                                        evidence.db.sources   secret, upstream positions
                                                                        evidence.db.subjects  secret, subject ↔ chain
-                                                                       content/<chain>/      secret, the events
                                                           checkpoint ► anchors/<chain>/     signed, per chain
                              verify: every chain on its own, and the index accounts for every chain
                              erase --subject u-81: all its chains erased, the subject forgotten; every chain still verifies
@@ -180,11 +179,11 @@ The steps of [`docs/sink-format.md`](../docs/sink-format.md) §6:
 4. **Entries:** every stored event opens its salted commitment with its nonce.
    Events before a **genuine** erasure entry (checked by its hash, never by its
    type) are gone, content and nonce both. An event missing **without** one is
-   MISSING: that is what deleting files by hand looks like.
-5. **Nothing left over:** a content file that matches no entry (a commit that
+   MISSING: that is what deleting stored events by hand looks like.
+5. **Nothing left over:** stored content that matches no entry (a commit that
    stopped before its append) is reported.
-6. **Nothing removed:** checkpoints or content still here for a chain whose
-   entries were removed from the evidence file.
+6. **Nothing removed:** checkpoints, or stored content and nonces, still here
+   for a chain whose entries were removed from the evidence file.
 7. **The index accounts for every chain:** bound to a subject (live), erased
    (checkpointed or not yet), or bound with no entries yet; or a problem:
    an interrupted erasure (pending: run `proof sink erase --resume`), a chain
@@ -196,8 +195,8 @@ The steps of [`docs/sink-format.md`](../docs/sink-format.md) §6:
 Steps 2 and 3 need only `evidence.db`, the checkpoints and the public key. The
 plain chain verbs can do them too, one checkpoint at a time: `proof export` the
 chain, then `proof verify --anchor NNNN.json --previous <NNNN-1>.json --key …`
-for each checkpoint in turn. Steps 4 to 7 need the content folder, the nonce
-file and the index, which only the operator holds.
+for each checkpoint in turn. Steps 4 to 7 need the secrets file and the index,
+which only the operator holds.
 
 ## Use it from Go
 
@@ -232,8 +231,12 @@ rows, err := s.ChainSubjects(ctx)                // does: secret-index material,
   event content and name no subject, but they are still pseudonymous personal
   data: each chain's class, its counts and timestamps, and that it was erased
   and when (see [`docs/sink-format.md`](../docs/sink-format.md)). Share them on
-  a lawful basis. The nonce, sources and subjects files and `content/` are
-  secret.
+  a lawful basis. The secrets, sources and subjects files are secret.
+- **Events are stored with their nonces, durably.** `evidence.db.secrets` holds
+  each event's exact bytes and its nonce, written in one transaction before the
+  entries that commit to them: a power loss can't leave a committed entry whose
+  content never reached the disk. Erasure deletes the rows and rewrites the
+  file, so erased events leave the live file (not backups or SSD blocks).
 - **Correlation leakage.** Erasure removes the stored subject→chain linkage,
   but historical timing may allow an observer to infer that several opaque
   chains belonged to one subject: a subject's chains are erased in the same

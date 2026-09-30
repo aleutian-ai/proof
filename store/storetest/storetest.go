@@ -97,6 +97,7 @@ func Run(t *testing.T, newStore Factory) {
 	t.Run("TimestampFidelity", func(t *testing.T) { testTimestampFidelity(t, newStore(t)) })
 	t.Run("ChainsAreIndependent", func(t *testing.T) { testChainsAreIndependent(t, newStore(t)) })
 	t.Run("WriteIsUpsert", func(t *testing.T) { testWriteIsUpsert(t, newStore(t)) })
+	runChainsUpdater(t, newStore)
 }
 
 // testWriteIsUpsert asserts that writing an entry at an existing

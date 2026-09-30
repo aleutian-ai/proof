@@ -101,6 +101,39 @@ func (s *Store) PutBatch(chainID string, nonces map[string][]byte) error {
 	})
 }
 
+// PutChains stores the nonces of several chains' entries in ONE atomic
+// transaction (chain → entry id → nonce), so a commit touching many chains
+// syncs the file once rather than once per chain.
+func (s *Store) PutChains(nonces map[string]map[string][]byte) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucket)
+		for chainID, byEntry := range nonces {
+			for id, n := range byEntry {
+				if err := b.Put(key(chainID, id), n); err != nil {
+					return fmt.Errorf("noncestore: put %s: %w", id, err)
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// DeleteChains removes the nonces of several chains' entries (chain → entry
+// ids) in ONE transaction. A nonce that is not there is not an error.
+func (s *Store) DeleteChains(entryIDs map[string][]string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucket)
+		for chainID, ids := range entryIDs {
+			for _, id := range ids {
+				if err := b.Delete(key(chainID, id)); err != nil {
+					return fmt.Errorf("noncestore: delete %s: %w", id, err)
+				}
+			}
+		}
+		return nil
+	})
+}
+
 // Get returns an entry's nonce, or ErrNotFound.
 func (s *Store) Get(chainID, entryID string) ([]byte, error) {
 	var out []byte

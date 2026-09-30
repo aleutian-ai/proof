@@ -209,7 +209,7 @@ func TestEraseSubject_CrashBeforeClearIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.eraseChain(ctx, f, st, ns, l, chain); err != nil {
+	if _, err := s.eraseChain(ctx, st, ns, l, chain); err != nil {
 		t.Fatal(err)
 	}
 	before := entryCount(t, st, chain)

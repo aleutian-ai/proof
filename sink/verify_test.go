@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/linker"
 	bolt "go.etcd.io/bbolt"
 )
@@ -28,22 +27,17 @@ func TestVerify_Detects(t *testing.T) {
 	}{
 		{"content edited", "u-81", func(t *testing.T, s *Sink) {
 			id := entryIDs(t, s, cid(t, s, "u-81"))[1]
-			if err := os.WriteFile(s.contentPath(cid(t, s, "u-81"), id), []byte(`{"user":"u-81","i":99}`), 0o600); err != nil {
+			if err := writeContent(s, cid(t, s, "u-81"), id, []byte(`{"user":"u-81","i":99}`)); err != nil {
 				t.Fatal(err)
 			}
 		}, "MODIFIED"},
 		{"content deleted by hand", "u-81", func(t *testing.T, s *Sink) {
-			if err := os.Remove(s.contentPath(cid(t, s, "u-81"), entryIDs(t, s, cid(t, s, "u-81"))[0])); err != nil {
+			if err := removeContent(s, cid(t, s, "u-81"), entryIDs(t, s, cid(t, s, "u-81"))[0]); err != nil {
 				t.Fatal(err)
 			}
 		}, "MISSING"},
 		{"nonce deleted by hand", "u-82", func(t *testing.T, s *Sink) {
-			ns, err := noncestore.Open(noncestore.PathFor(s.DBPath()), DefaultLockTimeout)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer ns.Close()
-			if err := ns.Delete(cid(t, s, "u-82"), entryIDs(t, s, cid(t, s, "u-82"))[0]); err != nil {
+			if err := removeNonce(s, cid(t, s, "u-82"), entryIDs(t, s, cid(t, s, "u-82"))[0]); err != nil {
 				t.Fatal(err)
 			}
 		}, "nonce is gone"},
@@ -68,14 +62,14 @@ func TestVerify_Detects(t *testing.T) {
 		}, "checkpoint 0001"},
 		{"erasure left content behind", "u-81", func(t *testing.T, s *Sink) {
 			id := entryIDs(t, s, cid(t, s, "u-81"))[0]
-			raw, err := os.ReadFile(s.contentPath(cid(t, s, "u-81"), id))
+			raw, err := readContent(s, cid(t, s, "u-81"), id)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := eraseOne(t, s, "u-81"); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(s.contentPath(cid(t, s, "u-81"), id), raw, 0o600); err != nil {
+			if err := writeContent(s, cid(t, s, "u-81"), id, raw); err != nil {
 				t.Fatal(err)
 			}
 		}, "run erase again"},
@@ -84,7 +78,7 @@ func TestVerify_Detects(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(s.contentPath(cid(t, s, "u-81"), res.ErasureEntryID), []byte(`{}`), 0o600); err != nil {
+			if err := writeContent(s, cid(t, s, "u-81"), res.ErasureEntryID, []byte(`{}`)); err != nil {
 				t.Fatal(err)
 			}
 		}, "erasure record"},
@@ -128,26 +122,16 @@ func TestVerify_Detects(t *testing.T) {
 			}
 		}, "REMOVED"},
 		{"content left by an unfinished commit", "u-82", func(t *testing.T, s *Sink) {
-			stray := s.contentPath(cid(t, s, "u-82"), "sink-"+strings.Repeat("f", 32))
-			if err := os.WriteFile(stray, []byte(`{"user":"u-82"}`), 0o600); err != nil {
+			if err := writeContent(s, cid(t, s, "u-82"), "sink-"+strings.Repeat("f", 32), []byte(`{"user":"u-82"}`)); err != nil {
 				t.Fatal(err)
 			}
 		}, "matches no entry"},
 		{"oversized content", "u-82", func(t *testing.T, s *Sink) {
 			id := entryIDs(t, s, cid(t, s, "u-82"))[0]
-			if err := os.WriteFile(s.contentPath(cid(t, s, "u-82"), id), make([]byte, MaxContentBytes+1), 0o600); err != nil {
+			if err := writeContent(s, cid(t, s, "u-82"), id, make([]byte, MaxContentBytes+1)); err != nil {
 				t.Fatal(err)
 			}
 		}, "over the"},
-		{"content replaced by a symlink", "u-82", func(t *testing.T, s *Sink) {
-			p := s.contentPath(cid(t, s, "u-82"), entryIDs(t, s, cid(t, s, "u-82"))[0])
-			if err := os.Remove(p); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink("/etc/hosts", p); err != nil {
-				t.Fatal(err)
-			}
-		}, "not a regular file"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

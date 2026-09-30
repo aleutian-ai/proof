@@ -124,6 +124,10 @@ var allowedDeps = map[string][]string{
 
 	// The nonce sidecar for MCP commits: bbolt (and x/sys through it), nothing else.
 	"/internal/noncestore": {"go.etcd.io/bbolt", "golang.org/x/sys"},
+	// A test-only tool the container check builds (-tags sinktamper) to tamper
+	// with one stored event: bbolt (and x/sys through it), nothing else. Never
+	// released; a build without the tag does not include it.
+	"/scripts/sinktamper": {"go.etcd.io/bbolt", "golang.org/x/sys"},
 
 	// Salted commitments. Standard library only, and it must stay that way: it
 	// is the one piece a verifier in any language re-implements from the spec.
@@ -246,7 +250,9 @@ func TestNoCloudDependenciesAnywhere(t *testing.T) {
 //   - []string: sorted-unique external package paths; empty if fully self-contained
 //   - error: if `go list` fails
 func externalDeps(pattern string) ([]string, error) {
-	out, err := exec.Command("go", "list", "-deps", pattern).Output()
+	// -tags sinktamper: that test-only tool is behind a build tag, and must stay
+	// guarded like everything else.
+	out, err := exec.Command("go", "list", "-tags", "sinktamper", "-deps", pattern).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +305,7 @@ func isAllowed(dep string, allowed []string) bool {
 // A guard whose coverage depends on remembering to extend it is a guard that
 // decays. This makes forgetting fail.
 func TestEveryPackageIsCoveredByTheAllowlist(t *testing.T) {
-	out, err := exec.Command("go", "list", "./...").Output()
+	out, err := exec.Command("go", "list", "-tags", "sinktamper", "./...").Output()
 	if err != nil {
 		t.Fatalf("go list: %v", err)
 	}

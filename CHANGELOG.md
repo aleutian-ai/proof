@@ -94,6 +94,53 @@ change is called out here.
     - strict checkpoint series;
     - read-only Verify;
     - the rest is recorded in the tickets.
+- **`sink.WithRecordSigner`: a sink that signs every entry it writes**
+  (ML-DSA-65, `docs/sink-format.md` §9), events in Commit and erasure entries
+  alike, under a record key separate from the checkpoint key (recommended).
+  - `sink.RecordSigner` (its own type, not `anchor.ContextSigner`) and
+    `sink.MLDSA65RecordSigner`.
+  - The `aleutian.proof.record.v1` envelope: eight length-prefixed fields
+    including `previous_hash`, so record signatures chain; no JSON; empty
+    ML-DSA context. Vectors computed independently in Python, must-refuse
+    cases and a pinned signature (`fixtures/testdata/record_v1_vectors.json`).
+  - Signatures are made against each entry's predicted chain hash, verified
+    under the key their id names, and written durably to the shareable
+    `evidence.db.signatures` before the append; a signer failure writes
+    nothing (and an erasure forgets nothing).
+  - The mode is fixed by a sink's first stored signatures:
+    `ErrRecordSignerRequired`, `ErrSinkNotSigning`. Signing runs in parallel,
+    bounded (`WithRecordSigningConcurrency`, default 16).
+  - **Verify checks them** with `WithRecordTrust` (a key source separate from
+    the checkpoint keys): every entry must carry a valid signature, rebuilt
+    from the stored entry. Counts per kind on `ChainReport` (`Signed`,
+    `Unsigned`, `MalformedSignatures`, `UnknownKeySignatures`,
+    `BadSignatures`, `OrphanSignatures`), one problem line per kind.
+    `Report.RecordSignatures` says `not-checked` for a signing sink verified
+    without record trust: a separate dimension, never a silent pass. A signed
+    erasure counts as `erased` without a checkpoint when nothing else fails.
+    `UsesRecordKey` backs a CLI warning when a checkpoint key also signs
+    records.
+  - **CLI:** `proof sink commit|erase --record-key`, `proof sink verify
+    --record-trust` (repeatable); a record key given or missing against the
+    sink's mode exits 2 with the fix. The NATS and Redis examples sign with
+    `PROOF_RECORD_KEY_FILE` (a path, never key material) and stop on a
+    configuration error instead of redelivering.
+- **Verify no longer prints a crafted entry id** found in the evidence file; it
+  names the entry by position.
+- **Erase errors name no chain** (as Commit's never did): chain ids in their
+  messages are replaced, the ids stay in the results.
+- **`linker.Input.ExpectChainHash`:** a caller can pin the chain hash an entry
+  must get; `Append` and `AppendChains` refuse the whole call, writing nothing,
+  otherwise (`linker.ErrUnexpectedChainHash`). The sink pins every entry, so a
+  batch can no longer land at an unpredicted position (the branch that accepted
+  that is gone).
+- **Every bbolt file of a sink is opened without following a symlink**
+  (`O_NOFOLLOW`, then a regular-file check on the opened handle), closing the
+  window between the check by name and bbolt's open. New
+  `store/bolt.WithNoFollow`.
+- **`anchor.SignCanonical` refuses bytes that are not canonical JSON** (must
+  start with `{`), so a key used for both checkpoints and records can never
+  give a record envelope a checkpoint-path signature.
 - **`store.ChainsUpdater` (optional capability) and `linker.AppendChains`.**
   - Append to several chains in ONE atomic transaction: tails, entries and
     heads together.

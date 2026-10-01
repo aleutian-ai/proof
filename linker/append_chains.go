@@ -45,7 +45,9 @@ type ChainInputs struct {
 // # Outputs
 //
 //   - []Result: one per batch, in the order given. Nil on error.
-//   - error: ErrChainBusy under contention; a validation error naming the
+//   - error: ErrChainBusy under contention; ErrUnexpectedChainHash when any
+//     input's ExpectChainHash differs from the hash it got (the whole call is
+//     refused; the index is after sorting); a validation error naming the
 //     batch; an error when the store cannot
 //     append to several chains in one transaction; a wrapped store error.
 //     Nothing is written on any error. There is no ErrHeadStateStale on this

@@ -520,7 +520,7 @@ func TestEraseSubject_RemovesLeftoverContentOfAnEmptyChain(t *testing.T) {
 func TestCommitPairs_FailedFirstCommitLeavesNoRows(t *testing.T) {
 	fx := newFixture(t)
 	err := fx.s.commitPairs(context.Background(), failingAppend{errors.New("injected")},
-		fx.st, fx.sec, fx.src, []pairPlan{{chain: fx.chain, recs: sourced("u-1", 2, 1)}})
+		fx.st, fx.sec, fx.src, nil, []pairPlan{{chain: fx.chain, recs: sourced("u-1", 2, 1)}})
 	if err == nil {
 		t.Fatal("the injected failure was not reported")
 	}

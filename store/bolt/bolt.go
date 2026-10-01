@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"syscall"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -91,6 +93,7 @@ var ErrLocked = errors.New("bolt: database is locked by another process")
 type config struct {
 	lockTimeout time.Duration
 	readOnly    bool
+	noFollow    bool
 }
 
 // Option configures Open.
@@ -153,6 +156,56 @@ func WithReadOnly() Option {
 	return func(c *config) { c.readOnly = true }
 }
 
+// WithNoFollow refuses to open path through a symlink, or anything but a
+// regular file.
+//
+// # Description
+//
+// bbolt opens its file by path and follows symlinks, so a symlink planted (or
+// swapped in after a caller's own check) makes it read or write wherever the
+// link points. With this option the file is opened with O_NOFOLLOW and
+// O_NONBLOCK, and the OPENED handle must be a regular file: there is no window
+// between a check and the open.
+//
+// # Outputs
+//
+//   - Option: to pass to [Open]
+//
+// # Example
+//
+//	s, err := bolt.Open(path, bolt.WithNoFollow())
+//
+// # Limitations
+//
+//   - Unix only (O_NOFOLLOW), like the rest of proof's file handling.
+//   - Only the final path component: a symlinked parent folder is followed.
+//
+// # Assumptions
+//
+//   - The caller does not intend path to be a symlink.
+func WithNoFollow() Option {
+	return func(c *config) { c.noFollow = true }
+}
+
+// openRegularNoFollow is os.OpenFile that never follows a symlink and refuses
+// anything but a regular file, checked on the opened handle.
+func openRegularNoFollow(path string, flag int, mode os.FileMode) (*os.File, error) {
+	f, err := os.OpenFile(path, flag|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, mode)
+	if err != nil {
+		return nil, fmt.Errorf("%w (a symlink is never followed)", err)
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("%s is not a regular file; refusing to open it", path)
+	}
+	return f, nil
+}
+
 // Open opens or creates a chain database at path.
 //
 // # Inputs
@@ -184,7 +237,11 @@ func Open(path string, opts ...Option) (*Store, error) {
 		o(&cfg)
 	}
 
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: cfg.lockTimeout, ReadOnly: cfg.readOnly})
+	bopts := &bolt.Options{Timeout: cfg.lockTimeout, ReadOnly: cfg.readOnly}
+	if cfg.noFollow {
+		bopts.OpenFile = openRegularNoFollow
+	}
+	db, err := bolt.Open(path, 0o600, bopts)
 	if err != nil {
 		if errors.Is(err, bolt.ErrTimeout) {
 			return nil, fmt.Errorf("%w: %s is held by another process (waited %s). "+

@@ -29,7 +29,7 @@ func (s *Sink) openStore(readOnly bool) (*boltstore.Store, error) {
 	if err := regularOrAbsent(s.DBPath()); err != nil {
 		return nil, fmt.Errorf("sink: %w", err)
 	}
-	opts := []boltstore.Option{boltstore.WithLockTimeout(s.lockTimeout)}
+	opts := []boltstore.Option{boltstore.WithLockTimeout(s.lockTimeout), boltstore.WithNoFollow()}
 	isNew := !readOnly && created(s.DBPath())
 	if readOnly {
 		if _, err := os.Lstat(s.DBPath()); errors.Is(err, os.ErrNotExist) {
@@ -155,12 +155,12 @@ func compactFile(path string, lockTimeout time.Duration) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	src, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
+	src, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, true))
 	if err != nil {
 		_ = os.Remove(tmp)
 		return busy(err)
 	}
-	dst, err := bolt.Open(tmp, 0o600, &bolt.Options{Timeout: lockTimeout})
+	dst, err := bolt.Open(tmp, 0o600, boltOptions(lockTimeout, false))
 	if err != nil {
 		src.Close()
 		_ = os.Remove(tmp)

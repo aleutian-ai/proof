@@ -79,7 +79,9 @@ package sink
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -124,6 +126,98 @@ func WithLockTimeout(d time.Duration) Option {
 		if d > 0 {
 			s.lockTimeout = d
 		}
+	}
+}
+
+// DefaultRecordSigningConcurrency bounds how many record signatures one call
+// requests at once; see WithRecordSigningConcurrency.
+const DefaultRecordSigningConcurrency = 16
+
+// WithRecordSigner makes the sink sign every entry it writes with s: every
+// event Commit writes and every erasure entry (docs/sink-format.md §9).
+//
+// # Description
+//
+// Signing is fixed per sink by the first commit whose record signatures were
+// stored, even if its append then fails: a sink opened
+// with a signer refuses to write to a sink that already has unsigned entries
+// (ErrSinkNotSigning), and a sink opened without one refuses to write to a
+// signing sink (ErrRecordSignerRequired). Every signature is verified under the
+// signer's key before anything is written, and made against the exact chain
+// hash its entry gets.
+//
+// # Inputs
+//
+//   - s: the record signer; nil makes Open fail. Its key should not be the
+//     checkpoint key (recommended, not enforced).
+//
+// # Outputs
+//
+//   - Option: to pass to Open
+//
+// # Example
+//
+//	rs, err := sink.NewMLDSA65RecordSigner(seed)
+//	defer rs.Close()
+//	s, err := sink.Open("sink-data", sink.WithRecordSigner(rs))
+//
+// # Limitations
+//
+//   - Verify does not check record signatures yet (ticket _75d).
+//
+// # Assumptions
+//
+//   - s is safe for concurrent use. The sink does not own it: the caller
+//     closes it, after the last call.
+func WithRecordSigner(s RecordSigner) Option {
+	return func(k *Sink) {
+		if s == nil {
+			k.optErr = errors.New("sink: WithRecordSigner needs a signer")
+			return
+		}
+		if v := reflect.ValueOf(s); v.Kind() == reflect.Pointer && v.IsNil() {
+			k.optErr = errors.New("sink: WithRecordSigner needs a signer (got a nil pointer)")
+			return
+		}
+		k.recordSigner = s
+	}
+}
+
+// WithRecordSigningConcurrency sets how many record signatures one call
+// requests at once (default DefaultRecordSigningConcurrency).
+//
+// # Description
+//
+// A local signer is fast either way; a remote one (a KMS, ~250 ms a call) needs
+// several in flight, within its quota. Every started signature finishes before
+// the call goes on, and the first failure stops the rest.
+//
+// # Inputs
+//
+//   - n: at least 1; anything smaller makes Open fail
+//
+// # Outputs
+//
+//   - Option: to pass to Open
+//
+// # Example
+//
+//	s, err := sink.Open(dir, sink.WithRecordSigner(kms), sink.WithRecordSigningConcurrency(4))
+//
+// # Limitations
+//
+//   - Without WithRecordSigner it has no effect.
+//
+// # Assumptions
+//
+//   - The signer tolerates n concurrent calls.
+func WithRecordSigningConcurrency(n int) Option {
+	return func(k *Sink) {
+		if n < 1 {
+			k.optErr = fmt.Errorf("sink: record signing concurrency %d is below 1", n)
+			return
+		}
+		k.signConcurrency = n
 	}
 }
 
@@ -204,6 +298,18 @@ type ChainReport struct {
 	Erased      int    `json:"erased"`      // events removed by a recorded erasure
 	Checkpoints int    `json:"checkpoints"` // checkpoints that verified
 	Unanchored  int    `json:"unanchored"`  // entries after the last checkpoint
+
+	// Record signatures (docs/sink-format.md §9), counted only when Verify was
+	// given record trust (WithRecordTrust); OrphanSignatures always. Each
+	// failure kind is also ONE line in Problems (count and first entry id).
+	Signed               int `json:"signed,omitempty"`                 // signature verified under a trusted record key
+	Unsigned             int `json:"unsigned,omitempty"`               // no signature row
+	MalformedSignatures  int `json:"malformed_signatures,omitempty"`   // a row that is not key id ‖ signature
+	UnknownKeySignatures int `json:"unknown_key_signatures,omitempty"` // signed by a key not trusted for records
+	BadSignatures        int `json:"bad_signatures,omitempty"`         // the stored entry is not what was signed
+	// OrphanSignatures counts signature rows matching no entry of the chain: a
+	// crash or a failed cleanup leaves them. A note, not a problem (§9.3).
+	OrphanSignatures int `json:"orphan_signatures,omitempty"`
 	// Problems lists every failure. Empty means the chain verifies.
 	Problems []string `json:"problems,omitempty"`
 }
@@ -241,7 +347,26 @@ const (
 // Report is what Verify found on every chain.
 type Report struct {
 	Chains []ChainReport `json:"chains"`
+	// RecordSignatures says whether record signatures were checked: a separate
+	// dimension from the chains, checkpoints and storage, so a report that
+	// passes is never mistaken for one whose signatures were verified.
+	RecordSignatures RecordSignatureCheck `json:"record_signatures,omitempty"`
 }
+
+// RecordSignatureCheck is whether Verify checked record signatures.
+type RecordSignatureCheck string
+
+const (
+	// RecordSignaturesNone: no record trust given, and the sink does not sign.
+	RecordSignaturesNone RecordSignatureCheck = ""
+	// RecordSignaturesNotChecked: the sink signs its records, but Verify was
+	// given no record trust, so NOT ONE signature was checked. Not a failure:
+	// the verifier decides whether signatures are required.
+	RecordSignaturesNotChecked RecordSignatureCheck = "not-checked"
+	// RecordSignaturesChecked: every entry's signature was checked against the
+	// record trust given (an entry without one is a problem).
+	RecordSignaturesChecked RecordSignatureCheck = "checked"
+)
 
 // OK reports whether every chain verified: true only when no chain has a
 // problem. Unanchored entries are not problems.
@@ -312,6 +437,14 @@ type Sink struct {
 	wrapAppender func(chainsAppender) chainsAppender
 	// wrapSecrets, likewise, wraps Commit's secrets writer: nil outside tests.
 	wrapSecrets func(secretsWriter) secretsWriter
+	// wrapSignatures, likewise, wraps the signatures writer: nil outside tests.
+	wrapSignatures func(signaturesWriter) signaturesWriter
+
+	// recordSigner signs every entry written, when set (WithRecordSigner).
+	recordSigner    RecordSigner
+	signConcurrency int
+	// optErr is the first invalid option, returned by Open.
+	optErr error
 }
 
 // Open opens a sink folder, creating it if needed.
@@ -348,9 +481,13 @@ func Open(dir string, opts ...Option) (*Sink, error) {
 	if dir == "" {
 		return nil, errors.New("sink: a folder is required")
 	}
-	s := &Sink{dir: dir, lockTimeout: DefaultLockTimeout, mintChainID: newChainID, compact: compactFile}
+	s := &Sink{dir: dir, lockTimeout: DefaultLockTimeout, mintChainID: newChainID, compact: compactFile,
+		signConcurrency: DefaultRecordSigningConcurrency}
 	for _, o := range opts {
 		o(s)
+		if s.optErr != nil {
+			return nil, s.optErr
+		}
 	}
 	return s, nil
 }
@@ -369,3 +506,5 @@ func (s *Sink) subjectsPath() string { return s.DBPath() + ".subjects" }
 func (s *Sink) sourcesPath() string { return s.DBPath() + ".sources" }
 
 func (s *Sink) secretsPath() string { return s.DBPath() + ".secrets" }
+
+func (s *Sink) signaturesPath() string { return s.DBPath() + ".signatures" }

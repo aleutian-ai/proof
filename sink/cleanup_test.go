@@ -173,7 +173,7 @@ func TestCommitPairs_FailuresLeaveNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fx := newFixture(t)
 			sec, src, l, rs := deps(fx)
-			err := fx.s.commitPairs(context.Background(), l, fx.st, sec, src, fx.plans())
+			err := fx.s.commitPairs(context.Background(), l, fx.st, sec, src, nil, fx.plans())
 			if err == nil {
 				t.Fatal("the injected failure was not reported")
 			}
@@ -190,7 +190,7 @@ func TestCommitPairs_FailuresLeaveNothing(t *testing.T) {
 func TestCommitPairs_SecretsAreOneTransaction(t *testing.T) {
 	fx := newFixture(t)
 	rs := &recordingSecrets{secretsStore: fx.sec, fail: true}
-	if err := fx.s.commitPairs(context.Background(), fx.l, fx.st, rs, fx.src, fx.plans()); err == nil {
+	if err := fx.s.commitPairs(context.Background(), fx.l, fx.st, rs, fx.src, nil, fx.plans()); err == nil {
 		t.Fatal("the failure was not reported")
 	}
 	if len(rs.chains) != 2 {
@@ -200,9 +200,10 @@ func TestCommitPairs_SecretsAreOneTransaction(t *testing.T) {
 }
 
 // interloper appends one foreign entry to the first chain before the real
-// batch, so that chain lands one sequence later than predicted. That cannot
-// happen while one process holds the file, which is why the repair is never
-// exercised otherwise; it must still be correct.
+// batch, so that chain's tail is not the one the batch was predicted (and, in a
+// signing sink, signed) against. That cannot happen while one process holds the
+// file; if it ever does, the append must refuse rather than commit entries at
+// positions nobody predicted.
 type interloper struct{ real *linker.Linker }
 
 func (i interloper) AppendChains(ctx context.Context, batches []linker.ChainInputs) ([]linker.Result, error) {
@@ -215,17 +216,22 @@ func (i interloper) AppendChains(ctx context.Context, batches []linker.ChainInpu
 	return i.real.AppendChains(ctx, batches)
 }
 
-func TestCommitPairs_MispredictedSequenceIsRepaired(t *testing.T) {
+// TestCommitPairs_MovedTailIsRefused (_75c C2): every entry's chain hash is
+// pinned, so a batch whose chain moved under it is refused whole, and the call
+// leaves nothing of its own behind (the interloper's entry is not ours).
+func TestCommitPairs_MovedTailIsRefused(t *testing.T) {
 	fx := newFixture(t)
-	plans := fx.plans()
-	if err := fx.s.commitPairs(context.Background(), interloper{real: fx.l}, fx.st, fx.sec, fx.src, plans); err != nil {
-		t.Fatalf("a committed batch at a mispredicted sequence must not fail: %v", err)
+	err := fx.s.commitPairs(context.Background(), interloper{real: fx.l}, fx.st, fx.sec, fx.src, nil, fx.plans())
+	if !errors.Is(err, linker.ErrUnexpectedChainHash) {
+		t.Fatalf("err = %v; want the append refused", err)
 	}
-	fx.close()
-	// The recorded positions were corrected: a redelivery is recognised, not
-	// committed again, on both chains.
-	got, err := fx.s.Commit(context.Background(), append(plans[0].recs, plans[1].recs...))
-	if err != nil || pattern(got) != "DDDDD" {
-		t.Fatalf("redelivery after a mispredicted sequence: %s, %v; want 5 duplicates", pattern(got), err)
+	if rows, _ := fx.st.Range(context.Background(), fx.chain, 0, 1<<62, 0); len(rows) != 1 {
+		t.Fatalf("chain holds %d entries; want only the interloper's", len(rows))
+	}
+	if rows, _ := fx.st.Range(context.Background(), fx.chain2, 0, 1<<62, 0); len(rows) != 0 {
+		t.Fatal("the other chain was written although the call was refused")
+	}
+	if chains, _ := fx.sec.chainsWithRows(); len(chains) != 0 {
+		t.Fatalf("content or nonces left behind for %v", chains)
 	}
 }

@@ -46,7 +46,7 @@ func openSecrets(path string, lockTimeout time.Duration) (*secretsStore, error) 
 		return nil, fmt.Errorf("sink: %w", err)
 	}
 	isNew := created(path)
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout})
+	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, false))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
@@ -79,7 +79,7 @@ func openSecretsReadOnly(path string, lockTimeout time.Duration) (*secretsStore,
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
+	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, true))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
@@ -97,7 +97,10 @@ func openSecretsReadOnly(path string, lockTimeout time.Duration) (*secretsStore,
 
 func (s *secretsStore) Close() error { return s.db.Close() }
 
-func secretKey(chain, entryID string) []byte {
+// rowKey is chain ‖ 0x00 ‖ entry id: the key of every per-entry row, secret
+// (content, nonces) or public (signatures). Neither id can hold a NUL, so a key
+// splits one way.
+func rowKey(chain, entryID string) []byte {
 	k := make([]byte, 0, len(chain)+1+len(entryID))
 	k = append(k, chain...)
 	k = append(k, 0)
@@ -111,11 +114,11 @@ func (s *secretsStore) putAll(rows map[string]map[string]secret) error {
 		cb, nb := tx.Bucket(contentBucket), tx.Bucket(noncesBucket)
 		for chain, byEntry := range rows {
 			for id, sec := range byEntry {
-				if err := cb.Put(secretKey(chain, id), sec.content); err != nil {
+				if err := cb.Put(rowKey(chain, id), sec.content); err != nil {
 					return fmt.Errorf("sink: store content: %w", err)
 				}
 				if sec.nonce != nil {
-					if err := nb.Put(secretKey(chain, id), sec.nonce); err != nil {
+					if err := nb.Put(rowKey(chain, id), sec.nonce); err != nil {
 						return fmt.Errorf("sink: store nonce: %w", err)
 					}
 				}
@@ -132,10 +135,10 @@ func (s *secretsStore) deleteRows(ids map[string][]string) error {
 		cb, nb := tx.Bucket(contentBucket), tx.Bucket(noncesBucket)
 		for chain, list := range ids {
 			for _, id := range list {
-				if err := cb.Delete(secretKey(chain, id)); err != nil {
+				if err := cb.Delete(rowKey(chain, id)); err != nil {
 					return fmt.Errorf("sink: delete content: %w", err)
 				}
-				if err := nb.Delete(secretKey(chain, id)); err != nil {
+				if err := nb.Delete(rowKey(chain, id)); err != nil {
 					return fmt.Errorf("sink: delete nonce: %w", err)
 				}
 			}
@@ -151,14 +154,14 @@ func (s *secretsStore) deleteRows(ids map[string][]string) error {
 // opens nothing.
 func (s *secretsStore) get(chain, entryID string) (content, nonce []byte, tooBig bool, err error) {
 	err = s.db.View(func(tx *bolt.Tx) error {
-		if v := tx.Bucket(contentBucket).Get(secretKey(chain, entryID)); v != nil {
+		if v := tx.Bucket(contentBucket).Get(rowKey(chain, entryID)); v != nil {
 			if len(v) > MaxContentBytes {
 				tooBig = true
 			} else {
 				content = append([]byte(nil), v...)
 			}
 		}
-		if v := tx.Bucket(noncesBucket).Get(secretKey(chain, entryID)); v != nil {
+		if v := tx.Bucket(noncesBucket).Get(rowKey(chain, entryID)); v != nil {
 			nonce = []byte{}
 			if len(v) == 32 {
 				nonce = append(nonce, v...)
@@ -197,7 +200,7 @@ func (s *secretsStore) rowIDs(chain string) ([]string, error) {
 }
 
 func (s *secretsStore) idsIn(chain string, bucket []byte) ([]string, error) {
-	prefix := secretKey(chain, "")
+	prefix := rowKey(chain, "")
 	var ids []string
 	err := s.db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket(bucket).Cursor()
@@ -270,7 +273,7 @@ func (s *secretsStore) chainsWithRows() ([]string, error) {
 // good. A row keyed by the bare chain id (no entry id, never written by the
 // sink) goes too. It returns how many rows it removed.
 func (s *secretsStore) eraseChain(chain string, keep map[string][]byte) (int, error) {
-	prefix := secretKey(chain, "")
+	prefix := rowKey(chain, "")
 	n := 0
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		for _, b := range [][]byte{noncesBucket, contentBucket} {
@@ -297,8 +300,8 @@ func (s *secretsStore) eraseChain(chain string, keep map[string][]byte) (int, er
 		}
 		cb := tx.Bucket(contentBucket)
 		for id, record := range keep {
-			if cb.Get(secretKey(chain, id)) == nil {
-				if err := cb.Put(secretKey(chain, id), record); err != nil {
+			if cb.Get(rowKey(chain, id)) == nil {
+				if err := cb.Put(rowKey(chain, id), record); err != nil {
 					return fmt.Errorf("sink: restore an erasure record: %w", err)
 				}
 			}

@@ -49,24 +49,24 @@ func viewSecrets(s *Sink, fn func(tx *bolt.Tx) error) error {
 // writeContent replaces (or creates) an entry's content row.
 func writeContent(s *Sink, chain, id string, data []byte) error {
 	return withSecrets(s, func(tx *bolt.Tx) error {
-		return tx.Bucket(contentBucket).Put(secretKey(chain, id), data)
+		return tx.Bucket(contentBucket).Put(rowKey(chain, id), data)
 	})
 }
 
 // removeContent deletes an entry's content row.
 func removeContent(s *Sink, chain, id string) error {
 	return withSecrets(s, func(tx *bolt.Tx) error {
-		if tx.Bucket(contentBucket).Get(secretKey(chain, id)) == nil {
+		if tx.Bucket(contentBucket).Get(rowKey(chain, id)) == nil {
 			return fmt.Errorf("content of %s: %w", id, os.ErrNotExist)
 		}
-		return tx.Bucket(contentBucket).Delete(secretKey(chain, id))
+		return tx.Bucket(contentBucket).Delete(rowKey(chain, id))
 	})
 }
 
 // removeNonce deletes an entry's nonce.
 func removeNonce(s *Sink, chain, id string) error {
 	return withSecrets(s, func(tx *bolt.Tx) error {
-		return tx.Bucket(noncesBucket).Delete(secretKey(chain, id))
+		return tx.Bucket(noncesBucket).Delete(rowKey(chain, id))
 	})
 }
 
@@ -74,7 +74,7 @@ func removeNonce(s *Sink, chain, id string) error {
 func readContent(s *Sink, chain, id string) ([]byte, error) {
 	var out []byte
 	err := viewSecrets(s, func(tx *bolt.Tx) error {
-		v := tx.Bucket(contentBucket).Get(secretKey(chain, id))
+		v := tx.Bucket(contentBucket).Get(rowKey(chain, id))
 		if v == nil {
 			return fmt.Errorf("content of %s: %w", id, os.ErrNotExist)
 		}
@@ -94,7 +94,7 @@ func statContent(s *Sink, chain, id string) (bool, error) {
 // writeNonce replaces (or creates) an entry's nonce.
 func writeNonce(s *Sink, chain, id string, nonce []byte) error {
 	return withSecrets(s, func(tx *bolt.Tx) error {
-		return tx.Bucket(noncesBucket).Put(secretKey(chain, id), nonce)
+		return tx.Bucket(noncesBucket).Put(rowKey(chain, id), nonce)
 	})
 }
 
@@ -102,7 +102,7 @@ func writeNonce(s *Sink, chain, id string, nonce []byte) error {
 func hasNonce(s *Sink, chain, id string) (bool, error) {
 	found := false
 	err := viewSecrets(s, func(tx *bolt.Tx) error {
-		found = tx.Bucket(noncesBucket).Get(secretKey(chain, id)) != nil
+		found = tx.Bucket(noncesBucket).Get(rowKey(chain, id)) != nil
 		return nil
 	})
 	return found, err
@@ -125,7 +125,7 @@ func secretRowCount(s *Sink) (int, error) {
 func readNonce(s *Sink, chain, id string) ([]byte, error) {
 	var out []byte
 	err := viewSecrets(s, func(tx *bolt.Tx) error {
-		v := tx.Bucket(noncesBucket).Get(secretKey(chain, id))
+		v := tx.Bucket(noncesBucket).Get(rowKey(chain, id))
 		if v == nil {
 			return fmt.Errorf("nonce of %s: %w", id, os.ErrNotExist)
 		}

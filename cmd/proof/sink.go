@@ -24,16 +24,21 @@ import (
 const sinkMaxLine = 1 << 20
 
 const sinkUsage = `usage:
-  proof sink commit     [--dir D] (--class NAME | --class-field FIELD --classes A,B…) --subject-field FIELD  < events.jsonl
+  proof sink commit     [--dir D] (--class NAME | --class-field FIELD --classes A,B…) --subject-field FIELD
+                        [--record-key <record private.pem>]  < events.jsonl
   proof sink checkpoint [--dir D] --key <ml-dsa-65 private.pem> [--trust <public.pem>]…
-  proof sink verify     [--dir D] --key <ml-dsa-65 public.pem> [--show-subjects]
-  proof sink erase      [--dir D] --subject S [--class C]   (or --resume)
+  proof sink verify     [--dir D] --key <ml-dsa-65 public.pem> [--record-trust <record public.pem>]… [--show-subjects]
+  proof sink erase      [--dir D] --subject S [--class C]   (or --resume)   [--record-key <record private.pem>]
 
 A sink is a folder (default ./sink-data) holding one opaque chain per
 (class, subject); only a secret index links subjects to chains. See
 docs/sink-format.md. --trust names earlier signing keys whose checkpoints may
-be built on (after a key rotation). Exit: 0 ok · 1 a chain failed verification
-or was not checkpointed · 2 usage · 3 error · 4 the folder is busy.`
+be built on (after a key rotation). --record-key signs every record written
+(a sink signs from its first commit, or never); --record-trust checks every
+record's signature (repeatable, for rotated keys). Keep the record key and the
+checkpoint key separate. Exit: 0 ok · 1 a chain failed verification or was not
+checkpointed · 2 usage, or a record key given or missing against the sink's
+signing · 3 error · 4 the folder is busy.`
 
 // cmdSink runs the sink verbs.
 //
@@ -52,9 +57,9 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("sink "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", "sink-data", "the sink folder")
-	var class, classField, classes, subjectField, key, subject, eraseClass *string
+	var class, classField, classes, subjectField, key, subject, eraseClass, recordKey *string
 	var resume, showSubjects *bool
-	var trust multiFlag
+	var trust, recordTrust multiFlag
 	switch verb {
 	case "commit":
 		class = fs.String("class", "", "the evidence class of every event: payments, auth, events… (never a person)")
@@ -62,6 +67,8 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		classes = fs.String("classes", "", "with --class-field: the only classes it may hold, comma-separated "+
 			"(a class is public and never erased, so data may not choose one freely)")
 		subjectField = fs.String("subject-field", "", "the JSON field whose value is the subject (a pseudonym)")
+		recordKey = fs.String("record-key", "", "ML-DSA-65 private key (PEM) to sign every record with; "+
+			"required for a sink that signs, refused for one that does not")
 	case "checkpoint":
 		key = fs.String("key", "", "ML-DSA-65 private key (PEM), from `proof keygen --alg ml-dsa-65`")
 		fs.Var(&trust, "trust", "an earlier ML-DSA-65 public key (PEM) existing checkpoints may be signed with; repeatable")
@@ -69,10 +76,14 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		key = fs.String("key", "", "ML-DSA-65 public key (PEM) the checkpoints are signed with")
 		showSubjects = fs.Bool("show-subjects", false, "also print each live chain's subject, read from the "+
 			"secret index (the output is then secret too)")
+		fs.Var(&recordTrust, "record-trust", "an ML-DSA-65 public key (PEM) record signatures may be made "+
+			"with; repeatable. Given, EVERY record must carry a valid signature")
 	case "erase":
 		subject = fs.String("subject", "", "the subject to erase (every class, unless --class)")
 		eraseClass = fs.String("class", "", "erase only this class of the subject's evidence; the others are kept")
 		resume = fs.Bool("resume", false, "only complete erasures an earlier, interrupted call started")
+		recordKey = fs.String("record-key", "", "ML-DSA-65 private key (PEM) to sign erasure entries with; "+
+			"required for a sink that signs")
 	case "-h", "--help", "help":
 		fmt.Fprintln(stdout, sinkUsage)
 		return exitOK
@@ -127,7 +138,17 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		}
 	}
 
-	s, err := sink.Open(*dir)
+	var opts []sink.Option
+	if recordKey != nil && *recordKey != "" {
+		rs, err := loadRecordSigner(*recordKey)
+		if err != nil {
+			fmt.Fprintf(stderr, "proof sink %s: %v\n", verb, err)
+			return exitIOError
+		}
+		defer rs.Close()
+		opts = append(opts, sink.WithRecordSigner(rs))
+	}
+	s, err := sink.Open(*dir, opts...)
 	if err != nil {
 		fmt.Fprintf(stderr, "proof sink: %v\n", err)
 		return exitIOError
@@ -139,13 +160,21 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		err = sinkCommit(c, s, sink.JSONFields{Class: *class, ClassField: *classField, Classes: allowed,
 			SubjectField: *subjectField}, os.Stdin, stdout)
 	case "checkpoint":
-		failed, err = sinkCheckpoint(c, s, *key, trust, stdout)
+		failed, err = sinkCheckpoint(c, s, *key, trust, stdout, stderr)
 	case "verify":
-		failed, err = sinkVerify(c, s, *key, *showSubjects, stdout, stderr)
+		failed, err = sinkVerify(c, s, *key, recordTrust, *showSubjects, stdout, stderr)
 	case "erase":
 		err = sinkErase(c, s, *subject, *eraseClass, *resume, stdout)
 	}
 	switch {
+	case errors.Is(err, sink.ErrRecordSignerRequired):
+		// Configuration, not a failure: retrying will not help.
+		fmt.Fprintf(stderr, "proof sink %s: this sink signs its records: pass --record-key <record private key>\n", verb)
+		return exitUsage
+	case errors.Is(err, sink.ErrSinkNotSigning):
+		fmt.Fprintf(stderr, "proof sink %s: this sink already holds unsigned records, so it cannot start "+
+			"signing: drop --record-key (or start a new sink)\n", verb)
+		return exitUsage
 	case err != nil:
 		fmt.Fprintf(stderr, "proof sink %s: %v\n", verb, err)
 		if errors.Is(err, sink.ErrBusy) {
@@ -237,12 +266,20 @@ func sinkCommit(c ctx.Context, s *sink.Sink, fields sink.JSONFields, in io.Reade
 
 // sinkCheckpoint signs what is new. The bool reports whether any chain was
 // refused (a finding: exit 1); the error, an operational failure.
-func sinkCheckpoint(c ctx.Context, s *sink.Sink, keyPath string, trust []string, out io.Writer) (bool, error) {
+func sinkCheckpoint(c ctx.Context, s *sink.Sink, keyPath string, trust []string, out, errOut io.Writer) (bool, error) {
 	signer, err := loadSigner(keyPath)
 	if err != nil {
 		return false, err
 	}
 	defer signer.Close()
+	// R7: separate keys are recommended, never forbidden. Say so, and go on.
+	if used, err := s.UsesRecordKey(c, signer.KeyID()); err != nil {
+		return false, err
+	} else if used {
+		fmt.Fprintln(errOut, "warning: this checkpoint key also signs this sink's records. Keep them "+
+			"separate: the record key is online in the writer, and if it leaks, checkpoints signed by "+
+			"another key still pin what they covered")
+	}
 	var trusted anchor.KeySource
 	if len(trust) > 0 {
 		// The signer's own key is always trusted: its checkpoints must verify
@@ -325,7 +362,8 @@ func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 // With showSubjects it also reads the secret index (sink.ChainSubjects) and
 // prints each live chain's subject, after a warning on stderr: the output is
 // then as secret as the index.
-func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, showSubjects bool, out, errOut io.Writer) (bool, error) {
+func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, recordTrust []string, showSubjects bool,
+	out, errOut io.Writer) (bool, error) {
 	id, pub, err := readPublicKey(keyPath)
 	if err != nil {
 		return false, err
@@ -334,7 +372,25 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, showSubjects bool, 
 	if err != nil {
 		return false, err
 	}
-	rep, err := s.Verify(c, ring)
+	var opts []sink.VerifyOption
+	if len(recordTrust) > 0 {
+		// A separate ring: trusting a key for records never trusts it for
+		// checkpoints.
+		keys := map[string][]byte{}
+		for _, p := range recordTrust {
+			rid, rpub, err := readPublicKey(p)
+			if err != nil {
+				return false, err
+			}
+			keys[rid] = rpub
+		}
+		records, err := anchor.NewKeyRing(anchor.TrustProvided, keys)
+		if err != nil {
+			return false, err
+		}
+		opts = append(opts, sink.WithRecordTrust(records))
+	}
+	rep, err := s.Verify(c, ring, opts...)
 	if err != nil {
 		return false, err
 	}
@@ -364,13 +420,23 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, showSubjects bool, 
 			verdict = "FAILS"
 			bad++
 		}
-		fmt.Fprintf(out, "chain %-12s %-8s %s: %d opened, %d erased · %s, %d unanchored%s%s\n",
+		fmt.Fprintf(out, "chain %-12s %-8s %s: %d opened, %d erased · %s, %d unanchored%s%s%s%s\n",
 			printable(ch.Chain), verdict, plural(ch.Entries, "entry", "entries"), ch.Opened, ch.Erased,
-			plural(ch.Checkpoints, "checkpoint", "checkpoints"), ch.Unanchored, indexNote(ch.Index),
+			plural(ch.Checkpoints, "checkpoint", "checkpoints"), ch.Unanchored,
+			signedNote(rep.RecordSignatures, ch), orphanNote(ch.OrphanSignatures), indexNote(ch.Index),
 			subjectNote(subjectOf[ch.Chain]))
 		for _, p := range ch.Problems {
 			fmt.Fprintf(out, "    %s\n", p)
 		}
+	}
+	// Record signatures are a separate dimension: never let a pass read as
+	// "signatures verified" when they were not checked.
+	switch rep.RecordSignatures {
+	case sink.RecordSignaturesNotChecked:
+		fmt.Fprintln(out, "Record signatures: NOT CHECKED (this sink signs its records). "+
+			"Pass --record-trust <record public key> to verify them.")
+	case sink.RecordSignaturesChecked:
+		fmt.Fprintln(out, "Record signatures: checked against --record-trust")
 	}
 	if bad > 0 {
 		fmt.Fprintf(out, "%d of %d chains FAILED\n", bad, len(rep.Chains))
@@ -378,6 +444,42 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, showSubjects bool, 
 	}
 	fmt.Fprintf(out, "all %d chains verify\n", len(rep.Chains))
 	return false, nil
+}
+
+// signedNote is a chain's signed count, when signatures were checked.
+func signedNote(check sink.RecordSignatureCheck, ch sink.ChainReport) string {
+	if check != sink.RecordSignaturesChecked || ch.Entries == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · %d signed", ch.Signed)
+}
+
+// orphanNote mentions signature rows that match no entry: a note, not a
+// failure (a crash or a failed cleanup leaves them).
+func orphanNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return " · " + plural(n, "orphan signature", "orphan signatures") + " (note)"
+}
+
+// loadRecordSigner loads an ML-DSA-65 record signer from a private key file,
+// zeroizing the seed once the signer has copied it.
+func loadRecordSigner(path string) (*sink.MLDSA65RecordSigner, error) {
+	pem, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	alg, seed, err := keyfile.ParsePrivateKey(pem)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	defer zeroizeSeed(seed)
+	if alg != keyfile.MLDSA65 {
+		return nil, fmt.Errorf("%s holds a %s key, but records are signed with ML-DSA-65. "+
+			"Generate one with: proof keygen --alg ml-dsa-65", path, alg)
+	}
+	return sink.NewMLDSA65RecordSigner(seed)
 }
 
 // indexNote describes a chain's subject-index state, when it is not the usual

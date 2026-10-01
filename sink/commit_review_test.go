@@ -21,34 +21,6 @@ import (
 // anyChainID matches a chain id anywhere in a string.
 var anyChainID = regexp.MustCompile(`[a-z0-9][a-z0-9_-]{0,30}\.[0-9a-f]{32}`)
 
-// R1: the positions correction fails AFTER the evidence committed. The call
-// must report success (the records ARE committed), never "nothing committed".
-func TestCommitPairs_RepairFailureStillReportsCommitted(t *testing.T) {
-	fx := newFixture(t)
-	plans := fx.plans()
-	src := &flakyPositions{real: fx.src, failAfter: 1} // the first putAll works, the repair fails
-	if err := fx.s.commitPairs(context.Background(), interloper{real: fx.l}, fx.st, fx.sec, src, plans); err != nil {
-		t.Fatalf("committed records were reported as failed: %v", err)
-	}
-	if rows, _ := fx.st.Range(context.Background(), fx.chain2, 0, 1<<62, 0); len(rows) != 2 {
-		t.Fatalf("chain2 holds %d entries, want 2", len(rows))
-	}
-}
-
-type flakyPositions struct {
-	real      *sourcesStore
-	failAfter int
-	calls     int
-}
-
-func (p *flakyPositions) putAll(pos map[string]map[string]position) error {
-	p.calls++
-	if p.calls > p.failAfter {
-		return errors.New("injected: sources store failed")
-	}
-	return p.real.putAll(pos)
-}
-
 // R2: one pair's stored state is broken (its reverse index row disagrees).
 // Nothing is committed, and the error is a *PairError naming exactly that
 // pair's records, so a consumer can set those aside and retry the rest.
@@ -150,7 +122,7 @@ func (a landedThenFailed) AppendChains(ctx context.Context, b []linker.ChainInpu
 
 func TestCommitPairs_AppendThatLandedKeepsContent(t *testing.T) {
 	fx := newFixture(t)
-	if err := fx.s.commitPairs(context.Background(), landedThenFailed{real: fx.l}, fx.st, fx.sec, fx.src, fx.plans()); err != nil {
+	if err := fx.s.commitPairs(context.Background(), landedThenFailed{real: fx.l}, fx.st, fx.sec, fx.src, nil, fx.plans()); err != nil {
 		t.Fatalf("an append that landed was reported as failed: %v", err)
 	}
 	fx.close()
@@ -169,7 +141,7 @@ func TestCommitPairs_DuplicateChainRefusedBeforeWriting(t *testing.T) {
 	fx := newFixture(t)
 	plans := []pairPlan{{chain: fx.chain, recs: sourced("u-1", 1, 1)}, {chain: fx.chain, recs: sourced("u-2", 1, 5)}}
 	rs := &recordingSecrets{secretsStore: fx.sec}
-	if err := fx.s.commitPairs(context.Background(), fx.l, fx.st, rs, fx.src, plans); err == nil {
+	if err := fx.s.commitPairs(context.Background(), fx.l, fx.st, rs, fx.src, nil, plans); err == nil {
 		t.Fatal("a duplicated chain was accepted")
 	}
 	if len(rs.chains) != 0 {
@@ -205,7 +177,7 @@ func TestCommitPairs_CleanupFailureIsReported(t *testing.T) {
 	fx := newFixture(t)
 	rs := &recordingSecrets{secretsStore: fx.sec, failDelete: true}
 	err := fx.s.commitPairs(context.Background(), failingAppend{errors.New("injected: append failed")},
-		fx.st, rs, fx.src, fx.plans())
+		fx.st, rs, fx.src, nil, fx.plans())
 	if err == nil || !strings.Contains(err.Error(), "cleanup") {
 		t.Fatalf("err = %v; want the cleanup failure reported", err)
 	}
@@ -221,7 +193,7 @@ func TestCommitPairs_FailureKeepsEarlierContent(t *testing.T) {
 	}
 	fx2 := newFixtureOn(t, fx.s)
 	err := fx2.s.commitPairs(context.Background(), failingAppend{errors.New("injected")},
-		fx2.st, fx2.sec, fx2.src, []pairPlan{{chain: fx.chain, recs: sourced("u-1", 2, 30)}})
+		fx2.st, fx2.sec, fx2.src, nil, []pairPlan{{chain: fx.chain, recs: sourced("u-1", 2, 30)}})
 	if err == nil {
 		t.Fatal("the failure was not reported")
 	}

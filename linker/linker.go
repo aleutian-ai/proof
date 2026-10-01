@@ -21,6 +21,10 @@ import (
 // appender at a time by design. Callers should retry, not treat it as corruption.
 var ErrChainBusy = errors.New("linker: chain is busy, another append holds the lease")
 
+// ErrUnexpectedChainHash means an input's ExpectChainHash differed from the
+// chain hash linking gave it. The whole call was refused; nothing was written.
+var ErrUnexpectedChainHash = errors.New("linker: an entry's chain hash is not the one the caller expected")
+
 // ErrHeadStateStale is returned, TOGETHER WITH a populated Result, when the
 // entries were durably written but the saved head record could not be updated.
 //
@@ -60,6 +64,13 @@ type Input struct {
 	// IngestedAt is arrival time, and the ordering authority for this batch.
 	// Required and non-zero.
 	IngestedAt time.Time
+
+	// ExpectChainHash, when set, is the chain hash the caller computed for this
+	// entry (and may have signed against). Linking refuses the WHOLE call,
+	// writing nothing, if the entry's chain hash is anything else: a moved
+	// tail, another sequence or order, or another format all change it.
+	// Optional; empty means no expectation.
+	ExpectChainHash string
 }
 
 // Result reports what one Append did.
@@ -206,8 +217,10 @@ func New(s store.Store, opts ...Option) (*Linker, error) {
 //
 //   - Result: the run id, the sequence range assigned, and the new head hash
 //   - error: [ErrChainBusy] under contention, [ErrPositionSupplied] if an input
-//     carries a linker-assigned field, a validation error naming the offending
-//     entry, or a wrapped store error
+//     carries a linker-assigned field, [ErrUnexpectedChainHash] if an input's
+//     ExpectChainHash differs from the hash it got (nothing written; the index
+//     in the message is after sorting by IngestedAt, then EntryID), a
+//     validation error naming the offending entry, or a wrapped store error
 //
 // # Example
 //
@@ -343,6 +356,12 @@ func (l *Linker) link(chainID, previousHash string, nextGlobalSeq int64, runID s
 		if hashErr != nil {
 			return nil, fmt.Errorf(
 				"linker: entry %q at batch index %d: %w", batch[i].EntryID, i, hashErr)
+		}
+		if batch[i].ExpectChainHash != "" && batch[i].ExpectChainHash != chainHash {
+			// Before any write, on both paths (Append links before WriteBatch;
+			// AppendChains inside the store's transaction). Names the index, not
+			// the chain.
+			return nil, fmt.Errorf("%w (batch index %d)", ErrUnexpectedChainHash, i)
 		}
 
 		entries[i] = store.Entry{

@@ -40,7 +40,7 @@ func openSubjects(path string, lockTimeout time.Duration) (*subjectsStore, error
 		return nil, fmt.Errorf("sink: %w", err)
 	}
 	isNew := created(path)
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout})
+	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, false))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
@@ -321,7 +321,7 @@ func openSubjectsReadOnly(path string, lockTimeout time.Duration) (*subjectsStor
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
+	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, true))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}

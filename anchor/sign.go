@@ -289,6 +289,13 @@ func SignCanonical(ctx context.Context, s ContextSigner, canonical []byte) ([]by
 		return nil, "", fmt.Errorf("anchor: canonical bytes are %d, exceeding the %d limit",
 			len(canonical), maxCanonicalSize)
 	}
+	// Only an anchor's canonical JSON is signed here. A checkpoint key may also
+	// be a sink's record key (separation is recommended, not enforced), and a
+	// record envelope (which begins "aleutian.proof.record.v1") must never get
+	// a signature from this path.
+	if canonical[0] != '{' {
+		return nil, "", errors.New("anchor: canonical bytes must be an anchor's canonical JSON (start with '{')")
+	}
 
 	// An empty signing_key_id is never legitimate: the field is inside these
 	// very bytes, so a caller who fills it in afterwards publishes an anchor

@@ -8,10 +8,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
 	"github.com/aleutian-ai/proof/anchor"
+	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/commitment"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
@@ -63,9 +65,20 @@ import (
 //   - Report: per chain, in chain-id order. Report.OK is the verdict.
 //   - error: only when verification could not run (a file unreadable). A broken
 //     chain is a finding in the Report, not an error.
-func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error) {
+func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...VerifyOption) (Report, error) {
 	if keys == nil {
 		return Report{}, errors.New("sink: a key source is required")
+	}
+	var cfg verifyConfig
+	for _, o := range opts {
+		o(&cfg)
+		if cfg.err != nil {
+			return Report{}, cfg.err
+		}
+	}
+	var rc *recordChecker
+	if cfg.recordTrust != nil {
+		rc = &recordChecker{src: cfg.recordTrust, keys: map[string][]byte{}}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -89,6 +102,19 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 	if sec != nil {
 		defer sec.Close()
 	}
+	// The signatures file: what Verify checks with record trust, and the
+	// folder-side checks (orphans, removed chains) either way.
+	sig, err := openSignaturesReadOnly(s.signaturesPath(), s.lockTimeout)
+	if err != nil {
+		return Report{}, err
+	}
+	signing := false
+	if sig != nil {
+		defer sig.Close()
+		if signing, err = sig.signing(); err != nil {
+			return Report{}, err
+		}
+	}
 	// No index file means no rows: every live chain is then unaccounted.
 	subj, err := openSubjectsReadOnly(s.subjectsPath(), s.lockTimeout)
 	if err != nil {
@@ -108,6 +134,12 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 	}
 
 	var rep Report
+	switch {
+	case rc != nil:
+		rep.RecordSignatures = RecordSignaturesChecked
+	case signing:
+		rep.RecordSignatures = RecordSignaturesNotChecked
+	}
 	inStore := map[string]bool{}
 	reported := map[string]int{} // chain → its report's index in rep.Chains
 	for _, chain := range chains {
@@ -122,7 +154,7 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 				Problems: []string{"the evidence file holds a chain id this sink never writes; it was not read"}})
 			continue
 		}
-		cr, err := s.verifyChain(ctx, st, sec, f, chain, keys, ix.state(chain))
+		cr, err := s.verifyChain(ctx, st, sec, sig, rc, f, chain, keys, ix.state(chain))
 		if err != nil {
 			return rep, err
 		}
@@ -244,8 +276,57 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource) (Report, error
 				"stopped before its append; "+remedy(cr.Index))
 		}
 	}
+	if sig != nil {
+		if err := checkSignatureRows(&rep, sig, inStore, reportFor); err != nil {
+			return rep, err
+		}
+	}
 	sort.Slice(rep.Chains, func(i, j int) bool { return rep.Chains[i].Chain < rep.Chains[j].Chain })
 	return rep, nil
+}
+
+// checkSignatureRows reports what the signatures file holds for chains the
+// evidence file does not: REMOVED (a problem), unless the index binds the chain
+// or has it pending (a first commit's leftovers: a note); and rows keyed off
+// the layout, by count. Record trust plays no part: this is about the folder.
+func checkSignatureRows(rep *Report, sig *signaturesStore, inStore map[string]bool,
+	reportFor func(string) *ChainReport) error {
+	invalid := 0
+	addInvalid := func(problem string) {
+		invalid++
+		rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid signatures row #%d>", invalid),
+			Anomaly: "removed", Problems: []string{problem}})
+	}
+	if n, err := sig.malformedKeys(); err != nil {
+		return fmt.Errorf("sink: read the signatures file: %w", err)
+	} else if n > 0 {
+		addInvalid(fmt.Sprintf("the signatures file holds %d rows whose key this sink never writes", n))
+	}
+	withRows, err := sig.chainsWithRows()
+	if err != nil {
+		return fmt.Errorf("sink: read the signatures file: %w", err)
+	}
+	for _, name := range withRows {
+		if inStore[name] {
+			continue
+		}
+		if !ValidChainID(name) {
+			continue // counted by malformedKeys; never shown
+		}
+		ids, err := sig.rowIDs(name)
+		if err != nil {
+			return fmt.Errorf("sink: read the signatures file: %w", err)
+		}
+		cr := reportFor(name)
+		if cr.Index == IndexOnly || cr.Index == IndexPending {
+			cr.OrphanSignatures += len(ids)
+			continue
+		}
+		cr.Anomaly = "removed"
+		cr.Problems = append(cr.Problems, "the signatures file holds record signatures for this chain, "+
+			"but the evidence file has no entries for it: the chain was REMOVED")
+	}
+	return nil
 }
 
 // Index problems, worded once.
@@ -284,8 +365,8 @@ func classOf(chain string) string {
 // verifyChain verifies one chain in two paged passes, never holding it whole:
 // the first counts it and finds its last erasure; the second walks it, binding
 // each checkpoint as the walk reaches its end, and checks each entry's content.
-func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secretsStore, f *folder,
-	chain string, keys anchor.KeySource, row IndexState) (ChainReport, error) {
+func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secretsStore, sig *signaturesStore,
+	rc *recordChecker, f *folder, chain string, keys anchor.KeySource, row IndexState) (ChainReport, error) {
 	cr := ChainReport{Chain: chain, Class: classOf(chain)}
 	anchors, problem, err := f.readAnchors(chain)
 	if err != nil {
@@ -344,7 +425,20 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		}
 	}
 
-	// Pass 2: walk, bind checkpoints, check content.
+	// The chain's signature rows, to tick off: those left are orphans.
+	sigUnmatched := map[string]bool{}
+	if sig != nil {
+		ids, err := sig.rowIDs(chain)
+		if err != nil {
+			return cr, fmt.Errorf("sink: read the signatures file: %w", err)
+		}
+		for _, id := range ids {
+			sigUnmatched[id] = true
+		}
+	}
+	var tally signatureTally
+
+	// Pass 2: walk, bind checkpoints, check content (and record signatures).
 	w := verify.NewWalker(verify.Options{MaxBreaks: 1})
 	var series *seriesCheck
 	if problem != "" {
@@ -354,7 +448,28 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 	}
 	i, prevSeq := 0, int64(0)
 	var contentErr error
+	// The STORED linkage, which the walker does not read (it links from the hash
+	// it computes): each entry's stored previous_hash must be the previous
+	// entry's chain hash, and a sink chain starts at sequence 0 with none. A
+	// record signature covers the stored previous_hash, so without this check
+	// a signed record could be spliced in, or the front cut off, with the
+	// keyless chain hashes recomputed (_75d review). The first break only.
+	prevChainHash, linkProblem, formatProblem := "", "", ""
 	err = forEachEntry(ctx, st, chain, func(e store.Entry) {
+		if linkProblem == "" {
+			switch {
+			case i == 0 && (e.GlobalSeq != 0 || e.PreviousHash != ""):
+				linkProblem = "links BROKEN: the chain does not start at sequence 0 with no previous_hash " +
+					"(entries were removed from the front)"
+			case i > 0 && e.PreviousHash != prevChainHash:
+				linkProblem = fmt.Sprintf("links BROKEN at entry %d: its stored previous_hash is not the "+
+					"previous entry's chain hash (an entry was replaced, or the hashes rewritten)", i)
+			}
+		}
+		prevChainHash = e.ChainHash
+		if formatProblem == "" && e.FormatVersion != chainformat.FormatV3 {
+			formatProblem = fmt.Sprintf("entry %d is not in chain format v3, which is all this sink writes", i)
+		}
 		ve := toVerifyEntry(e)
 		w.Add(ve)
 		if series != nil {
@@ -362,6 +477,10 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		}
 		if contentErr == nil {
 			contentErr = s.checkEntry(&cr, sec, ve, i, lastErasure, prevSeq, unmatched)
+		}
+		delete(sigUnmatched, e.EntryID)
+		if rc != nil && contentErr == nil {
+			contentErr = rc.check(&tally, sig, chain, e)
 		}
 		prevSeq = e.GlobalSeq
 		i++
@@ -373,6 +492,11 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		return cr, contentErr
 	}
 
+	for _, p := range []string{linkProblem, formatProblem} {
+		if p != "" {
+			cr.Problems = append(cr.Problems, p)
+		}
+	}
 	if res := w.Result(); len(res.Breaks) > 0 {
 		cr.Problems = append(cr.Problems, fmt.Sprintf("links BROKEN at entry %d: %s",
 			res.FirstBreak, res.Breaks[0].Type))
@@ -410,7 +534,175 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		cr.Problems = append(cr.Problems, fmt.Sprintf("%d stored rows under an entry id this sink never "+
 			"assigns; %s", odd, remedy(cr.Index)))
 	}
+
+	cr.OrphanSignatures = len(sigUnmatched)
+	if rc != nil {
+		tally.report(&cr)
+		// R6: a genuine erasure whose own record signature verified under record
+		// trust is authentic without a checkpoint, provided EVERYTHING else
+		// about the chain holds (content and nonces gone, index, nothing
+		// pending): the signature replaces only the checkpoint-coverage check.
+		// With record trust, no problem at all means every entry's signature
+		// verified, the erasure entry's included.
+		if cr.Index == IndexErasedUnanchored && endsErased && len(cr.Problems) == 0 {
+			cr.Index = IndexErased
+		}
+	}
 	return cr, nil
+}
+
+// VerifyOption configures one Verify call.
+type VerifyOption func(*verifyConfig)
+
+type verifyConfig struct {
+	recordTrust anchor.KeySource
+	err         error
+}
+
+// WithRecordTrust makes Verify check every entry's record signature against
+// the record keys src holds (docs/sink-format.md §9).
+//
+// # Description
+//
+// The verifier's policy, never the folder's: with record trust, EVERY entry
+// must carry a valid signature by a key src holds, whether or not the folder
+// says the sink signs. Each entry's envelope is rebuilt from the entry as
+// stored (its own previous_hash included) and must verify under the key its
+// row names, which must be exactly that key's id. Failures are counted per kind
+// (ChainReport.Unsigned, MalformedSignatures, UnknownKeySignatures,
+// BadSignatures) and reported as one line each. A genuine erasure whose own
+// signature verifies counts as erased without a checkpoint, when nothing else
+// about its chain fails.
+//
+// # Inputs
+//
+//   - src: the record keys. A separate source from the checkpoint keys:
+//     trusting a key for one never trusts it for the other. nil makes Verify
+//     fail.
+//
+// # Outputs
+//
+//   - VerifyOption: to pass to Verify
+//
+// # Example
+//
+//	ring, _ := anchor.NewKeyRing(anchor.TrustProvided, map[string][]byte{recordKeyID: recordPub})
+//	rep, err := s.Verify(ctx, checkpointKeys, sink.WithRecordTrust(ring))
+//
+// # Limitations
+//
+//   - ML-DSA-65 only (record.v1); the algorithm is never taken from the file.
+//   - About 30 µs per entry.
+//
+// # Assumptions
+//
+//   - src is safe for concurrent use. Each key id is looked up once per call.
+func WithRecordTrust(src anchor.KeySource) VerifyOption {
+	return func(c *verifyConfig) {
+		if src == nil {
+			c.err = errors.New("sink: WithRecordTrust needs a key source")
+			return
+		}
+		if v := reflect.ValueOf(src); v.Kind() == reflect.Pointer && v.IsNil() {
+			c.err = errors.New("sink: WithRecordTrust needs a key source (got a nil pointer)")
+			return
+		}
+		c.recordTrust = src
+	}
+}
+
+// recordChecker checks entries' record signatures, looking each key id up once.
+type recordChecker struct {
+	src  anchor.KeySource
+	keys map[string][]byte // key id → public key; nil: not trusted
+}
+
+// signatureTally counts one chain's signature results, and the first VALID
+// entry id of each failure kind (a crafted id is counted, never shown).
+type signatureTally struct {
+	signed                        int
+	unsigned, malformed, unknown  int
+	bad                           int
+	firstUnsigned, firstMalformed string
+	firstUnknown, firstBad        string
+}
+
+// check checks one entry's record signature, counting the result in t. An
+// error means the signatures file or the key source failed, not the signature.
+func (rc *recordChecker) check(t *signatureTally, sig *signaturesStore, chain string, e store.Entry) error {
+	first := func(dst *string) {
+		if *dst == "" && entryIDPattern.MatchString(e.EntryID) {
+			*dst = e.EntryID
+		}
+	}
+	if sig == nil {
+		t.unsigned++
+		first(&t.firstUnsigned)
+		return nil
+	}
+	row, found, malformed, err := sig.get(chain, e.EntryID)
+	switch {
+	case err != nil:
+		return fmt.Errorf("sink: read the signatures file: %w", err)
+	case !found:
+		t.unsigned++
+		first(&t.firstUnsigned)
+		return nil
+	case malformed:
+		t.malformed++
+		first(&t.firstMalformed)
+		return nil
+	}
+	pub, ok := rc.keys[row.keyID]
+	if !ok {
+		p, _, err := rc.src.PublicKey(row.keyID)
+		switch {
+		case errors.Is(err, anchor.ErrUnknownKeyID):
+			p = nil
+		case err != nil:
+			return fmt.Errorf("sink: look up record key %s: %w", row.keyID, err)
+		}
+		rc.keys[row.keyID] = p
+		pub = p
+	}
+	if pub == nil {
+		t.unknown++
+		first(&t.firstUnknown)
+		return nil
+	}
+	f := recordFields{chainID: chain, entryID: e.EntryID, entryType: e.EntryType, globalSeq: e.GlobalSeq,
+		prevHash: e.PreviousHash, timestamp: e.Timestamp, contentHash: e.ContentHash, keyID: row.keyID}
+	if err := verifyRecordSignature(pub, f, row.sig); err != nil {
+		t.bad++
+		first(&t.firstBad)
+		return nil
+	}
+	t.signed++
+	return nil
+}
+
+// report writes the tally into cr: the counts, and one problem line per kind.
+func (t signatureTally) report(cr *ChainReport) {
+	cr.Signed, cr.Unsigned, cr.MalformedSignatures = t.signed, t.unsigned, t.malformed
+	cr.UnknownKeySignatures, cr.BadSignatures = t.unknown, t.bad
+	line := func(n int, what, first string) {
+		if n == 0 {
+			return
+		}
+		subject := fmt.Sprintf("%d entries have", n)
+		if n == 1 {
+			subject = "1 entry has"
+		}
+		p := fmt.Sprintf("%s %s", subject, what)
+		if first != "" {
+			p += fmt.Sprintf(" (first: %s)", first)
+		}
+		cr.Problems = append(cr.Problems, p)
+	}
+	line(t.unsigned, "no record signature", t.firstUnsigned)
+	line(t.malformed, "a malformed record signature row", t.firstMalformed)
+	line(t.unknown, "a record signature by a key not trusted for records", t.firstUnknown)
+	line(t.bad, "a BAD record signature: the stored entry is not what was signed", t.firstBad)
 }
 
 // seriesCheck verifies a chain's checkpoint series during a single walk: each
@@ -500,8 +792,9 @@ func (c *seriesCheck) finish(total int) {
 func (s *Sink) checkEntry(cr *ChainReport, sec *secretsStore, e verify.Entry, i, lastErasure int,
 	prevSeq int64, unmatched map[string]bool) error {
 	if !entryIDPattern.MatchString(e.EntryID) {
-		cr.Problems = append(cr.Problems, fmt.Sprintf("entry %q has an id this sink never assigns; "+
-			"it was not read", e.EntryID))
+		// Never shown: a crafted id could hold anything, even a subject.
+		cr.Problems = append(cr.Problems, fmt.Sprintf("entry %d has an id this sink never assigns; "+
+			"it was not read", i))
 		return nil
 	}
 	delete(unmatched, e.EntryID)

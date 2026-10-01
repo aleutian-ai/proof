@@ -33,6 +33,10 @@
       "sha256": "e35abfff68f0aa5ad92e24b44924d4468e9238da06bc8fe1fab60daa7e6973b4",
       "bytes": 11683
     },
+    "record_v1_vectors.json": {
+      "sha256": "006c14db2956ccb2206953b2443994a2d7af6b4eb6e3932de2e55649f579892a",
+      "bytes": 34276
+    },
     "v3_golden_capture_request.json": {
       "sha256": "8c3d7add4cf6fe7c764d963ef59d764b8a314b9d708a22ddc48b9faab7bfedea",
       "bytes": 8554

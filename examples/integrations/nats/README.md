@@ -141,6 +141,12 @@ Ack before you erase.
 
 ## Notes
 
+- **Record signing (optional).** Set `PROOF_RECORD_KEY_FILE` to the PATH of a
+  record key (`proof keygen --alg ml-dsa-65`), never to the key itself, and the
+  consumer signs every record it commits; `run.sh` does, and verifies with
+  `proof sink verify --record-trust`. A sink that signs refuses a consumer
+  without the key (and the reverse): the consumer stops with a configuration
+  error instead of redelivering forever.
 - **Own module.** The NATS client must not enter proof's `go.mod`. This module
   is listed in the repo's `go.work`, and it pins proof to a commit until proof's
   next release.

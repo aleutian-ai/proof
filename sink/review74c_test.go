@@ -191,7 +191,7 @@ func TestEraseChain_AppendThatLandedKeepsTheRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := s.eraseChain(ctx, st, sec, appendLandedThenFailed{real: l}, chain)
+	res, err := s.eraseChain(ctx, st, sec, appendLandedThenFailed{real: l}, chain, presignOne(t, s, st, chain), nil)
 	sec.Close()
 	st.Close()
 	if err != nil {
@@ -252,7 +252,7 @@ func TestVerify_RowsOffTheKeyLayout(t *testing.T) {
 		if err := tx.Bucket(contentBucket).Put([]byte(chain), []byte(`{"user":"u-2","hidden":1}`)); err != nil {
 			return err
 		}
-		return tx.Bucket(noncesBucket).Put(secretKey(chain, "sink-"+strings.Repeat("9", 32)), make([]byte, 32))
+		return tx.Bucket(noncesBucket).Put(rowKey(chain, "sink-"+strings.Repeat("9", 32)), make([]byte, 32))
 	}); err != nil {
 		t.Fatal(err)
 	}

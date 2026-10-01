@@ -184,3 +184,41 @@ func AnchorV6Vectors() []byte { return anchorV6Vectors }
 //
 //   - []byte: the fixture JSON. Read-only; see the package Assumptions.
 func KeyIDVectors() []byte { return keyIDVectors }
+
+// recordV1Vectors holds the sink record-signing envelope vectors.
+//
+//go:embed testdata/record_v1_vectors.json
+var recordV1Vectors []byte
+
+// RecordV1Vectors returns the sink record-signing envelope vectors as raw JSON.
+//
+// # Description
+//
+// Each vector pairs the seven signed fields of an aleutian.proof.record.v1
+// envelope with the exact envelope bytes (hex) and their SHA-512. An
+// implementation builds the envelope from the fields and must produce those
+// bytes exactly: they are what an ML-DSA-65 record signature covers.
+//
+// # Provenance
+//
+// Computed independently in Python by scripts/independent-vectors.py, from
+// docs/sink-format.md alone, not by the Go encoder they test.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+//
+// # Example
+//
+//	var f struct{ Vectors []struct{ EnvelopeHex string `json:"envelope_hex"` } }
+//	err := json.Unmarshal(fixtures.RecordV1Vectors(), &f)
+//
+// # Limitations
+//
+//   - Envelope bytes only. ML-DSA-65 signatures over them are covered by the
+//     mldsa package's ACVP vectors, not here.
+//
+// # Assumptions
+//
+//   - None.
+func RecordV1Vectors() []byte { return recordV1Vectors }

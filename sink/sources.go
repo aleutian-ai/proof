@@ -50,7 +50,7 @@ func openSources(path string, lockTimeout time.Duration) (*sourcesStore, error) 
 		return nil, fmt.Errorf("sink: %w", err)
 	}
 	isNew := created(path)
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout})
+	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, false))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}

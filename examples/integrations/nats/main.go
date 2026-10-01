@@ -188,10 +188,11 @@ func publish(ctx context.Context, js jetstream.JetStream, prefix, field string, 
 // follow, until interrupted).
 func consume(ctx context.Context, js jetstream.JetStream, stream jetstream.Stream, r router, dir string,
 	ackWait time.Duration, follow bool, afterCommit func(), out, log io.Writer) error {
-	dst, err := sink.Open(dir)
+	dst, closeKey, err := openSink(dir)
 	if err != nil {
 		return err
 	}
+	defer closeKey()
 	// The stream's creation time names this incarnation of it. See message.Position.
 	info, err := stream.Info(ctx)
 	if err != nil {
@@ -237,7 +238,7 @@ func consume(ctx context.Context, js jetstream.JetStream, stream jetstream.Strea
 		total.duplicates += st.duplicates
 		total.refused += st.refused
 		if err != nil {
-			return err
+			return configurationError(err)
 		}
 	}
 	return nil

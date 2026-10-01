@@ -12,6 +12,7 @@ import (
 
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 
+	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/commitment"
 	"github.com/aleutian-ai/proof/linker"
 	"github.com/aleutian-ai/proof/store"
@@ -35,6 +36,11 @@ import (
 // commits. Everything written before it is preparatory.
 //
 // Entry ids and timestamps are assigned here, never taken from the records.
+// Every entry's chain hash is computed here first and pinned on the append
+// (linker ExpectChainHash): the entries land exactly where predicted, or not at
+// all. A sink opened WithRecordSigner also signs every record against that
+// prediction, verifies each signature, and writes them (evidence.db.signatures,
+// one durable transaction) before the append; a signer failure writes nothing.
 //
 // A record with a Source is committed at most once per chain, across calls and
 // crashes: its position is recorded (in evidence.db.sources) before the append,
@@ -45,7 +51,9 @@ import (
 //
 // # Inputs
 //
-//   - ctx: honoured by the append
+//   - ctx: honoured by record signing and the append. With a remote record
+//     signer, give it a deadline: the call holds the sink's files until every
+//     signature it started has returned.
 //   - records: 1 to MaxBatch records
 //
 // # Outputs
@@ -67,6 +75,9 @@ import (
 //     chain id that could not be minted). Records names that pair's records:
 //     set them aside and retry the rest.
 //   - ErrBusy: another process holds the folder.
+//   - ErrRecordSignerRequired, ErrSinkNotSigning: this Sink's signing does not
+//     match the sink's mode (WithRecordSigner). Configuration: do not retry.
+//   - A record signer failure: nothing was written; retry when it recovers.
 //   - Anything else: a write failed; retry the call.
 //
 // # Example
@@ -152,6 +163,12 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Outcome, error) 
 		return nil, err
 	}
 	defer subj.Close()
+	// The signing mode, before anything is written (docs/sink-format.md §9.2).
+	rs, closeRS, err := s.openRecordSigning(ctx, st)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRS()
 	l, err := linker.New(st)
 	if err != nil {
 		return nil, fmt.Errorf("sink: prepare the chains: %w", err)
@@ -224,7 +241,7 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Outcome, error) 
 		if s.wrapSecrets != nil {
 			sw = s.wrapSecrets(sec)
 		}
-		if err := s.commitPairs(ctx, ap, st, sw, pw, plans); err != nil {
+		if err := s.commitPairs(ctx, ap, st, sw, pw, rs, plans); err != nil {
 			if errors.Is(err, errUnknownOutcome) || errors.Is(err, errCleanupFailed) {
 				// Whether the append landed could not be checked, or this call's
 				// content could not be removed: keep the index rows, so that
@@ -384,16 +401,23 @@ type (
 )
 
 // commitPairs writes every pair's content and nonces (ONE durable
+// transaction), then, in a signing sink, their record signatures (ONE durable
 // transaction), then source positions (one transaction), then appends every
 // chain in ONE transaction: the commit point.
 //
-// Content and nonces are durable before any entry that commits to them exists.
-// If a later step fails, this call's content and nonce rows are removed (one
-// transaction), for EVERY pair. Positions are left: a position with no entry
+// Every entry's chain hash is computed here first, from its chain's tail, and
+// pinned (linker ExpectChainHash): the append writes exactly these entries at
+// exactly these positions, or nothing. In a signing sink each record is signed
+// against that prediction, and every signature is verified before anything is
+// written: a signer failure writes nothing at all.
+//
+// Content, nonces and signatures are durable before any entry that commits to
+// them exists. If a later step fails, this call's content, nonce and signature
+// rows are removed, for EVERY pair. Positions are left: a position with no entry
 // behind it is harmless, because the next Commit of that source checks the
 // chain and commits it.
 func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.Store,
-	sec secretsWriter, src positionWriter, plans []pairPlan) error {
+	sec secretsWriter, src positionWriter, rs *recordSigning, plans []pairPlan) error {
 	// One plan per chain: two pairs on one chain means a corrupt index. Refused
 	// before anything is written.
 	seenChain := make(map[string]bool, len(plans))
@@ -411,13 +435,15 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 	next := make([]int64, len(plans))
 	rows := map[string]map[string]secret{}
 	positions := map[string]map[string]position{}
+	var toSign []recordFields
 
 	for k, p := range plans {
-		// The sequence the chain's first new entry will get. Nothing else can
-		// append meanwhile: this process holds Sink.mu and the evidence file.
-		n := int64(0)
-		if _, tail, err := st.ReadTail(ctx, p.chain); err == nil {
-			n = tail + 1
+		// The sequence and previous hash of the chain's first new entry. Nothing
+		// else can append meanwhile: this process holds Sink.mu and the evidence
+		// file; and the append refuses anything else (ExpectChainHash).
+		n, prev := int64(0), ""
+		if tailHash, tail, err := st.ReadTail(ctx, p.chain); err == nil {
+			n, prev = tail+1, tailHash
 		} else if !errors.Is(err, store.ErrEmptyChain) {
 			return fmt.Errorf("chain %s: read tail: %w", p.chain, err)
 		}
@@ -438,8 +464,18 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 			}
 			rows[p.chain][id] = secret{content: content, nonce: nonce}
 			stamp := now.Add(time.Duration(i) * time.Microsecond)
+			seq := n + int64(i)
+			h, err := chainformat.ComputeChainHashV3(prev, seq, stamp, c)
+			if err != nil {
+				return fmt.Errorf("predict an entry's chain hash: %w", err)
+			}
 			inputs[i] = linker.Input{EntryID: id, EntryType: EntryTypeEvent,
-				Timestamp: stamp, ContentHash: c, IngestedAt: stamp}
+				Timestamp: stamp, ContentHash: c, IngestedAt: stamp, ExpectChainHash: h}
+			if rs != nil {
+				toSign = append(toSign, recordFields{chainID: p.chain, entryID: id, entryType: EntryTypeEvent,
+					globalSeq: seq, prevHash: prev, timestamp: stamp, contentHash: c})
+			}
+			prev = h
 			if r.Source != "" {
 				// Strictly increasing stamps keep the linker's arrival order equal
 				// to this order, so entry i lands at n+i.
@@ -452,9 +488,27 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 		batches[k] = linker.ChainInputs{ChainID: p.chain, Inputs: inputs}
 	}
 
-	// cleanup removes this call's content and nonce rows (one transaction). A
-	// failure is returned (joined): what it leaves is personal data, still
-	// erasable but not gone.
+	// Record signatures, every one verified under the call's key, BEFORE
+	// anything is written: a signer that fails, rotates or misbehaves leaves
+	// every file as it was.
+	var sigRows map[string]map[string]signatureRow
+	if rs != nil {
+		sigs, err := signAll(ctx, rs.signer, rs.key, rs.n, toSign)
+		if err != nil {
+			return fmt.Errorf("sign records: %w", err)
+		}
+		sigRows = map[string]map[string]signatureRow{}
+		for i, f := range toSign {
+			if sigRows[f.chainID] == nil {
+				sigRows[f.chainID] = map[string]signatureRow{}
+			}
+			sigRows[f.chainID][f.entryID] = signatureRow{keyID: rs.key.id, sig: sigs[i]}
+		}
+	}
+
+	// cleanup removes this call's content, nonce and signature rows (one
+	// transaction per file). A failure is returned (joined): what it leaves is
+	// still erasable, but not gone.
 	cleanup := func() error {
 		ids := map[string][]string{}
 		for chain, byEntry := range rows {
@@ -462,8 +516,17 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 				ids[chain] = append(ids[chain], id)
 			}
 		}
+		var errs []error
 		if err := sec.deleteRows(ids); err != nil {
-			return fmt.Errorf("cleanup: %w: %w", errCleanupFailed, err)
+			errs = append(errs, err)
+		}
+		if rs != nil {
+			if err := rs.writer.deleteRows(ids); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if len(errs) > 0 {
+			return fmt.Errorf("cleanup: %w: %w", errCleanupFailed, errors.Join(errs...))
 		}
 		return nil
 	}
@@ -476,6 +539,12 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 		// One transaction: nothing was written.
 		return fmt.Errorf("store content and nonces: %w", err)
 	}
+	// Signatures likewise (one transaction; the first sets the sink's mode).
+	if rs != nil {
+		if err := rs.writer.putAll(sigRows); err != nil {
+			return fail(fmt.Errorf("store record signatures: %w", err))
+		}
+	}
 	// Positions go down BEFORE the append. A position with no entry behind it is
 	// harmless: the next Commit of that source sees it is not on the chain. An
 	// entry with no position is the duplicate this exists to prevent.
@@ -484,7 +553,7 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 			return fail(fmt.Errorf("record sources: %w", err))
 		}
 	}
-	res, err := l.AppendChains(ctx, batches)
+	_, err := l.AppendChains(ctx, batches)
 	if err != nil {
 		// An error normally means the transaction rolled back. But a store can
 		// report an error after its commit reached the disk; deleting content
@@ -503,38 +572,15 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 		// the append, as predicted, so there is nothing to repair.
 		return nil
 	}
-	// A chain that landed at an unpredicted sequence: cannot happen while this
-	// process holds the file. If it ever does, the entries ARE committed, so this
-	// must not look like a failure (the caller would retry and commit twice).
-	// Re-record its positions from the actual sequence: the batch order is kept,
-	// so entry i is at FirstSeq+i.
-	fix := map[string]map[string]position{}
-	for k, p := range plans {
-		if len(positions[p.chain]) == 0 || res[k].FirstSeq == next[k] {
-			continue
-		}
-		fix[p.chain] = map[string]position{}
-		for i, r := range p.recs {
-			if r.Source != "" {
-				fix[p.chain][r.Source] = position{entryID: batches[k].Inputs[i].EntryID, seq: res[k].FirstSeq + int64(i)}
-			}
-		}
-	}
-	if len(fix) > 0 {
-		// The records ARE committed; reporting an error now would make the
-		// caller NAK them, and the redelivery would be committed again. So a
-		// failed correction is not an error: its only cost is that a later
-		// redelivery of these records (which an acknowledged batch does not
-		// get) would not be recognised. This path needs a sequence the file lock
-		// makes impossible AND a failed write.
-		_ = src.putAll(fix)
-	}
+	// Every entry's chain hash was pinned, so the entries are exactly where
+	// predicted: the positions recorded above are right.
 	return nil
 }
 
-// errCleanupFailed marks a failed call whose content and nonces could not be
-// removed: the index rows are kept, so the subject's erasure still reaches them.
-var errCleanupFailed = errors.New("this call's content and nonces could not be removed")
+// errCleanupFailed marks a failed call whose prepared rows (content and
+// nonces, or record signatures) could not be removed: the index rows are kept,
+// so the subject's erasure still reaches them.
+var errCleanupFailed = errors.New("this call's prepared rows could not be removed")
 
 // errUnknownOutcome marks an append whose error left it unclear whether it
 // landed: nothing is cleaned up, and nothing is unbound.

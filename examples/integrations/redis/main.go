@@ -131,9 +131,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	case "consume":
 		var dst *sink.Sink
-		if dst, err = sink.Open(*dir); err != nil {
+		var closeKey func()
+		if dst, closeKey, err = openSink(*dir); err != nil {
 			break
 		}
+		defer closeKey()
 		o := options{stream: *stream, class: *class, sourcePrefix: *stream + "@" + incarnation, batch: batch,
 			claimIdle: *claimIdle, follow: *follow}
 		if err = sourceFits(o.sourcePrefix); err != nil {
@@ -148,6 +150,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		c := redisClient{rdb: rdb, stream: *stream, consumer: *consumer}
 		var st stats
 		st, err = consume(ctx, c, dst, o, stderr)
+		err = configurationError(err)
 		fmt.Fprintf(stdout, "recovered from pending %d · committed %d · already committed %d · refused %d\n",
 			st.recovered, st.committed, st.duplicates, st.refused)
 		if st.vanished > 0 {

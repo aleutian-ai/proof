@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/linker"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
@@ -30,7 +31,11 @@ import (
 //  1. Check first: every one of the subject's chains can be erased (a valid id,
 //     readable to its end). If one cannot,
 //     the call refuses and nothing changes: the subject is never forgotten by an
-//     erasure already known to be stuck.
+//     erasure already known to be stuck. Then every erasure entry this call
+//     will append is decided (id, predicted chain hash, and ONE timestamp for
+//     the whole call: when it decided, not each append) and, in a sink opened
+//     WithRecordSigner, signed and verified: a signer failure refuses the
+//     call, and nothing changes.
 //  2. Forget: in ONE index transaction, delete the subject's forward rows and
 //     mark each of its chains pending erasure, a marker that holds no subject.
 //     From here, a new event for the subject gets a NEW chain; it can never
@@ -39,7 +44,7 @@ import (
 //     left: for each chain, a genuine erasure entry (unless the chain already
 //     ends with one), then its content and nonce rows and source positions go.
 //     A chain that fails stays pending and the others go on.
-//  4. Rewrite the secrets, sources and subject-index files, so the deleted
+//  4. Rewrite the secrets, sources, subject-index and signatures files, so the deleted
 //     values are gone from the live files and not left in free pages. Every
 //     call does this, so a rewrite an earlier call missed is always redone.
 //  5. Only then clear the erased chains' pending markers (and rewrite the
@@ -53,7 +58,8 @@ import (
 //
 // # Inputs
 //
-//   - ctx: honoured by each append
+//   - ctx: honoured by record signing and each append (give a remote record
+//     signer a deadline: the call holds the sink's files meanwhile)
 //   - subject: as committed; must pass ValidSubject (an empty subject is
 //     invalid; ResumeErasures is the call that erases no subject)
 //
@@ -64,10 +70,12 @@ import (
 //     nothing for the subject (never committed, or already erased).
 //   - error: nil means the erasure recovery invariant holds (ticket _69b):
 //     nothing of the subject in the index, every chain erased, every file
-//     rewritten. ErrInvalidSubject, or a plain error from a check before
+//     rewritten. ErrInvalidSubject, ErrRecordSignerRequired, ErrSinkNotSigning,
+//     a record signer failure, or a plain error from a check before
 //     forgetting: nothing changed. *ErasureIncompleteError: part done, and what
 //     is left is marked pending; ResumeErasures (or any later erasure) finishes
-//     it without re-linking the subject.
+//     it without re-linking the subject. Messages name no chain (the ids are in
+//     the result); never log those ids beside the subject.
 //
 // # Example
 //
@@ -96,7 +104,8 @@ func (s *Sink) EraseSubject(ctx context.Context, subject string) (SubjectErasure
 	if !ValidSubject(subject) {
 		return SubjectErasure{}, ErrInvalidSubject
 	}
-	return s.eraseSubject(ctx, subject, "", false)
+	res, err := s.eraseSubject(ctx, subject, "", false)
+	return res, redact(err)
 }
 
 // EraseSubjectClass erases one class of a subject's evidence and keeps the
@@ -120,7 +129,8 @@ func (s *Sink) EraseSubjectClass(ctx context.Context, subject, class string) (Su
 	if !ValidClass(class) {
 		return SubjectErasure{}, ErrInvalidClass
 	}
-	return s.eraseSubject(ctx, subject, class, false)
+	res, err := s.eraseSubject(ctx, subject, class, false)
+	return res, redact(err)
 }
 
 // ResumeErasures completes every erasure an earlier call started and did not
@@ -133,10 +143,13 @@ func (s *Sink) EraseSubjectClass(ctx context.Context, subject, class string) (Su
 //   - []EraseResult: the pending chains it completed
 //   - error: nil when nothing is left pending and every file was compacted;
 //     otherwise an *ErasureIncompleteError (safe to run again), or a plain
-//     error when the files could not be opened (nothing changed)
+//     error when the files could not be opened, the record signer failed, or
+//     the signing mode does not match (ErrRecordSignerRequired,
+//     ErrSinkNotSigning): nothing changed. Messages name no chain (the ids are
+//     in the results).
 func (s *Sink) ResumeErasures(ctx context.Context) ([]EraseResult, error) {
 	res, err := s.eraseSubject(ctx, "", "", true)
-	return res.Resumed, err
+	return res.Resumed, redact(err)
 }
 
 // eraseSubject does the work of the three public calls. With resumeOnly, subject
@@ -178,6 +191,12 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	if err != nil {
 		return out, fmt.Errorf("sink: prepare the chains: %w", err)
 	}
+	// The signing mode, before anything is written (docs/sink-format.md §9.2).
+	rs, closeRS, err := s.openRecordSigning(ctx, st)
+	if err != nil {
+		return out, err
+	}
+	defer closeRS()
 
 	if resumeOnly {
 		// A live row on a chain that ends with a genuine erasure (the index was
@@ -192,20 +211,33 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	if err != nil {
 		return out, fmt.Errorf("sink: read pending erasures: %w", err)
 	}
-	var mine []string
+	var mine, subjectChains []string
 	if !resumeOnly {
 		// 1. Check BEFORE forgetting that each of the subject's chains can be
 		// erased. A subject is never forgotten by an erasure already known to be
 		// stuck: the refusal changes nothing, and the subject stays findable.
-		chains, err := subj.chainsOf(subject, class)
+		subjectChains, err = subj.chainsOf(subject, class)
 		if err != nil {
 			return out, err
 		}
-		for _, chain := range chains {
+		for _, chain := range subjectChains {
 			if err := s.checkErasable(ctx, st, chain); err != nil {
 				return out, fmt.Errorf("%w; the subject was not forgotten and nothing was erased", err)
 			}
 		}
+	}
+	// 1b. Decide every erasure entry this call will write, and in a signing sink
+	// sign them all (each verified), BEFORE forgetting: a signer that fails
+	// leaves the subject findable and nothing written. (A resume has already
+	// turned relinked rows into pending ones; they stay pending, to be erased.)
+	pre, err := s.presignErasures(ctx, st, rs, append(append([]string(nil), earlier...), subjectChains...))
+	if err != nil {
+		if resumeOnly {
+			return out, fmt.Errorf("%w; nothing was erased", err)
+		}
+		return out, fmt.Errorf("%w; the subject was not forgotten and nothing was erased", err)
+	}
+	if !resumeOnly {
 		// 2. Forget the subject (one transaction).
 		if mine, err = subj.forget(subject, class); err != nil {
 			return out, fmt.Errorf("sink: forget the subject: %w; nothing was erased", err)
@@ -235,7 +267,11 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 					"mints (%q); the row was removed", chain))
 				continue
 			}
-			res, err := s.eraseChain(ctx, st, sec, l, chain)
+			var p *presigned
+			if v, ok := pre[chain]; ok {
+				p = &v
+			}
+			res, err := s.eraseChain(ctx, st, sec, l, chain, p, rs)
 			if err == nil {
 				// Its pending row is cleared only AFTER the files are rewritten
 				// (step 5): until then the erased values may still be in free
@@ -259,6 +295,7 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	secOpen = false
 	subj.Close()
 	subjOpen = false
+	closeRS()
 	incomplete.Compacted = true
 	for _, p := range []string{s.secretsPath(), s.sourcesPath(), s.subjectsPath()} {
 		if err := s.compact(p, s.lockTimeout); err != nil {
@@ -266,6 +303,14 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 			errs = append(errs, fmt.Errorf("sink: rewriting %s failed: %w; the deleted values may "+
 				"still be in its free pages", filepath.Base(p), err))
 		}
+	}
+	// The signatures file too: erasure never deletes a signature row, but rows a
+	// failed commit's cleanup deleted leave its free pages (absent: nothing to
+	// do). It holds no erased values, so a failure here is reported but does
+	// not keep erased chains pending.
+	if err := s.compact(s.signaturesPath(), s.lockTimeout); err != nil {
+		errs = append(errs, fmt.Errorf("sink: rewriting %s failed: %w; rows a failed commit removed "+
+			"may still be in its free pages (no erased values)", filepath.Base(s.signaturesPath()), err))
 	}
 	// 5. Only now that the deleted values are out of the live files: clear the
 	// erased chains' pending rows. If the rewrite failed, they stay pending, so
@@ -377,7 +422,7 @@ func (s *Sink) checkErasable(ctx context.Context, st *boltstore.Store, chain str
 //
 // It is idempotent, so a crash at any point is repaired by running it again.
 func (s *Sink) eraseChain(ctx context.Context, st *boltstore.Store, sec *secretsStore,
-	l oneAppender, chain string) (EraseResult, error) {
+	l oneAppender, chain string, pre *presigned, rs *recordSigning) (EraseResult, error) {
 	if !ValidChainID(chain) {
 		return EraseResult{}, fmt.Errorf("sink: the index holds a chain id this sink never mints (%q)", chain)
 	}
@@ -432,29 +477,65 @@ func (s *Sink) eraseChain(ctx context.Context, st *boltstore.Store, sec *secrets
 
 	id := lastErasureID
 	if !lastWasErasure {
-		// 1. The erasure goes on the record first: its record row (durable), then
-		// the entry.
-		if id, err = newEntryID(); err != nil {
-			return EraseResult{}, err
+		// 1. The erasure entry was decided (and in a signing sink signed) before
+		// the subject was forgotten, against this chain's tail. It goes on the
+		// record first: its record row and signature (durable), then the entry,
+		// pinned to the predicted chain hash.
+		if pre == nil {
+			return EraseResult{}, fmt.Errorf("sink: chain %s: no erasure entry could be prepared for it "+
+				"(unreadable, or its tail could not be hashed); it stays pending", chain)
 		}
-		record := erasureRecord(lastSeq)
-		if err := sec.putAll(map[string]map[string]secret{chain: {id: {content: record}}}); err != nil {
+		if pre.seq != lastSeq+1 {
+			return EraseResult{}, fmt.Errorf("sink: chain %s changed since its erasure entry was prepared; "+
+				"it stays pending", chain)
+		}
+		id = pre.id
+		if err := sec.putAll(map[string]map[string]secret{chain: {id: {content: pre.record}}}); err != nil {
 			return EraseResult{}, fmt.Errorf("sink: store the erasure record of %s: %w; chain %s was not erased",
 				chain, err, chain)
 		}
-		now := time.Now().UTC().Truncate(time.Microsecond)
-		_, err = l.Append(ctx, chain, []linker.Input{{EntryID: id, EntryType: EntryTypeErasure,
-			Timestamp: now, ContentHash: erasureHash(record), IngestedAt: now}})
-		if err != nil && !errors.Is(err, linker.ErrHeadStateStale) {
-			// A store can report an error after its commit reached the disk:
-			// only remove the record if the entry is really not on the chain.
-			rows, rerr := st.Range(ctx, chain, lastSeq+1, lastSeq+1, 1)
-			if rerr != nil || len(rows) != 1 || rows[0].EntryID != id {
-				_ = sec.deleteRows(map[string][]string{chain: {id}})
-				return EraseResult{}, fmt.Errorf("sink: record the erasure of %s: %w", chain, err)
+		// undo removes the record row and signature of an erasure entry that is
+		// known NOT to be on the chain. Its failures are returned: what it leaves
+		// is an orphan row (no personal data), but not silently.
+		undo := func() error {
+			var errs []error
+			if err := sec.deleteRows(map[string][]string{chain: {id}}); err != nil {
+				errs = append(errs, fmt.Errorf("remove the erasure record: %w", err))
+			}
+			if rs != nil {
+				if err := rs.writer.deleteRows(map[string][]string{chain: {id}}); err != nil {
+					errs = append(errs, fmt.Errorf("remove the erasure signature: %w", err))
+				}
+			}
+			return errors.Join(errs...)
+		}
+		if rs != nil {
+			if err := rs.writer.putAll(map[string]map[string]signatureRow{
+				chain: {id: {keyID: rs.key.id, sig: pre.sig}}}); err != nil {
+				return EraseResult{}, errors.Join(fmt.Errorf("sink: store the erasure signature of %s: %w; "+
+					"chain %s was not erased", chain, err, chain), undo())
 			}
 		}
-		keep[id] = record
+		_, err = l.Append(ctx, chain, []linker.Input{{EntryID: id, EntryType: EntryTypeErasure,
+			Timestamp: pre.stamp, ContentHash: erasureHash(pre.record), IngestedAt: pre.stamp,
+			ExpectChainHash: pre.hash}})
+		if err != nil && !errors.Is(err, linker.ErrHeadStateStale) {
+			// A store can report an error after its commit reached the disk:
+			// only remove the rows if the entry is PROVEN not on the chain. If
+			// that cannot be checked, keep them: deleting the signature of an
+			// entry that did land would leave it unsigned for good (a resume sees
+			// a genuine erasure and appends none). The chain stays pending.
+			rows, rerr := st.Range(ctx, chain, lastSeq+1, lastSeq+1, 1)
+			if rerr != nil {
+				return EraseResult{}, fmt.Errorf("sink: record the erasure of %s: %w; whether it landed "+
+					"could not be checked (%v), so its record and signature are kept; it stays pending",
+					chain, err, rerr)
+			}
+			if len(rows) != 1 || rows[0].EntryID != id {
+				return EraseResult{}, errors.Join(fmt.Errorf("sink: record the erasure of %s: %w", chain, err), undo())
+			}
+		}
+		keep[id] = pre.record
 	}
 
 	// 2. Nonces (without one, a commitment can never be opened) and content, in
@@ -471,6 +552,72 @@ func (s *Sink) eraseChain(ctx context.Context, st *boltstore.Store, sec *secrets
 			"source positions failed: %w", chain, err)
 	}
 	return EraseResult{Chain: chain, Events: events, ErasureEntryID: id}, nil
+}
+
+// presigned is an erasure entry decided, and in a signing sink signed, BEFORE
+// the subject is forgotten.
+type presigned struct {
+	id     string
+	seq    int64 // the erasure entry's sequence: the tail's + 1
+	stamp  time.Time
+	record []byte
+	hash   string // its chain hash, pinned on the append
+	sig    []byte // nil when the sink does not sign
+}
+
+// presignErasures decides the erasure entry of every chain in chains that will
+// get one (a valid id, readable entries, and not already ending with a genuine
+// erasure): its id, timestamp, record and predicted chain hash. In a signing
+// sink it signs them all, each verified under the call's key. It writes
+// nothing; on an error (a signer failure) the caller changes nothing.
+func (s *Sink) presignErasures(ctx context.Context, st *boltstore.Store, rs *recordSigning,
+	chains []string) (map[string]presigned, error) {
+	out := map[string]presigned{}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	var jobs []recordFields
+	for _, chain := range chains {
+		if _, done := out[chain]; done || !ValidChainID(chain) {
+			continue
+		}
+		// A chain that cannot be read gets no entry decided here: eraseChain then
+		// fails on it alone, and it stays pending while the others go on. (The
+		// subject's own chains were already checked readable.) Only a SIGNING
+		// failure stops the whole call.
+		tailHash, tailSeq, err := st.ReadTail(ctx, chain)
+		if err != nil {
+			continue // no entries (leftovers are removed), or unreadable
+		}
+		if erased, err := endsWithGenuineErasure(ctx, st, chain); err != nil || erased {
+			continue
+		}
+		id, err := newEntryID()
+		if err != nil {
+			return nil, err
+		}
+		record := erasureRecord(tailSeq)
+		c := erasureHash(record)
+		h, err := chainformat.ComputeChainHashV3(tailHash, tailSeq+1, now, c)
+		if err != nil {
+			continue // a malformed stored tail: eraseChain fails on this chain alone
+		}
+		out[chain] = presigned{id: id, seq: tailSeq + 1, stamp: now, record: record, hash: h}
+		if rs != nil {
+			jobs = append(jobs, recordFields{chainID: chain, entryID: id, entryType: EntryTypeErasure,
+				globalSeq: tailSeq + 1, prevHash: tailHash, timestamp: now, contentHash: c})
+		}
+	}
+	if len(jobs) > 0 {
+		sigs, err := signAll(ctx, rs.signer, rs.key, rs.n, jobs)
+		if err != nil {
+			return nil, fmt.Errorf("sink: sign the erasure entries: %w", err)
+		}
+		for i, j := range jobs {
+			p := out[j.chainID]
+			p.sig = sigs[i]
+			out[j.chainID] = p
+		}
+	}
+	return out, nil
 }
 
 // eraseLeftovers removes what a commit that never reached the chain left

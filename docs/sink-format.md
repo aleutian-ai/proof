@@ -16,6 +16,7 @@ needed to open, checkpoint and erase each chain on its own.
                                  and the erasure records          what opens their commitments
     evidence.db.sources          upstream positions              SECRET: links chains to upstream messages
     evidence.db.subjects         subject ↔ chain index           SECRET: the only link from a subject to its chains
+    evidence.db.signatures       record signatures (optional §9) shareable with evidence.db; still personal data (below)
     anchors/<chain>/NNNN.json    signed checkpoints              no event content; publish these (§5)
 ```
 
@@ -31,6 +32,22 @@ reveal:
   apart);
 - **that a chain was erased, and when** (the erasure entry, signed into the
   next checkpoint).
+
+**Erasure timestamps.** Every erasure entry one erase call writes (for the
+subject's chains, and for pending chains of earlier calls that it completes)
+carries the same timestamp: the moment the call decided them, before signing
+and forgetting, not each append's. Equal erasure timestamps therefore mean "the
+same call", which usually means the same subject.
+
+**A record signer is a processor.** In a signing sink (§9) every envelope (chain
+id, entry id and type, sequence, hashes, timestamp) goes to the record signer;
+for a remote one (a KMS), that service sees each commit and, as one burst, each
+erasure's chains. It sees nothing `evidence.db` does not hold.
+
+`evidence.db.signatures` (§9) reveals nothing beyond `evidence.db` except the
+record key ids, which show when keys were rotated and link sinks that share a
+record key. It may also hold rows for chain positions a failed or crashed
+commit never filled (§9.3).
 
 **Correlation leakage.** Erasure removes the stored subject→chain linkage, but
 historical timing may allow an observer to infer that multiple opaque chains
@@ -165,6 +182,14 @@ kept, and it stays known through them). In this order:
    erasable: a valid id, and readable to its end. If one is not, the call
    refuses and nothing changes: a subject is never forgotten by an erasure
    already known to be stuck.
+
+   Then **decide every erasure entry** this call will append (for this
+   subject's chains and every pending one): its id, timestamp (one for the
+   whole call: the decision time) and predicted chain hash; in a signing sink
+   (§9) sign each, verified. A signer failure refuses the call and changes
+   nothing. A chain that cannot be read or hashed gets no entry decided; it
+   fails alone in step 3 and stays pending. (Every call re-decides every
+   pending chain: a sink with many stuck chains signs them all, each call.)
 2. **Forget.** In ONE index transaction, delete the subject's forward rows in
    scope and turn each of their chains' reverse rows into the pending marker.
    From here, a new event for the subject gets a NEW chain: it can never rejoin
@@ -173,7 +198,9 @@ kept, and it stays known through them). In this order:
    interrupted call left. For each chain:
    1. **append a genuine erasure entry** (§2), unless the chain already ends
       with one, or has no entries (a first commit that never reached it: its
-      leftover files are removed instead);
+      leftover files are removed instead): its record row (and, signing, its
+      signature) durable first, then the entry, pinned to its predicted chain
+      hash, so a chain that moved since step 1 is refused and stays pending;
    2. **delete every nonce and every content row** of the chain, in one
       transaction, except the records of its genuine erasure entries, each kept
       only while it holds exactly its record. A genuine erasure entry whose
@@ -184,7 +211,7 @@ kept, and it stays known through them). In this order:
       erasure.
 
    A chain that fails stays pending, and the others go on.
-4. **Rewrite the secrets, sources and subject-index files** into fresh copies
+4. **Rewrite the secrets, sources, subject-index and signatures files** into fresh copies
    (fsync, atomic rename), on every erasure call that got past step 1, even
    when nothing was pending, and even when a chain failed: deleting a key in
    bbolt leaves its bytes in free pages, and a rewrite an earlier call failed or
@@ -201,7 +228,8 @@ The erasure entry is itself covered by the next checkpoint.
 
 **The recovery invariant.** When an erasure call succeeds: the index holds no
 row of the subject in scope; every chain it had there is erased as in step 3;
-every erasure pending when the call began is complete; and the three files were
+every erasure pending when the call began is complete; and the secrets, sources
+and subject-index files were
 rewritten after the last deletion. A pending marker is cleared only after that
 rewrite, so a chain that is not pending has no erased content in the live files.
 When a call fails (or crashes) after forgetting, the chains not finished,
@@ -211,7 +239,7 @@ erasure call, or a resume, completes them without re-linking the subject.
 
 ### 4.4 Resume
 
-**Resume** completes every pending erasure and rewrites the three files, naming
+**Resume** completes every pending erasure and rewrites the four files, naming
 no subject. It also repairs a **relinked** index: a consistent live row on a
 chain that ends with a genuine erasure (an index restored from before an
 erasure) is forgotten again (step 2 for that one row) and completed like any
@@ -299,13 +327,18 @@ checked on its own, and the index accounts for every chain:
    | state | evidence.db | index | problem? |
    |---|---|---|---|
    | `live` | entries | consistent live row | no |
-   | `erased` | ends with a genuine erasure that a verified checkpoint covers | no row | no |
+   | `erased` | ends with a genuine erasure that a verified checkpoint covers, **or** whose own record signature verifies under the record trust given (§9.4), the chain having no problem at all | no row | no |
    | `erased-unanchored` | ends with a genuine erasure no verified checkpoint covers yet | no row | no (normal right after an erasure; see below) |
    | `index-only` | no entries | consistent live row | no (the next commit of the pair uses it) |
    | `pending` | any | pending marker | **yes**: an erasure was interrupted; resume |
    | `unaccounted` | does not end with a genuine erasure | no row | **yes**: the index lost the chain, or another writer added it |
    | `relinked` | ends with a genuine erasure | consistent live row | **yes**: the index was restored from before an erasure, or edited; resume forgets it again (§4.4) |
    | `malformed` | any | a row failing §4.2's rule, in either direction (including a forward row whose chain is pending, bound to another pair, or absent) | **yes** |
+
+8. **Record signatures** (§9.4), when the verifier gives record trust; and,
+   always, signature rows for chains `evidence.db` does not hold (REMOVED
+   unless the index binds the chain or has it pending) and rows keyed off the
+   layout (by number).
 
    A verifier MUST NOT print an index key that is not a valid chain id, nor
    any forward-row key: either may hold a subject. It reports such rows by
@@ -332,12 +365,14 @@ ticket `_72`), not the files.
 **What verification cannot establish:**
 - that an entry's `entry_type` is what was written (it is bound by neither the
   chain nor the checkpoints; erasure records are protected by §2's domain
-  separation and the genuine-erasure rule, not by the chain);
+  separation and the genuine-erasure rule, not by the chain), unless record
+  signatures were checked (§9.4), which bind it;
 - that no checkpoint was deleted (a folder cannot vouch for its own
   completeness, so keep checkpoints where the writer cannot rewrite them);
 - that an erasure entry made after the last checkpoint is genuine, rather
   than appended by someone with write access: hence `erased-unanchored`
-  (checkpoint after erasing);
+  (checkpoint after erasing), unless its record signature verifies under the
+  record trust given;
 - which subject a chain belonged to once it is erased, by design.
 
 Steps 2 and 3 need only `evidence.db`, the checkpoints and a public key. Steps 4
@@ -374,7 +409,10 @@ reported committed, and treats a report whose length differs from its records as
 a failure (acknowledging nothing).
 
 **Commit point and atomicity.** A call's content and nonces are written first,
-in one durable transaction of the secrets file. The records are then committed
+in one durable transaction of the secrets file; in a signing sink, then its
+record signatures, in one durable transaction of the signatures file (§9). Every
+entry's chain hash is predicted and pinned: the append writes those entries at
+those positions, or nothing. The records are then committed
 by ONE transaction that appends every chain's entries and heads together: that
 transaction is the commit point. For ordinary returned errors, a call is
 all-or-none across its records: on any error no record is committed, and the
@@ -401,7 +439,7 @@ nonce rows and index-only rows; it does not read source positions.
 
 ## 8. The Go implementation's files (informative, not an interface)
 
-The four `evidence.db*` files are [bbolt](https://github.com/etcd-io/bbolt)
+The five `evidence.db*` files are [bbolt](https://github.com/etcd-io/bbolt)
 databases. They are this implementation's storage, documented so they can be
 inspected. They are **not** an interchange format: another language verifies an
 exported bundle, not these files.
@@ -414,15 +452,155 @@ exported bundle, not these files.
 | `evidence.db.sources` | `sources` | `chain ‖ 0x00 ‖ source` | `entry id ‖ BE uint64(seq)` |
 | `evidence.db.subjects` | `forward` | `subject ‖ 0x00 ‖ class` | chain id |
 | `evidence.db.subjects` | `reverse` | chain id | `class ‖ 0x00 ‖ subject`, or the pending marker `0x00 "pending-erasure"` |
+| `evidence.db.signatures` | `signatures`, `meta` | see §9.2 | see §9.2 |
 
 The pending marker cannot be mistaken for a live row: a live row starts with a
 class, which starts with `[a-z0-9]`.
 
 Each MUST be a regular file: bbolt follows a symlink and would write wherever it
-points. When a file is created, its folder is fsynced, so the file's name is as
+points. Each is opened with `O_NOFOLLOW` and checked to be a regular file on the
+opened handle, so a symlink swapped in after a check by name is still refused. When a file is created, its folder is fsynced, so the file's name is as
 durable as its contents. Every operation opens `evidence.db` first: writers with an exclusive
 lock, which is what serializes them (holding it, a writer opens the secret files
 in any order without deadlock); readers with a shared lock, so none can hold a
 secret file while a writer holds the evidence file. Each file is locked while an
 operation runs. One process at a time: calls on one `sink.Sink` queue, and
 anything else waits on the lock (and fails as busy after the lock timeout).
+
+## 9. Record signatures (optional)
+
+> Status: implemented. Commit and erase write record signatures in a signing
+> sink; Verify checks them when given record trust (§9.4).
+
+A sink MAY sign every record it writes with ML-DSA-65, under a **record key**
+separate from the checkpoint key (recommended, not required). A record
+signature says: *this signer assigned this record sequence N in chain X, after
+the entry whose chain hash is P*. Because `previous_hash` is signed, record
+signatures chain like the entries do.
+
+### 9.1 The envelope `aleutian.proof.record.v1`
+
+The exact bytes signed, with the **empty** ML-DSA context (the domain is in the
+message):
+
+```
+envelope = "aleutian.proof.record.v1" 0x00
+         ‖ field(0x01, chain_id)
+         ‖ field(0x02, entry_id)
+         ‖ field(0x03, entry_type)
+         ‖ field(0x04, global_seq)
+         ‖ field(0x05, previous_hash)
+         ‖ field(0x06, timestamp)
+         ‖ field(0x07, content_hash)
+         ‖ field(0x08, signing_key_id)
+
+field(tag, v) = tag (1 byte) ‖ length of v (uint32, big-endian) ‖ v
+```
+
+| Field | Value (ASCII) |
+|---|---|
+| `chain_id` | a chain id (§1) |
+| `entry_id` | an entry id this sink assigns: `sink-` + 32 lowercase hex |
+| `entry_type` | `sink.event` or `sink.erasure` |
+| `global_seq` | the entry's sequence, base-10 ASCII as in format-spec §2.1 |
+| `previous_hash` | the previous entry's chain hash, 128 lowercase hex; **empty exactly when `global_seq` is 0** |
+| `timestamp` | the entry's timestamp as in format-spec §4 (UTC, six digits, truncated); year 0001–9999 |
+| `content_hash` | the entry's `content_hash`: 128 lowercase hex |
+| `signing_key_id` | the signing key's id: format-spec key id, 32 lowercase hex |
+
+- All eight fields, in this order, exactly once; no other tags. Only
+  `previous_hash` may be empty, and only at `global_seq` 0. A signer MUST
+  refuse to sign, and a verifier MUST report as unverifiable, any value outside
+  this table.
+- The version is the domain string; there is no other version field.
+  **`record.v1` is ML-DSA-65 only.** A verifier MUST NOT take the algorithm from
+  the file, and MUST check that the public key it verifies with has exactly the
+  row's key id. A different algorithm needs a new domain string.
+- Vectors: `fixtures/testdata/record_v1_vectors.json`: envelopes computed
+  independently in Python from this section (including a timestamp formatted
+  from a nanosecond instant), field values that MUST be refused, and a pinned
+  deterministic signature (a regression value from proof's signer, not an
+  independent one).
+
+**Not bound, deliberately:** the content and the nonce (a signature must never
+help open erased content), and **which sink** the chain is in. A sink's chain
+ids are random, but a record key used for several sinks lets a whole chain be
+copied from one to another and still verify: use one record key per sink when
+sinks are shared with different parties (this also keeps key ids from linking
+sinks).
+
+### 9.2 The signatures file
+
+`evidence.db.signatures` is shareable with `evidence.db` and, like it,
+pseudonymous personal data:
+
+| Bucket | Key | Value |
+|---|---|---|
+| `signatures` | `chain ‖ 0x00 ‖ entry id` | key id (16 bytes) ‖ ML-DSA-65 signature (3309 bytes) |
+| `meta` | `record_signing` | `ml-dsa-65`: this sink signs its records |
+| `meta` | `record_key ‖ 0x00 ‖ key id` (hex) | empty: every record key the sink has signed with |
+
+- A writer MUST write a record's signature durably, in one transaction per
+  call, **before** the evidence transaction that commits the record (ordered
+  durability with fail-closed commit, as for content in §3; not atomicity
+  across the files), and MUST verify each signature before storing it. It MUST
+  refuse to append if a chain's tail is not the one the signatures were made
+  against.
+- A value that is not exactly 3325 bytes is malformed and MUST NOT be parsed.
+  A `record_signing` value other than `ml-dsa-65` is an error.
+- **The signing mode** is set by the first commit whose signatures were
+  *stored*, even if its append then fails, and never cleared (fail closed). A
+  signer failure stores nothing and sets nothing. The mode only guards the writer: whether signatures are
+  required is the verifier's policy (a trusted record key given), never read
+  from the folder, because anyone who can delete signatures can delete the mode.
+  A lost or deleted signatures file is therefore noticed only by a verifier
+  given a record key.
+- **Erasure** adds the signatures of its erasure entries and never deletes a
+  row: a signature covers a salted commitment whose nonce erasure deletes, and
+  keeps the erased chain verifiable. The file is rewritten (compacted) with the
+  other files on every erasure (§4.3 step 4), so rows a failed commit deleted
+  leave its free pages.
+- Opening a crafted signatures file with bbolt is parsing untrusted input with
+  a library that may panic on corruption, as for `evidence.db` (§6).
+
+### 9.3 What record signatures do not establish
+
+- **Truncation:** removing a chain's last entries and their signature rows
+  leaves every remaining signature valid. Checkpoints bound it.
+- **Signatures orphaned at the tail:** a failed or crashed commit (or erasure)
+  can leave signatures for positions that were later filled by other records,
+  or never. A failed k-record commit's orphans chain to each other. Because
+  `previous_hash` is signed, they can only stand in for a **trailing run** of
+  entries after truncating to where they begin: the truncation case above,
+  never a splice into the middle. That includes **reversing an erasure**:
+  orphaned event signatures at the erasure's position could replace it after
+  truncation, making the chain look never erased. A checkpoint over the
+  erasure (or `--record-trust` plus the index state) bounds it, as for any
+  truncation.
+- **A compromised record key** can sign anything until it is distrusted;
+  records a checkpoint covers stay pinned by the checkpoint key.
+
+### 9.4 Verifying record signatures
+
+The verifier decides whether record signatures are required, never the folder.
+
+- **Given record trust** (trusted record public keys, separate from the
+  checkpoint keys), EVERY entry MUST carry a valid signature, whatever the
+  folder says. For each entry: its signature row; the key its row names, which
+  MUST be one the verifier trusts **and** have exactly that key id; and the
+  envelope rebuilt **from the entry as stored**, including its own stored
+  `previous_hash`. Failures are reported per kind, each once per chain with its
+  count and the first entry id of this sink's shape (never a crafted id):
+  *no record signature*, *a malformed row*, *a key not trusted for records*,
+  *BAD: the stored entry is not what was signed*.
+- **Without record trust**, signatures are not checked, and a sink that signs
+  MUST be reported as such (`Record signatures: NOT CHECKED`): not a failure,
+  and never presented as verified.
+- **Orphan rows** (a signature matching no entry of its chain: a crash or a
+  failed cleanup) are counted as a note, not a problem: a folder cannot tell
+  them from a crash. See §9.3 for why that is not the same as harmless.
+- **R6.** A chain ending with a genuine erasure counts as `erased` without a
+  checkpoint when the erasure entry's own record signature verified under the
+  record trust given AND the chain has no problem at all (content and nonces
+  gone, index, nothing pending, every signature valid). The signature stands
+  in for the checkpoint's coverage only; it never establishes deletion.

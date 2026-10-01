@@ -255,6 +255,7 @@ func TestSignCanonical_BoundsItsInput(t *testing.T) {
 	for i := range oversized {
 		oversized[i] = 'x'
 	}
+	oversized[0] = '{'
 
 	_, _, err := SignCanonical(context.Background(), s, oversized)
 	if err == nil {
@@ -269,6 +270,7 @@ func TestSignCanonical_BoundsItsInput(t *testing.T) {
 	for i := range atLimit {
 		atLimit[i] = 'x'
 	}
+	atLimit[0] = '{'
 	if _, _, err := SignCanonical(context.Background(), s, atLimit); err != nil {
 		t.Errorf("a canonical input exactly at the limit was refused: %v", err)
 	}
@@ -492,4 +494,16 @@ func mustAdapt(t *testing.T, s crypto.Signer) ContextSigner {
 		t.Fatalf("FromCryptoSigner: %v", err)
 	}
 	return cs
+}
+
+// TestSignCanonical_RefusesWhatIsNotAnchorJSON: a record envelope, or any bytes
+// that are not canonical JSON, never get a checkpoint-path signature, even when
+// one key does both jobs.
+func TestSignCanonical_RefusesWhatIsNotAnchorJSON(t *testing.T) {
+	s := newTestSigner(t)
+	for _, msg := range [][]byte{[]byte("aleutian.proof.record.v1\x00\x01"), []byte("x"), []byte(" {}")} {
+		if _, _, err := SignCanonical(context.Background(), s, msg); err == nil {
+			t.Errorf("signed %q", msg)
+		}
+	}
 }

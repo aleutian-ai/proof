@@ -50,16 +50,21 @@ func (e *RecordError) Unwrap() error { return e.Err }
 // later erasure, completes them and compacts again, without ever re-linking a
 // subject. It is safe to retry.
 //
-// The message counts; it never names the subject. The wrapped Err names chain
-// ids (opaque) for diagnosis.
+// The message counts; it never names the subject, and the erase calls return
+// it with every chain id in the message replaced (as Commit does): logged next
+// to the subject, a chain id would re-create the secret link. Pending (and the
+// SubjectErasure's chains) carry the ids, for a caller that needs them; never
+// log them beside the subject.
 type ErasureIncompleteError struct {
 	// Forgotten is true when this call removed the subject's rows from the
 	// index: the subject is no longer linked to any chain there.
 	Forgotten bool
 	// Pending are the chains whose erasure is still incomplete.
 	Pending []string
-	// Compacted is true when all three secret files (secrets, sources,
-	// subjects) were rewritten after the last deletion.
+	// Compacted is true when the files erased values live in (secrets,
+	// sources, subjects) were rewritten after the last deletion. The signatures
+	// file holds no erased values; a failure to rewrite it is reported in Err
+	// but does not clear Compacted.
 	Compacted bool
 	// Err joins every failure.
 	Err error
@@ -67,12 +72,22 @@ type ErasureIncompleteError struct {
 
 func (e *ErasureIncompleteError) Error() string {
 	return fmt.Sprintf("sink: erasure incomplete (subject forgotten: %t; %d chains pending; "+
-		"secret files compacted: %t); run erase --resume to finish: %v",
+		"files compacted: %t); run erase --resume to finish: %v",
 		e.Forgotten, len(e.Pending), e.Compacted, e.Err)
 }
 
 // Unwrap returns the joined failures.
 func (e *ErasureIncompleteError) Unwrap() error { return e.Err }
+
+// ErrRecordSignerRequired: this sink signs its records (a commit's record
+// signatures were stored), and this Sink was opened without WithRecordSigner.
+// Nothing was written. A configuration error: retrying will not help.
+var ErrRecordSignerRequired = errors.New("sink: this sink signs its records; open it with WithRecordSigner")
+
+// ErrSinkNotSigning: this Sink was opened WithRecordSigner, but the sink already
+// holds unsigned entries, and a sink's signing mode is fixed from its first
+// entry. Nothing was written. A configuration error: retrying will not help.
+var ErrSinkNotSigning = errors.New("sink: this sink already holds unsigned entries; it cannot start signing")
 
 // busy maps the store's and bbolt's lock timeouts to ErrBusy, keeping the
 // original error in the chain.

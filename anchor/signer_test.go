@@ -240,7 +240,7 @@ func TestSigner_SeedIsCopied(t *testing.T) {
 // hand to code written for RSA or ECDSA, where passing a digest is correct.
 func TestSigner_RefusesPreHashedInput(t *testing.T) {
 	s := newTestSigner(t)
-	digest := sha256.Sum256([]byte("canonical"))
+	digest := sha256.Sum256([]byte(`{"canonical":1}`))
 
 	_, err := s.Sign(nil, digest[:], crypto.SHA256)
 	if !errors.Is(err, ErrPreHashed) {
@@ -463,7 +463,7 @@ func TestSignCanonical_RejectsMalformedSigners(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FromCryptoSigner: %v", err)
 			}
-			_, _, err = SignCanonical(context.Background(), cs, []byte("canonical"))
+			_, _, err = SignCanonical(context.Background(), cs, []byte(`{"canonical":1}`))
 			if err == nil {
 				t.Fatal("expected a refusal, got nil")
 			}
@@ -489,7 +489,7 @@ func TestSignCanonical_ValidatesItsOwnArguments(t *testing.T) {
 // declare one key and sign with another.
 func TestSignCanonical_KeyIDComesFromTheSigningKey(t *testing.T) {
 	s := newTestSigner(t)
-	_, keyID, err := SignCanonical(context.Background(), s, []byte("canonical"))
+	_, keyID, err := SignCanonical(context.Background(), s, []byte(`{"canonical":1}`))
 	if err != nil {
 		t.Fatalf("SignCanonical: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestSignCanonical_KeyIDComesFromTheSigningKey(t *testing.T) {
 		t.Fatalf("NewMLDSA65Signer: %v", err)
 	}
 	defer other.Close()
-	_, otherID, err := SignCanonical(context.Background(), other, []byte("canonical"))
+	_, otherID, err := SignCanonical(context.Background(), other, []byte(`{"canonical":1}`))
 	if err != nil {
 		t.Fatalf("SignCanonical: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestSignCanonical_ThroughAForeignWellBehavedSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromCryptoSigner: %v", err)
 	}
-	sig, keyID, err := SignCanonical(context.Background(), cs, []byte("canonical"))
+	sig, keyID, err := SignCanonical(context.Background(), cs, []byte(`{"canonical":1}`))
 	if err != nil {
 		t.Fatalf("SignCanonical: %v", err)
 	}

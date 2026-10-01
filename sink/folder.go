@@ -14,6 +14,9 @@ import (
 	"sort"
 	"strconv"
 	"syscall"
+	"time"
+
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/aleutian-ai/proof/anchor"
 )
@@ -276,9 +279,47 @@ func orMissing(problem string, missing bool) string {
 	return problem
 }
 
+// afterRegularCheck runs at the end of regularOrAbsent. A variable only so a
+// test can swap a symlink in exactly the window between the check and bbolt's
+// open: the swap boltOptions' opener must catch.
+var afterRegularCheck func(path string)
+
+// boltOptions are the options every bbolt file of the sink is opened with: the
+// lock timeout, and an opener that never follows a symlink and refuses anything
+// but a regular file ON THE OPENED HANDLE. regularOrAbsent checks by name first
+// (for a clear message); this closes the window between that check and the
+// open, in which a symlink could be swapped in.
+func boltOptions(lockTimeout time.Duration, readOnly bool) *bolt.Options {
+	return &bolt.Options{Timeout: lockTimeout, ReadOnly: readOnly, OpenFile: openRegularNoFollow}
+}
+
+// openRegularNoFollow is os.OpenFile with O_NOFOLLOW (a symlink fails to open)
+// and O_NONBLOCK (a FIFO cannot hang it; no effect on a regular file), then a
+// check that what was opened is a regular file.
+func openRegularNoFollow(path string, flag int, mode os.FileMode) (*os.File, error) {
+	f, err := os.OpenFile(path, flag|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, mode)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w (a symlink is never followed)", filepath.Base(path), err)
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("%s is not a regular file; refusing to open it", filepath.Base(path))
+	}
+	return f, nil
+}
+
 // regularOrAbsent refuses a bbolt file path that exists but is not a regular
-// file: bbolt would follow a symlink and write wherever it points.
+// file: bbolt would follow a symlink and write wherever it points. The opener
+// in boltOptions re-checks on the handle.
 func regularOrAbsent(path string) error {
+	if afterRegularCheck != nil {
+		defer afterRegularCheck(path)
+	}
 	fi, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

@@ -477,6 +477,51 @@ else
     bad "proof sink failed:"; detail "$WORK/log6"
 fi
 
+# ------------------------------------- 8. sink: record signing (opt-in)
+# Every record signed with its own ML-DSA-65 key (docs/sink-format.md §9); the
+# verifier, not the folder, decides whether signatures are required.
+step "proof sink: record signing, verified with --record-trust (${IMAGE})"
+if podman run --rm -v "$REPO_ROOT:/src:ro" "$IMAGE" sh -c '
+set -e
+cp -r /src /work && cd /work
+go build -o /usr/local/bin/proof ./cmd/proof
+cd /tmp
+proof keygen --alg ml-dsa-65 --out-dir cp >/dev/null
+proof keygen --alg ml-dsa-65 --out-dir rec >/dev/null
+proof keygen --alg ml-dsa-65 --out-dir other >/dev/null
+printf "%s\n" "{\"user\":\"u-81\",\"e\":1}" "{\"user\":\"u-82\",\"e\":2}" "{\"user\":\"u-81\",\"e\":3}" > ev.jsonl
+proof sink commit --class events --subject-field user --record-key rec/ml-dsa-65-private.pem < ev.jsonl >/dev/null
+# A signing sink refuses a writer without the record key: exit 2, not a retryable error.
+rc=0; proof sink commit --class events --subject-field user < ev.jsonl 2>/dev/null || rc=$?
+[ "$rc" -eq 2 ] || { echo "UNSIGNED COMMIT ON A SIGNING SINK: exit $rc" >&2; exit 1; }
+# Without record trust: passes, and says NOT CHECKED.
+out=$(proof sink verify --key cp/ml-dsa-65-public.pem)
+echo "$out" | grep -q "all 2 chains verify"
+echo "$out" | grep -q "^Record signatures: NOT CHECKED"
+# With it: every record signed.
+out=$(proof sink verify --key cp/ml-dsa-65-public.pem --record-trust rec/ml-dsa-65-public.pem)
+echo "$out" | grep -q "all 2 chains verify"
+[ "$(echo "$out" | grep -c " signed")" -eq 2 ] || { echo "$out" >&2; exit 1; }
+# The wrong record key: every record fails.
+rc=0; out=$(proof sink verify --key cp/ml-dsa-65-public.pem --record-trust other/ml-dsa-65-public.pem) || rc=$?
+[ "$rc" -eq 1 ] && echo "$out" | grep -q "not trusted for records" || { echo "WRONG RECORD KEY PASSED" >&2; exit 1; }
+# A signed erasure is erased without waiting for a checkpoint.
+proof sink erase --subject u-81 --record-key rec/ml-dsa-65-private.pem >/dev/null
+out=$(proof sink verify --key cp/ml-dsa-65-public.pem --record-trust rec/ml-dsa-65-public.pem)
+echo "$out" | grep -q "all 2 chains verify"
+echo "$out" | grep -q "signed · subject erased$" || { echo "$out" >&2; exit 1; }
+# One key for both jobs: warned, not refused.
+proof sink checkpoint --key rec/ml-dsa-65-private.pem 2> cp.err >/dev/null
+grep -q "also signs this sink" cp.err || { echo "NO WARNING FOR A SHARED KEY" >&2; exit 1; }
+' >"$WORK/log7" 2>&1; then
+    ok "every record signed; a writer without the record key is refused (exit 2)"
+    ok "verify without --record-trust passes and says NOT CHECKED; with it, every record is checked"
+    ok "the wrong record key fails every record; a signed erasure verifies as erased"
+    ok "a checkpoint key that also signs records is warned about, not refused"
+else
+    bad "record signing failed:"; detail "$WORK/log7"
+fi
+
 echo
 if [[ "$FAILED" -gt 0 ]]; then
     echo "${RED}${FAILED} check(s) failed.${NC}"

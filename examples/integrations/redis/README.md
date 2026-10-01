@@ -168,6 +168,12 @@ erasure, to the user's NEW chain (the old one is forgotten). Drain, then erase.
 
 ## Notes
 
+- **Record signing (optional).** Set `PROOF_RECORD_KEY_FILE` to the PATH of a
+  record key (`proof keygen --alg ml-dsa-65`), never to the key itself, and the
+  consumer signs every record it commits; `run.sh` does, and verifies with
+  `proof sink verify --record-trust`. A sink that signs refuses a consumer
+  without the key (and the reverse): the consumer stops with a configuration
+  error instead of redelivering forever.
 - **One stream with a `key` field,** not a stream per key. `XREADGROUP` needs
   every stream named explicitly, so a stream per key would mean scanning the
   whole keyspace for new ones. Chains are still one per user (per class).

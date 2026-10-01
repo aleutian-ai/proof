@@ -52,6 +52,12 @@ URL="nats://127.0.0.1:$PORT"
 
 cd "$WORK"
 proof keygen --alg ml-dsa-65 --out-dir keys >/dev/null
+# A SEPARATE key signs every record (docs/sink-format.md §9): the consumer
+# holds it online; the checkpoint key above stays with the checkpoint step. The
+# consumer is given the key's FILE, never the key itself.
+proof keygen --alg ml-dsa-65 --out-dir record-keys >/dev/null
+export PROOF_RECORD_KEY_FILE="$WORK/record-keys/ml-dsa-65-private.pem"
+RT="--record-trust record-keys/ml-dsa-65-public.pem"
 cat > events.jsonl <<'EOF'
 {"user":"u-81","event":"login"}
 {"user":"u-82","event":"login"}
@@ -85,19 +91,23 @@ echo "$out" | grep -q "committed 0 · already committed (redelivered) 6" \
 
 say "checkpoint and verify: exactly 6 entries"
 show proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
-out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem)"
-printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem\n%s\n' "$out"
+out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem $RT)"
+printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem %s\n%s\n' "$RT" "$out"
 echo "$out" | grep -q "all 3 chains verify" || exit 1
+echo "$out" | grep -q "Record signatures: checked" || { echo "RECORD SIGNATURES WERE NOT CHECKED" >&2; exit 1; }
 total=$(echo "$out" | sed -n 's/.* \([0-9]*\) entr[a-z]*:.*/\1/p' | paste -sd+ - | bc)
 [ "$total" -eq 6 ] || { echo "expected 6 entries in total, found $total" >&2; exit 1; }
 
 say "erase one user: their chain says so, and no output names them"
-out="$(proof sink erase --dir sink-data --subject u-81)"
-printf '$ proof sink erase --dir sink-data --subject u-81\n%s\n' "$out"
+out="$(proof sink erase --dir sink-data --subject u-81 --record-key record-keys/ml-dsa-65-private.pem)"
+printf '$ proof sink erase --dir sink-data --subject u-81 --record-key record-keys/ml-dsa-65-private.pem\n%s\n' "$out"
 if grep -q "u-81" <<<"$out"; then echo "ERASE OUTPUT NAMES THE SUBJECT" >&2; exit 1; fi
-out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem)"
-printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem\n%s\n' "$out"
+out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem $RT)"
+printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem %s\n%s\n' "$RT" "$out"
 echo "$out" | grep -q "all 3 chains verify" || exit 1
-echo "$out" | grep -q "subject erased (not yet checkpointed)" || { echo "NO ERASED CHAIN" >&2; exit 1; }
+echo "$out" | grep -q "Record signatures: checked" || { echo "RECORD SIGNATURES WERE NOT CHECKED" >&2; exit 1; }
+# Its erasure entry is signed by the record key, so with --record-trust it is
+# erased without waiting for a checkpoint (docs/sink-format.md §9, R6).
+echo "$out" | grep -q "signed · subject erased$" || { echo "NO SIGNED ERASED CHAIN" >&2; exit 1; }
 
 say "done: nothing lost, nothing committed twice, the name was refused, one user erased"

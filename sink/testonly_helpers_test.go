@@ -6,6 +6,7 @@ package sink
 import (
 	"context"
 	"fmt"
+	"testing"
 
 	bolt "go.etcd.io/bbolt"
 
@@ -52,4 +53,19 @@ func (s *subjectsStore) bind(subject, class, chain string) error {
 // putBatch records positions for one chain in one transaction.
 func (s *sourcesStore) putBatch(chain string, positions map[string]position) error {
 	return s.putAll(map[string]map[string]position{chain: positions})
+}
+
+// presignOne decides (unsigned) the erasure entry of one chain, as eraseSubject
+// does before forgetting, for tests that call eraseChain directly. Nil when the
+// chain gets no new entry.
+func presignOne(t *testing.T, s *Sink, st *boltstore.Store, chain string) *presigned {
+	t.Helper()
+	pre, err := s.presignErasures(context.Background(), st, nil, []string{chain})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := pre[chain]; ok {
+		return &p
+	}
+	return nil
 }

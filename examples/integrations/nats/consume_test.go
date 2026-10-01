@@ -309,3 +309,24 @@ func TestOutcomeCountMismatch(t *testing.T) {
 		t.Fatalf("err %v, states %q %q; want an error and both NAKed", err, a.state, b.state)
 	}
 }
+
+// configSink refuses every commit as a signing-mode mismatch.
+type configSink struct{ err error }
+
+func (s configSink) Commit(context.Context, []sink.Record) ([]sink.Outcome, error) {
+	return nil, s.err
+}
+
+// TestConfigurationErrorDoesNotNak: a signing-mode mismatch stops the batch
+// WITHOUT a NAK (an immediate redelivery would only loop); the messages stay
+// unacknowledged for a consumer that is configured right.
+func TestConfigurationErrorDoesNotNak(t *testing.T) {
+	for _, e := range []error{sink.ErrRecordSignerRequired, sink.ErrSinkNotSigning} {
+		h := newHarness(t)
+		a := h.msg("evidence.u-81", 1)
+		_, err := processBatch(context.Background(), configSink{e}, r, asMessages(a), nil, &bytes.Buffer{})
+		if !errors.Is(err, e) || a.state != "" {
+			t.Fatalf("err %v, state %q; want the error and the message left unsettled", err, a.state)
+		}
+	}
+}

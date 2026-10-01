@@ -141,6 +141,13 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 	}
 
 	out, err := dst.Commit(ctx, recs)
+	if errors.Is(err, sink.ErrRecordSignerRequired) || errors.Is(err, sink.ErrSinkNotSigning) {
+		// A configuration error: every batch would fail alike. Stop without a
+		// NAK (an immediate redelivery would only loop); the messages stay
+		// unacknowledged, and come back after the ack deadline to a consumer
+		// that is configured right.
+		return st, err
+	}
 	if out != nil && len(out) != len(recs) {
 		// Not the one-per-record contract: nothing can be matched to a message,
 		// so nothing is acked; everything is redelivered and recognised.

@@ -263,8 +263,9 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 					incomplete.Pending = append(incomplete.Pending, chain)
 					continue
 				}
-				errs = append(errs, fmt.Errorf("sink: a pending index row held an id this sink never "+
-					"mints (%q); the row was removed", chain))
+				// Never shown: a crafted key could hold anything, even a subject.
+				errs = append(errs, errors.New("sink: a pending index row held an id this sink never "+
+					"mints; the row was removed"))
 				continue
 			}
 			var p *presigned
@@ -410,7 +411,7 @@ func endsWithGenuineErasure(ctx context.Context, st *boltstore.Store, chain stri
 // anything: a valid id, and a chain that can be read to its end.
 func (s *Sink) checkErasable(ctx context.Context, st *boltstore.Store, chain string) error {
 	if !ValidChainID(chain) {
-		return fmt.Errorf("sink: the index holds a chain id this sink never mints (%q)", chain)
+		return errors.New("sink: the index holds a chain id this sink never mints (not shown)")
 	}
 	return forEachEntry(ctx, st, chain, func(store.Entry) {})
 }
@@ -424,7 +425,7 @@ func (s *Sink) checkErasable(ctx context.Context, st *boltstore.Store, chain str
 func (s *Sink) eraseChain(ctx context.Context, st *boltstore.Store, sec *secretsStore,
 	l oneAppender, chain string, pre *presigned, rs *recordSigning) (EraseResult, error) {
 	if !ValidChainID(chain) {
-		return EraseResult{}, fmt.Errorf("sink: the index holds a chain id this sink never mints (%q)", chain)
+		return EraseResult{}, errors.New("sink: the index holds a chain id this sink never mints (not shown)")
 	}
 	// One pass, in pages: the tail's sequence, the erasure records to keep, the
 	// entries since the last erasure, and whether the chain already ends with one.
@@ -467,10 +468,19 @@ func (s *Sink) eraseChain(ctx context.Context, st *boltstore.Store, sec *secrets
 		// Nothing reached the chain, but a first commit that stopped before its
 		// append can have left content, nonces and positions behind. They are
 		// still personal data: remove them. No erasure entry: there is no chain
-		// to put it on.
+		// to put it on. Its signature rows go too: with no entries, no
+		// signature has to survive, and left behind they would make the chain
+		// look REMOVED once its index row is cleared.
 		n, err := s.eraseLeftovers(sec, chain)
 		if err != nil {
 			return EraseResult{}, err
+		}
+		if rs != nil {
+			m, err := rs.store.deleteChain(chain)
+			if err != nil {
+				return EraseResult{}, fmt.Errorf("sink: chain %s: remove a first commit's signatures: %w", chain, err)
+			}
+			n += m
 		}
 		return EraseResult{Chain: chain, Leftovers: n}, nil
 	}

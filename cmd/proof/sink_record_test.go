@@ -4,6 +4,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,13 +64,15 @@ func TestSink_RecordSigning(t *testing.T) {
 		t.Fatalf("verify after a signed erase: exit %d\n%s", code, out)
 	}
 
-	// R7: a checkpoint signed with the record key warns, and goes on.
-	code, _, errs = sinkRun(t, "", "checkpoint", "--dir", dir, "--key", recPriv)
+	// R7: a separate checkpoint key is not warned about, on this signing sink.
+	code, _, errs = sinkRun(t, "", "checkpoint", "--dir", dir, "--key", cpPriv)
+	if code != exitOK || strings.Contains(errs, "also signs") {
+		t.Fatalf("checkpoint with a separate key: exit %d\n%s", code, errs)
+	}
+	// One signed with the record key warns, and goes on.
+	code, _, errs = sinkRun(t, "", "checkpoint", "--dir", dir, "--key", recPriv, "--trust", cpPub)
 	if code != exitOK || !strings.Contains(errs, "also signs this sink's records") {
 		t.Fatalf("checkpoint with the record key: exit %d\n%s", code, errs)
-	}
-	if code, _, errs := sinkRun(t, "", "checkpoint", "--dir", t.TempDir(), "--key", cpPriv); strings.Contains(errs, "also signs") {
-		t.Fatalf("a separate checkpoint key was warned about: exit %d\n%s", code, errs)
 	}
 }
 
@@ -84,5 +87,24 @@ func TestSink_RecordKeyOnAnUnsignedSink(t *testing.T) {
 	code, _, errs := sinkRun(t, ev, "commit", "--dir", dir, "--class", "events", "--subject-field", "user", "--record-key", recPriv)
 	if code != exitUsage || !strings.Contains(errs, "cannot start signing") {
 		t.Fatalf("exit %d\n%s", code, errs)
+	}
+}
+
+// #11, #12: a group-readable record key, and one key given as both checkpoint
+// and record trust, are warned about.
+func TestSink_RecordKeyWarnings(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sink")
+	recPriv, recPub := sinkKeys(t)
+	if err := os.Chmod(recPriv, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	ev := "{\"user\":\"u-81\"}\n"
+	code, _, errs := sinkRun(t, ev, "commit", "--dir", dir, "--class", "events", "--subject-field", "user", "--record-key", recPriv)
+	if code != exitOK || !strings.Contains(errs, "readable by others") {
+		t.Fatalf("exit %d\n%s", code, errs)
+	}
+	_, _, errs = sinkRun(t, "", "verify", "--dir", dir, "--key", recPub, "--record-trust", recPub)
+	if !strings.Contains(errs, "same key is given for checkpoints") {
+		t.Fatalf("no same-key warning:\n%s", errs)
 	}
 }

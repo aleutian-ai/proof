@@ -48,6 +48,11 @@ var (
 	metaRecordKey     = []byte("record_key\x00")
 )
 
+// errNotSignaturesFile marks a signatures file that is not one this sink
+// writes: a bucket missing, or a signing mode it never writes. Verify reports
+// it as a problem and goes on; writers refuse it.
+var errNotSignaturesFile = errors.New("not a signatures file this sink writes")
+
 // recordSigningAlgorithm is the only value of meta.record_signing.
 const recordSigningAlgorithm = "ml-dsa-65"
 
@@ -129,10 +134,10 @@ func openSignaturesReadOnly(path string, lockTimeout time.Duration) (*signatures
 			k, _ := tx.Cursor().First()
 			empty = k == nil // no bucket of any name
 			if !empty {
-				return fmt.Errorf("sink: %s is not a signatures file", path)
+				return fmt.Errorf("sink: %s: %w", path, errNotSignaturesFile)
 			}
 		case sb == nil || mb == nil:
-			return fmt.Errorf("sink: %s is not a signatures file", path)
+			return fmt.Errorf("sink: %s: %w", path, errNotSignaturesFile)
 		}
 		return nil
 	}); err != nil {
@@ -250,7 +255,7 @@ func (s *signaturesStore) signing() (bool, error) {
 		case string(v) == recordSigningAlgorithm:
 			on = true
 		default:
-			return errors.New("sink: the signatures file's signing mode is not one this sink writes")
+			return fmt.Errorf("sink: the signatures file's signing mode: %w", errNotSignaturesFile)
 		}
 		return nil
 	})
@@ -344,6 +349,23 @@ func (s *signaturesStore) deleteChain(chain string) (int, error) {
 				return fmt.Errorf("sink: delete signature: %w", err)
 			}
 			n++
+		}
+		return nil
+	})
+	return n, err
+}
+
+// validRowCount counts a chain's signature rows under a valid entry id,
+// without collecting them (a crafted file can hold any number).
+func (s *signaturesStore) validRowCount(chain string) (int, error) {
+	prefix := rowKey(chain, "")
+	n := 0
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(signaturesBucket).Cursor()
+		for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+			if entryIDPattern.Match(k[len(prefix):]) {
+				n++
+			}
 		}
 		return nil
 	})

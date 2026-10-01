@@ -140,7 +140,7 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 
 	var opts []sink.Option
 	if recordKey != nil && *recordKey != "" {
-		rs, err := loadRecordSigner(*recordKey)
+		rs, err := loadRecordSigner(*recordKey, stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "proof sink %s: %v\n", verb, err)
 			return exitIOError
@@ -331,7 +331,7 @@ func readPublicKey(path string) (string, []byte, error) {
 		return "", nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if alg != keyfile.MLDSA65 {
-		return "", nil, fmt.Errorf("%s holds a %s key; checkpoints are signed with ML-DSA-65", path, alg)
+		return "", nil, fmt.Errorf("%s holds a %s key; checkpoints and records are signed with ML-DSA-65", path, alg)
 	}
 	id, err := keyfile.KeyIDHex(alg, pub)
 	if err != nil {
@@ -381,6 +381,10 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, recordTrust []strin
 			rid, rpub, err := readPublicKey(p)
 			if err != nil {
 				return false, err
+			}
+			if rid == id {
+				fmt.Fprintln(errOut, "warning: the same key is given for checkpoints (--key) and records "+
+					"(--record-trust). Keep them separate: the record key is online in the writer")
 			}
 			keys[rid] = rpub
 		}
@@ -465,11 +469,16 @@ func orphanNote(n int) string {
 
 // loadRecordSigner loads an ML-DSA-65 record signer from a private key file,
 // zeroizing the seed once the signer has copied it.
-func loadRecordSigner(path string) (*sink.MLDSA65RecordSigner, error) {
+func loadRecordSigner(path string, errOut io.Writer) (*sink.MLDSA65RecordSigner, error) {
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o077 != 0 {
+		fmt.Fprintf(errOut, "warning: %s is readable by others (mode %04o); a private key file should be 0600\n",
+			path, fi.Mode().Perm())
+	}
 	pem, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	defer clear(pem) // the PEM encodes the seed too
 	alg, seed, err := keyfile.ParsePrivateKey(pem)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)

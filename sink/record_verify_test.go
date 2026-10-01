@@ -169,15 +169,13 @@ func TestVerifyRecords_Failures(t *testing.T) {
 			c.tamper(t, s, chain, entryIDs(t, s, chain))
 			r := verifyWith(t, s, ring, WithRecordTrust(recordRing(t, rs)))
 			for _, cr := range r.Chains {
-				if cr.Chain != chain {
-					if hasProblemWith(cr, "record signature") {
-						t.Fatalf("an untouched chain reports a signature problem: %v", cr.Problems)
-					}
-					continue
+				if cr.Chain != chain && hasProblemWith(cr, "record signature") {
+					t.Fatalf("an untouched chain reports a signature problem: %v", cr.Problems)
 				}
-				if c.count(cr) < 1 || !hasProblemWith(cr, c.want) {
-					t.Fatalf("%s not reported: %+v", name, cr)
-				}
+			}
+			cr := chainReport(t, r, chain) // fails if the chain is missing
+			if c.count(cr) < 1 || !hasProblemWith(cr, c.want) {
+				t.Fatalf("%s not reported: %+v", name, cr)
 			}
 		})
 	}
@@ -274,8 +272,6 @@ func TestVerifyRecords_RowsWithoutAChain(t *testing.T) {
 	}
 
 	// Bound but empty (a first commit that stopped before its append): a note.
-	bound := cid(t, s, "u-1")
-	_ = bound
 	idx, err := openSubjects(s.subjectsPath(), DefaultLockTimeout)
 	if err != nil {
 		t.Fatal(err)

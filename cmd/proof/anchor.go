@@ -182,6 +182,7 @@ func loadSigner(path string) (*anchor.MLDSA65Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	defer clear(pem) // the PEM encodes the seed too
 	alg, seed, err := keyfile.ParsePrivateKey(pem)
 	if err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)

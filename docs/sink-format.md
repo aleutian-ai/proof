@@ -47,7 +47,9 @@ erasure's chains. It sees nothing `evidence.db` does not hold.
 `evidence.db.signatures` (§9) reveals nothing beyond `evidence.db` except the
 record key ids, which show when keys were rotated and link sinks that share a
 record key. It may also hold rows for chain positions a failed or crashed
-commit never filled (§9.3).
+commit never filled (§9.3), including, after a first commit that never reached
+its chain, rows for a chain id `evidence.db` does not hold; erasing that
+subject removes them.
 
 **Correlation leakage.** Erasure removes the stored subject→chain linkage, but
 historical timing may allow an observer to infer that multiple opaque chains
@@ -354,7 +356,7 @@ real directory. Checkpoint files MUST be read with the type and size checked
 on the file actually opened, not only by name beforehand. This implementation
 uses Go's `os.Root`, `O_NONBLOCK` (a FIFO cannot hang it) and a capped read.
 
-**Verification changes nothing.** It opens the evidence, secrets and index
+**Verification changes nothing.** It opens the evidence, secrets, signatures and index
 files read-only, creates no file or folder (a mistyped folder is an error, not a
 new sink), reports a missing secrets file as events whose content is gone, and a
 missing index as chains with no row. Opening a crafted `evidence.db` with bbolt
@@ -375,8 +377,15 @@ ticket `_72`), not the files.
   record trust given;
 - which subject a chain belonged to once it is erased, by design.
 
-Steps 2 and 3 need only `evidence.db`, the checkpoints and a public key. Steps 4
-to 7 need the secrets file and the index, which only the operator holds.
+Steps 2 and 3 need only `evidence.db`, the checkpoints and a public key; step 8
+also needs `evidence.db.signatures` and a record public key. Steps 4 to 7 (and
+the `erased` verdict) need the secrets file and the index, which only the
+operator holds.
+
+Step 2 includes the STORED linkage: every entry's `previous_hash` field MUST be
+the previous entry's chain hash, and a sink chain MUST start at `global_seq` 0
+with an empty `previous_hash`. Recomputing the hashes is not enough on its own:
+the hashes take no key, and a record signature covers the stored field.
 
 ## 7. Idempotent commits
 
@@ -579,6 +588,10 @@ pseudonymous personal data:
   truncation.
 - **A compromised record key** can sign anything until it is distrusted;
   records a checkpoint covers stay pinned by the checkpoint key.
+- **An erasure that crashed after storing its signature**, before its entry
+  was appended, leaves a signature someone with write access could complete
+  (the entry rebuilt, its timestamp found by trial, the content deleted),
+  giving a clean `erased`. That only finishes an erasure the operator began.
 
 ### 9.4 Verifying record signatures
 

@@ -172,8 +172,14 @@ func TestCraftedChainID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := chainReport(t, r, "../escape"); len(c.Problems) == 0 {
+	// Reported by number, never by the crafted id (it could hold anything).
+	if c := chainReport(t, r, "<invalid chain #1>"); len(c.Problems) == 0 || c.Anomaly != "invalid-id" {
 		t.Fatalf("crafted chain not reported: %+v", c)
+	}
+	for _, c := range r.Chains {
+		if strings.Contains(c.Chain, "escape") || strings.Contains(strings.Join(c.Problems, " "), "escape") {
+			t.Fatalf("the crafted id was shown: %+v", c)
+		}
 	}
 	done, err := s.Checkpoint(context.Background(), signer, nil)
 	if err != nil {

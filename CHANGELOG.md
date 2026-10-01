@@ -125,8 +125,14 @@ change is called out here.
     sink's mode exits 2 with the fix. The NATS and Redis examples sign with
     `PROOF_RECORD_KEY_FILE` (a path, never key material) and stop on a
     configuration error instead of redelivering.
-- **Verify no longer prints a crafted entry id** found in the evidence file; it
-  names the entry by position.
+- **Verify checks the stored linkage:** every entry's stored `previous_hash`
+  must be the previous entry's chain hash, and a sink chain must start at
+  sequence 0, so a signed record can be neither spliced in nor the front cut
+  off with the (keyless) hashes recomputed. Entries not in chain format v3 are
+  reported. A damaged signatures file is a reported problem, not an error.
+- **Verify and erase no longer print crafted ids** found in the folder (entry
+  ids, chain ids, entry types): entries are named by position, chains by
+  number.
 - **Erase errors name no chain** (as Commit's never did): chain ids in their
   messages are replaced, the ids stay in the results.
 - **`linker.Input.ExpectChainHash`:** a caller can pin the chain hash an entry

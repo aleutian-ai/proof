@@ -163,7 +163,8 @@ const DefaultRecordSigningConcurrency = 16
 //
 // # Limitations
 //
-//   - Verify does not check record signatures yet (ticket _75d).
+//   - Only Verify with WithRecordTrust checks the signatures; the folder's
+//     mode never makes them required.
 //
 // # Assumptions
 //
@@ -290,8 +291,9 @@ type ChainReport struct {
 	Index IndexState `json:"index,omitempty"`
 	// Anomaly is set when this is not an ordinary chain: "invalid-id" (the
 	// evidence file holds an id this sink never writes; nothing was read) or
-	// "removed" (checkpoints, or content and nonces, exist but no entries), or
-	// "invalid-folder" (anchors/ is not a real directory).
+	// "removed" (checkpoints, or content and nonces, exist but no entries),
+	// "invalid-folder" (anchors/ is not a real directory), or "invalid-file"
+	// (the signatures file is not one this sink writes).
 	Anomaly     string `json:"anomaly,omitempty"`
 	Entries     int    `json:"entries"`
 	Opened      int    `json:"opened"`      // events whose stored content opens their commitment
@@ -302,14 +304,14 @@ type ChainReport struct {
 	// Record signatures (docs/sink-format.md §9), counted only when Verify was
 	// given record trust (WithRecordTrust); OrphanSignatures always. Each
 	// failure kind is also ONE line in Problems (count and first entry id).
-	Signed               int `json:"signed,omitempty"`                 // signature verified under a trusted record key
-	Unsigned             int `json:"unsigned,omitempty"`               // no signature row
-	MalformedSignatures  int `json:"malformed_signatures,omitempty"`   // a row that is not key id ‖ signature
-	UnknownKeySignatures int `json:"unknown_key_signatures,omitempty"` // signed by a key not trusted for records
-	BadSignatures        int `json:"bad_signatures,omitempty"`         // the stored entry is not what was signed
+	Signed               int `json:"signed"`                 // signature verified under a trusted record key
+	Unsigned             int `json:"unsigned"`               // no signature row
+	MalformedSignatures  int `json:"malformed_signatures"`   // a row that is not key id ‖ signature
+	UnknownKeySignatures int `json:"unknown_key_signatures"` // signed by a key not trusted for records
+	BadSignatures        int `json:"bad_signatures"`         // the stored entry is not what was signed
 	// OrphanSignatures counts signature rows matching no entry of the chain: a
 	// crash or a failed cleanup leaves them. A note, not a problem (§9.3).
-	OrphanSignatures int `json:"orphan_signatures,omitempty"`
+	OrphanSignatures int `json:"orphan_signatures"`
 	// Problems lists every failure. Empty means the chain verifies.
 	Problems []string `json:"problems,omitempty"`
 }

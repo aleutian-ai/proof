@@ -81,3 +81,19 @@ func TestConfigurationError_NotSigning(t *testing.T) {
 		t.Fatal("an ordinary error was rewritten")
 	}
 }
+
+// A key of another algorithm is refused, naming the variable.
+func TestOpenSink_WrongAlgorithm(t *testing.T) {
+	pem, err := keyfile.MarshalPrivateKey(keyfile.MLDSA44, bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "k.pem")
+	if err := os.WriteFile(path, pem, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(recordKeyEnv, path)
+	if _, _, err := openSink(t.TempDir()); err == nil || !strings.Contains(err.Error(), "ML-DSA-65") {
+		t.Fatalf("err = %v", err)
+	}
+}

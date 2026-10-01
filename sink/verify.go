@@ -28,10 +28,12 @@ import (
 // The steps are docs/sink-format.md §6, numbered as there:
 //
 //  1. Ids are valid before any path is built from them.
-//  2. Links: the chain's hashes recompute.
+//  2. Links: the chain's hashes recompute, AND every entry's stored
+//     previous_hash is the previous entry's chain hash, the chain starting at
+//     sequence 0 with none (what a record signature covers); every entry is
+//     chain format v3.
 //  3. Checkpoints: every checkpoint is signed by a key in keys, is for this
-//     chain, and binds the entries it covered. This is what catches entries
-//     removed from the front, which step 2 cannot.
+//     chain, and binds the entries it covered.
 //  4. Entries: every event's stored content opens its commitment with its
 //     nonce, and every erasure record matches its digest. Events before the
 //     last GENUINE erasure entry are gone (content and nonce both deleted) and
@@ -39,32 +41,62 @@ import (
 //     problem.
 //  5. Nothing left over: no content or nonce row that matches no entry, and
 //     no row keyed outside the sink's layout (counted, never shown).
-//  6. Nothing removed: no checkpoint folder or secrets rows for a chain the
-//     evidence file does not hold (unless the index binds it or has it
-//     pending, for secrets rows).
+//  6. Nothing removed: no checkpoint folder, secrets rows or signature rows
+//     for a chain the evidence file does not hold (unless the index binds it or
+//     has it pending: a first commit's leftovers).
 //  7. Index accountability (read-only; ChainReport.Index): live, erased,
 //     erased-unanchored and index-only are not problems; pending, unaccounted,
 //     relinked and malformed are. "erased" needs a verified checkpoint over the
-//     erasure; until then it is erased-unanchored.
+//     erasure, or (step 8) its verified record signature; until then it is
+//     erased-unanchored.
+//  8. Record signatures, with WithRecordTrust: every entry's, rebuilt from the
+//     stored entry (Report.RecordSignatures says whether they were checked;
+//     orphan rows are counted as a note).
 //
-// The report never names a subject, nor prints an index key that is not a
-// valid chain id. ChainSubjects is the separate, deliberate call that names
-// subjects.
+// The report never names a subject, nor prints an id read from the folder
+// that is not of the sink's own shape. ChainSubjects is the separate,
+// deliberate call that names subjects.
 //
-// Steps 2 and 3 need only the evidence file, the checkpoints and a public key.
-// Steps 4 to 7 need the secrets file and the subject index,
-// which only the operator holds.
+// Steps 2, 3 and 8 need only the evidence file, the checkpoints, the
+// signatures file and public keys. Steps 4 to 7 (and the "erased" verdict)
+// need the secrets file and the subject index, which only the operator holds.
 //
 // # Inputs
 //
 //   - ctx: honoured between chains
 //   - keys: the public keys checkpoints may be signed with
+//   - opts: WithRecordTrust, to check record signatures
 //
 // # Outputs
 //
-//   - Report: per chain, in chain-id order. Report.OK is the verdict.
-//   - error: only when verification could not run (a file unreadable). A broken
-//     chain is a finding in the Report, not an error.
+//   - Report: per chain, in chain-id order. Report.OK is the verdict; a
+//     damaged side file is a problem row, not an error.
+//   - error: only when verification could not run (a file unreadable, a key
+//     source failing). A broken chain is a finding in the Report.
+//
+// # Example
+//
+//	rep, err := s.Verify(ctx, checkpointKeys, sink.WithRecordTrust(recordKeys))
+//	if err != nil {
+//	    return err
+//	}
+//	if !rep.OK() {
+//	    // report rep.Chains[i].Problems
+//	}
+//
+// # Limitations
+//
+//   - Opens every file read-only, but parses them with bbolt, which may panic
+//     on a crafted file: verify a folder from someone else as an exported
+//     bundle (ticket _72), not the files.
+//   - Holds the files for the whole walk; memory grows with the largest
+//     chain's stored rows (paging is ticket _74b).
+//   - Front truncation of a chain without record signatures is caught only
+//     by checkpoints (and, for a sink chain, the start at sequence 0).
+//
+// # Assumptions
+//
+//   - keys and any record trust source are safe for concurrent use.
 func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...VerifyOption) (Report, error) {
 	if keys == nil {
 		return Report{}, errors.New("sink: a key source is required")
@@ -104,14 +136,27 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...Verify
 	}
 	// The signatures file: what Verify checks with record trust, and the
 	// folder-side checks (orphans, removed chains) either way.
+	// A damaged one is a FINDING, never a reason to report nothing: it is
+	// reported, and Verify goes on (with record trust, every entry is then
+	// unsigned or checked as far as the file allows).
+	var sigProblem string
 	sig, err := openSignaturesReadOnly(s.signaturesPath(), s.lockTimeout)
-	if err != nil {
+	switch {
+	case errors.Is(err, errNotSignaturesFile):
+		sig, sigProblem = nil, "the signatures file is not one this sink writes (a bucket is missing); "+
+			"its record signatures could not be read"
+	case err != nil:
 		return Report{}, err
 	}
 	signing := false
 	if sig != nil {
 		defer sig.Close()
-		if signing, err = sig.signing(); err != nil {
+		signing, err = sig.signing()
+		switch {
+		case errors.Is(err, errNotSignaturesFile):
+			signing, sigProblem = true, "the signatures file's signing mode was altered (a value this "+
+				"sink never writes)"
+		case err != nil:
 			return Report{}, err
 		}
 	}
@@ -134,6 +179,7 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...Verify
 	}
 
 	var rep Report
+	invalidChains := 0
 	switch {
 	case rc != nil:
 		rep.RecordSignatures = RecordSignaturesChecked
@@ -150,7 +196,10 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...Verify
 		}
 		if !ValidChainID(chain) {
 			// Never build a path from it: it could be "../../somewhere".
-			rep.Chains = append(rep.Chains, ChainReport{Chain: chain, Anomaly: "invalid-id",
+			// Nor shown: a crafted id could hold anything, even a subject.
+			invalidChains++
+			rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid chain #%d>", invalidChains),
+				Anomaly:  "invalid-id",
 				Problems: []string{"the evidence file holds a chain id this sink never writes; it was not read"}})
 			continue
 		}
@@ -276,6 +325,10 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...Verify
 				"stopped before its append; "+remedy(cr.Index))
 		}
 	}
+	if sigProblem != "" {
+		rep.Chains = append(rep.Chains, ChainReport{Chain: "<invalid signatures file>", Anomaly: "invalid-file",
+			Problems: []string{sigProblem}})
+	}
 	if sig != nil {
 		if err := checkSignatureRows(&rep, sig, inStore, reportFor); err != nil {
 			return rep, err
@@ -313,13 +366,13 @@ func checkSignatureRows(rep *Report, sig *signaturesStore, inStore map[string]bo
 		if !ValidChainID(name) {
 			continue // counted by malformedKeys; never shown
 		}
-		ids, err := sig.rowIDs(name)
-		if err != nil {
-			return fmt.Errorf("sink: read the signatures file: %w", err)
-		}
 		cr := reportFor(name)
 		if cr.Index == IndexOnly || cr.Index == IndexPending {
-			cr.OrphanSignatures += len(ids)
+			n, err := sig.validRowCount(name)
+			if err != nil {
+				return fmt.Errorf("sink: read the signatures file: %w", err)
+			}
+			cr.OrphanSignatures += n
 			continue
 		}
 		cr.Anomaly = "removed"
@@ -433,7 +486,9 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 			return cr, fmt.Errorf("sink: read the signatures file: %w", err)
 		}
 		for _, id := range ids {
-			sigUnmatched[id] = true
+			if entryIDPattern.MatchString(id) { // others are counted by malformedKeys
+				sigUnmatched[id] = true
+			}
 		}
 	}
 	var tally signatureTally
@@ -544,7 +599,10 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		// pending): the signature replaces only the checkpoint-coverage check.
 		// With record trust, no problem at all means every entry's signature
 		// verified, the erasure entry's included.
-		if cr.Index == IndexErasedUnanchored && endsErased && len(cr.Problems) == 0 {
+		// Nor orphan signatures: a trailing run of them is how an erasure could
+		// be reversed after truncation (sink-format §9.3); a benign crash's
+		// orphan just waits for a checkpoint.
+		if cr.Index == IndexErasedUnanchored && endsErased && len(cr.Problems) == 0 && cr.OrphanSignatures == 0 {
 			cr.Index = IndexErased
 		}
 	}
@@ -701,7 +759,8 @@ func (t signatureTally) report(cr *ChainReport) {
 	}
 	line(t.unsigned, "no record signature", t.firstUnsigned)
 	line(t.malformed, "a malformed record signature row", t.firstMalformed)
-	line(t.unknown, "a record signature by a key not trusted for records", t.firstUnknown)
+	line(t.unknown, "a record signature by a key not trusted for records (a --record-trust key "+
+		"missing, or a forgery)", t.firstUnknown)
 	line(t.bad, "a BAD record signature: the stored entry is not what was signed", t.firstBad)
 }
 
@@ -833,8 +892,8 @@ func (s *Sink) checkEntry(cr *ChainReport, sec *secretsStore, e verify.Entry, i,
 				"or not the erasure record for its position", e.EntryID))
 		}
 	case e.EntryType != EntryTypeEvent:
-		cr.Problems = append(cr.Problems, fmt.Sprintf("entry %s has type %q, which this sink never writes",
-			e.EntryID, e.EntryType))
+		cr.Problems = append(cr.Problems, fmt.Sprintf("entry %s has a type this sink never writes",
+			e.EntryID))
 	case i < lastErasure:
 		if !missing || !noNonce {
 			cr.Problems = append(cr.Problems, fmt.Sprintf("entry %s was erased, but its content or nonce "+

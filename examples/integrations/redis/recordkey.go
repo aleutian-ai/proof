@@ -30,6 +30,7 @@ func openSink(dir string) (*sink.Sink, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", recordKeyEnv, err)
 	}
+	defer clear(pem) // the PEM encodes the seed too
 	alg, seed, err := keyfile.ParsePrivateKey(pem)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", recordKeyEnv, err)

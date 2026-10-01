@@ -184,20 +184,20 @@ The steps of [`docs/sink-format.md`](../docs/sink-format.md) §6:
    stopped before its append) is reported.
 6. **Nothing removed:** checkpoints, or stored content and nonces, still here
    for a chain whose entries were removed from the evidence file.
-7. **Record signatures**, if you pass `--record-trust <record public key>`
-   (repeatable): every record must carry a valid ML-DSA-65 signature by one of
-   those keys, rebuilt from the stored entry. Without it, a sink that signs says
-   `Record signatures: NOT CHECKED`; that is not a failure, and not a check.
-   Commit and erase sign with `--record-key <record private key>`: a sink signs
-   from its first commit, or never. Keep the record key apart from the
-   checkpoint key (checkpoint warns if they are the same).
-8. **The index accounts for every chain:** bound to a subject (live), erased
+7. **The index accounts for every chain:** bound to a subject (live), erased
    (checkpointed or not yet), or bound with no entries yet; or a problem:
    an interrupted erasure (pending: run `proof sink erase --resume`), a chain
    the index lost (unaccounted), an index restored from before an erasure that
    re-links an erased subject (relinked: `--resume` forgets it again), or a
    row that disagrees with the rest (malformed, shown by number only). No
    subject is ever printed unless you pass `--show-subjects`.
+8. **Record signatures**, if you pass `--record-trust <record public key>`
+   (repeatable): every record must carry a valid ML-DSA-65 signature by one of
+   those keys, rebuilt from the stored entry. Without it, a sink that signs says
+   `Record signatures: NOT CHECKED`; that is not a failure, and not a check.
+   Commit and erase sign with `--record-key <record private key>`: a sink signs
+   from its first commit, or never. Keep the record key apart from the
+   checkpoint key (checkpoint warns if they are the same).
 
 Steps 2 and 3 need only `evidence.db`, the checkpoints and the public key. The
 plain chain verbs can do them too, one checkpoint at a time: `proof export` the

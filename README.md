@@ -523,7 +523,8 @@ cmd/proof       CLI — init · commit · export · import · anchor · verify �
 cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
 
 examples/       composition, not features — encrypted-artifact; integrations/nats,
-                integrations/redis and integrations/kafka feed a sink (each its own module)
+                integrations/redis, integrations/kafka and integrations/otel feed a sink
+                (each its own module)
 ```
 
 ---

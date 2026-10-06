@@ -212,6 +212,18 @@ change is called out here.
   record (`proof sink init`, `PROOF_RECORD_KEY_FILE`), erases a user, and runs
   `proof sink verify` repeatedly alongside a live consumer. Run on
   `apache/kafka` and `apache/kafka-native` 4.1. It is its own module.
+- **`examples/integrations/otel`: OpenTelemetry logs → proof.** An OTLP/HTTP
+  receiver behind a real OTel Collector (`otlp_http` exporter), which does the
+  batching, retrying and queueing. OTLP has no delivery position, so each log
+  record needs a stable delivery id, `log.record.uid` (the collector's
+  `transform` processor adds one when the app did not); it is the record's
+  Source, and a record without one is refused. The receiver answers only after
+  the sink commit: 200, with refusals in `partial_success`; 503 on a sink
+  failure, so the collector retries. Configuration and contract errors stop it.
+  `run.sh` drives it with `telemetrygen` through
+  `opentelemetry-collector-contrib` 0.162: a crash before answering is retried
+  and recognised (the check fails with the uid removed), records are signed,
+  and a user is erased. It is its own module (`pdata` v1.65.0).
 - `store/bolt.Store.Chains` lists every chain in a file, from the store itself.
   Not part of the store port.
 

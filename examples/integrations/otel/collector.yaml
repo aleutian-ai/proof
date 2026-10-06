@@ -1,0 +1,64 @@
+# Copyright 2026 Aleutian AI
+# SPDX-License-Identifier: Apache-2.0
+#
+# OpenTelemetry Collector (contrib) → otel-sink. The collector does the
+# batching, retrying and queueing; otel-sink answers only after the sink commit.
+# ${env:SINK_ENDPOINT} is otel-sink's address as the collector sees it.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # proof requires a stable delivery id per record (OTLP has no position). An
+  # app may set its own (then duplicates are caught from the app onward); if
+  # not, one is set here, so a retry from the collector to otel-sink is
+  # recognised. Copies arriving at the collector twice get different ids.
+  transform/uid:
+    error_mode: propagate
+    log_statements:
+      - set(log.attributes["log.record.uid"], UUID()) where log.attributes["log.record.uid"] == nil
+  # At most 500 records per request: 500 × 64 KiB (the sink's content limit)
+  # stays under otel-sink's 64 MiB decoded-body limit. Without a cap, a large
+  # batch would be answered 413 and dropped, though each record would fit.
+  batch:
+    timeout: 1s
+    send_batch_size: 500
+    send_batch_max_size: 500
+
+exporters:
+  otlp_http/proof:
+    endpoint: ${env:SINK_ENDPOINT}
+    encoding: proto
+    compression: gzip
+    # Longer than otel-sink's 30 s commit limit, so a slow commit is answered
+    # rather than abandoned and sent again.
+    timeout: 60s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 5s
+      # How long a request is retried before the collector drops it. Longer
+      # than any planned sink outage; with the persistent queue below, it also
+      # survives a collector restart.
+      max_elapsed_time: 1h
+    sending_queue:
+      enabled: true
+      storage: file_storage/queue
+
+extensions:
+  file_storage/queue:
+    directory: /var/lib/otelcol/queue
+    create_directory: true
+
+service:
+  extensions: [file_storage/queue]
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [transform/uid, batch]
+      exporters: [otlp_http/proof]

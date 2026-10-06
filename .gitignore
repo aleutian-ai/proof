@@ -49,5 +49,7 @@ node_modules/
 /examples/integrations/nats/nats-sink
 /examples/integrations/kafka/kafka
 /examples/integrations/kafka/kafka-sink
+/examples/integrations/otel/otel
+/examples/integrations/otel/otel-sink
 /examples/integrations/redis/redis
 /examples/integrations/redis/redis-sink

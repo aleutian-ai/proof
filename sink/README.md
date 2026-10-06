@@ -30,6 +30,13 @@ go build -o proof ./cmd/proof
 ./proof keygen --alg ml-dsa-65 --out-dir keys
 ```
 
+To sign every record too (optional, docs/sink-format.md §9), make the two keys
+with `./proof sink init` instead: a **record** key the writer holds online and
+a **checkpoint** key kept elsewhere, in `sink-data.keys/` beside (never inside)
+the sink folder. It prints the commands to use. `--op-vault VAULT` puts the
+checkpoint key in 1Password only (the checkpoint command then reads it with
+`op read`); `--one-key` uses one key for both, which is weaker and warned about.
+
 `events.jsonl`:
 
 ```json
@@ -169,7 +176,12 @@ chain payments.f30c1281278d1b6f7961847a62467285 verifies 2 entries: 0 opened, 1 
 
 ## What verify checks
 
-The steps of [`docs/sink-format.md`](../docs/sink-format.md) §6:
+Verify runs alongside a live consumer: it reads a page of whole chains at a
+time and lets writers in between pages (at 100k chains, a writer committing
+every 100 ms waits about 95 ms at worst). Each chain's verdict is consistent;
+the run as a whole is not one snapshot (stop the writers, or verify a copy, for
+that). It prints each chain as it goes. The steps of
+[`docs/sink-format.md`](../docs/sink-format.md) §6:
 
 1. **Ids:** every id read back is valid before it is used. The file can be
    shared, so a crafted id such as `../../x` is reported, not read.

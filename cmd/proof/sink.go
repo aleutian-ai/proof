@@ -24,6 +24,7 @@ import (
 const sinkMaxLine = 1 << 20
 
 const sinkUsage = `usage:
+  proof sink init       [--dir D] [--keys-dir K] [--op-vault VAULT] [--one-key] [--force]
   proof sink commit     [--dir D] (--class NAME | --class-field FIELD --classes A,B…) --subject-field FIELD
                         [--record-key <record private.pem>]  < events.jsonl
   proof sink checkpoint [--dir D] --key <ml-dsa-65 private.pem> [--trust <public.pem>]…
@@ -36,7 +37,7 @@ docs/sink-format.md. --trust names earlier signing keys whose checkpoints may
 be built on (after a key rotation). --record-key signs every record written
 (a sink signs from its first commit, or never); --record-trust checks every
 record's signature (repeatable, for rotated keys). Keep the record key and the
-checkpoint key separate. Exit: 0 ok · 1 a chain failed verification or was not
+checkpoint key separate: init makes both, beside the sink folder. Exit: 0 ok · 1 a chain failed verification or was not
 checkpointed · 2 usage, or a record key given or missing against the sink's
 signing · 3 error · 4 the folder is busy.`
 
@@ -54,6 +55,9 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		return exitUsage
 	}
 	verb := args[0]
+	if verb == "init" {
+		return cmdSinkInit(args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("sink "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dir := fs.String("dir", "sink-data", "the sink folder")
@@ -394,17 +398,10 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, recordTrust []strin
 		}
 		opts = append(opts, sink.WithRecordTrust(records))
 	}
-	rep, err := s.Verify(c, ring, opts...)
-	if err != nil {
-		return false, err
-	}
-	if len(rep.Chains) == 0 {
-		return false, errors.New("the evidence file has no chains")
-	}
 	subjectOf := map[string]string{}
 	if showSubjects {
-		// A second read, after Verify: a commit or erasure in between can make the
-		// two disagree. Best effort, for an operator's eyes only.
+		// A separate read, before Verify: a commit or erasure meanwhile can make
+		// the two disagree. Best effort, for an operator's eyes only.
 		rows, err := s.ChainSubjects(c)
 		if err != nil {
 			return false, err
@@ -417,36 +414,48 @@ func sinkVerify(c ctx.Context, s *sink.Sink, keyPath string, recordTrust []strin
 		// Marked in the output itself too: stdout is what gets saved or captured.
 		fmt.Fprintln(out, "# SECRET: subject-index material (proof sink verify --show-subjects)")
 	}
-	bad := 0
-	for _, ch := range rep.Chains {
+	checked := sink.RecordSignatureCheck("")
+	if len(recordTrust) > 0 {
+		checked = sink.RecordSignaturesChecked
+	}
+	// Streamed: each chain's line as soon as it is verified (the folder is read
+	// a page at a time, and writers are not held up meanwhile). Findings of the
+	// cross-chain sweep come after the chains.
+	sum, err := s.VerifyEach(c, ring, func(ch sink.ChainReport) error {
 		verdict := "verifies"
 		if len(ch.Problems) > 0 {
 			verdict = "FAILS"
-			bad++
 		}
 		fmt.Fprintf(out, "chain %-12s %-8s %s: %d opened, %d erased · %s, %d unanchored%s%s%s%s\n",
 			printable(ch.Chain), verdict, plural(ch.Entries, "entry", "entries"), ch.Opened, ch.Erased,
 			plural(ch.Checkpoints, "checkpoint", "checkpoints"), ch.Unanchored,
-			signedNote(rep.RecordSignatures, ch), orphanNote(ch.OrphanSignatures), indexNote(ch.Index),
+			signedNote(checked, ch), orphanNote(ch.OrphanSignatures), indexNote(ch.Index),
 			subjectNote(subjectOf[ch.Chain]))
 		for _, p := range ch.Problems {
 			fmt.Fprintf(out, "    %s\n", p)
 		}
+		return nil
+	}, opts...)
+	if err != nil {
+		return false, err
+	}
+	if sum.Reports == 0 {
+		return false, errors.New("the evidence file has no chains")
 	}
 	// Record signatures are a separate dimension: never let a pass read as
 	// "signatures verified" when they were not checked.
-	switch rep.RecordSignatures {
+	switch sum.RecordSignatures {
 	case sink.RecordSignaturesNotChecked:
 		fmt.Fprintln(out, "Record signatures: NOT CHECKED (this sink signs its records). "+
 			"Pass --record-trust <record public key> to verify them.")
 	case sink.RecordSignaturesChecked:
 		fmt.Fprintln(out, "Record signatures: checked against --record-trust")
 	}
-	if bad > 0 {
-		fmt.Fprintf(out, "%d of %d chains FAILED\n", bad, len(rep.Chains))
+	if sum.Failed > 0 {
+		fmt.Fprintf(out, "%d of %d chains FAILED\n", sum.Failed, sum.Reports)
 		return true, nil
 	}
-	fmt.Fprintf(out, "all %d chains verify\n", len(rep.Chains))
+	fmt.Fprintf(out, "all %d chains verify\n", sum.Reports)
 	return false, nil
 }
 

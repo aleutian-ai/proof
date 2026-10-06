@@ -8,9 +8,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/chainformat"
@@ -89,8 +92,8 @@ import (
 //   - Opens every file read-only, but parses them with bbolt, which may panic
 //     on a crafted file: verify a folder from someone else as an exported
 //     bundle (ticket _72), not the files.
-//   - Holds the files for the whole walk; memory grows with the largest
-//     chain's stored rows (paging is ticket _74b).
+//   - Reads a page at a time (VerifyEach): not one snapshot of the folder.
+//     Memory holds every report (VerifyEach streams them instead).
 //   - Front truncation of a chain without record signatures is caught only
 //     by checkpoints (and, for a sink chain, the start at sequence 0).
 //
@@ -98,225 +101,496 @@ import (
 //
 //   - keys and any record trust source are safe for concurrent use.
 func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...VerifyOption) (Report, error) {
+	var rep Report
+	at := map[string]int{} // chain → its report's index, to merge a sweep row into it
+	sum, err := s.VerifyEach(ctx, keys, func(cr ChainReport) error {
+		if i, ok := at[cr.Chain]; ok {
+			mergeReport(&rep.Chains[i], cr)
+			return nil
+		}
+		at[cr.Chain] = len(rep.Chains)
+		rep.Chains = append(rep.Chains, cr)
+		return nil
+	}, opts...)
+	rep.RecordSignatures = sum.RecordSignatures
+	sort.Slice(rep.Chains, func(i, j int) bool { return rep.Chains[i].Chain < rep.Chains[j].Chain })
+	return rep, err
+}
+
+// mergeReport folds a later row for the same chain (from the sweep) into the
+// first one.
+func mergeReport(dst *ChainReport, extra ChainReport) {
+	if extra.Index == IndexMalformed && dst.Index == IndexMalformed {
+		return // already reported inconsistent
+	}
+	if extra.Index != "" {
+		dst.Index = extra.Index
+	}
+	if extra.Anomaly != "" {
+		dst.Anomaly = extra.Anomaly
+	}
+	dst.OrphanSignatures += extra.OrphanSignatures
+	dst.Problems = append(dst.Problems, extra.Problems...)
+}
+
+// Summary is what VerifyEach reports besides the chains themselves.
+type Summary struct {
+	// Reports is how many reports fn was given; Failed, how many had problems.
+	Reports int `json:"reports"`
+	Failed  int `json:"failed"`
+	// RecordSignatures says whether record signatures were checked (as
+	// Report.RecordSignatures), from the signatures file's mode at the start.
+	RecordSignatures RecordSignatureCheck `json:"record_signatures,omitempty"`
+}
+
+// OK reports whether no report had a problem.
+func (s Summary) OK() bool { return s.Failed == 0 }
+
+// VerifyEach verifies the sink as Verify does, handing each report to fn as
+// it is done instead of collecting them, and reading the folder a page at a
+// time so writers are never blocked for the whole run.
+//
+// # Description
+//
+// Chains are verified in chain-id order, whole chains per page (a page ends
+// after about 50 ms of work); the files are released between pages, for longer
+// than bbolt's 50 ms lock retry, so a waiting writer gets in. Then a
+// cross-chain sweep (index rows, checkpoint folders, secrets and signature
+// rows for chains the evidence file does not hold; rows keyed off the layout)
+// runs, also in pages, each candidate checked against the evidence file at
+// that moment. Its rows come after the chains'. A sweep finding about a chain
+// already reported (an index row that disagrees with it) comes as a second
+// row for that chain (at most one): Verify merges them, and Summary counts it
+// as the same chain.
+//
+// The result is NOT one snapshot of the folder: each chain is reported as it
+// was when its page read it. A chain committed during the run is reported if
+// its id sorts after the page being read, and never falsely reported REMOVED.
+// For a point-in-time verdict, stop the writers, or verify a copy.
+//
+// # Inputs
+//
+//   - ctx: honoured between chains and between pages
+//   - keys: the public keys checkpoints may be signed with
+//   - fn: called for each report, with no file held; an error stops the run
+//     and is returned
+//   - opts: WithRecordTrust
+//
+// # Outputs
+//
+//   - Summary: counts (chains, not rows), and whether record signatures were
+//     checked
+//   - error: verification could not run, or fn's error. Each page takes the
+//     files again under the lock timeout: a writer holding them longer than
+//     that (a very large erase), or committing without pause, makes the run
+//     stop part-way (ErrBusy), with the reports so far already handed to fn.
+//     bbolt retries a held lock every 50 ms without queueing, so neither side
+//     is guaranteed a turn: Verify pauses longer than that between pages for
+//     writers, and a writer should pause between commits (a consumer does,
+//     while it fetches).
+//
+// # Example
+//
+//	sum, err := s.VerifyEach(ctx, keys, func(cr sink.ChainReport) error {
+//	    fmt.Println(cr.Chain, len(cr.Problems) == 0)
+//	    return nil
+//	})
+//
+// # Limitations
+//
+//   - One chain is read under one lock hold: a very large chain still holds
+//     the lock for its own duration (incremental verification is ticket _74d).
+//   - Memory is one page plus the largest chain's stored rows, plus the
+//     sweep's reports for chains the evidence file does not hold.
+//
+// # Assumptions
+//
+//   - keys and any record trust source are safe for concurrent use.
+func (s *Sink) VerifyEach(ctx context.Context, keys anchor.KeySource, fn func(ChainReport) error,
+	opts ...VerifyOption) (Summary, error) {
+	var sum Summary
 	if keys == nil {
-		return Report{}, errors.New("sink: a key source is required")
+		return sum, errors.New("sink: a key source is required")
+	}
+	if fn == nil {
+		return sum, errors.New("sink: a report function is required")
 	}
 	var cfg verifyConfig
 	for _, o := range opts {
 		o(&cfg)
 		if cfg.err != nil {
-			return Report{}, cfg.err
+			return sum, cfg.err
 		}
 	}
 	var rc *recordChecker
 	if cfg.recordTrust != nil {
 		rc = &recordChecker{src: cfg.recordTrust, keys: map[string][]byte{}}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Read-only throughout: a verifier must not modify the evidence it checks,
-	// and must not create anything (a mistyped folder is reported, not made).
-	f, err := s.openFolder(false)
-	if err != nil {
-		return Report{}, err
+
+	// A sweep row about a chain already reported (an index row that disagrees
+	// with it) is handed to fn too, but counted as the same chain: not a new
+	// report, and a new failure only if the chain had none.
+	type out struct {
+		cr    ChainReport
+		again bool
 	}
-	defer f.Close()
-	st, err := s.openStore(true)
-	if err != nil {
-		return Report{}, err
-	}
-	defer st.Close()
-	// No secrets file: every event reports as unopenable, which is the truth.
-	sec, err := openSecretsReadOnly(s.secretsPath(), s.lockTimeout)
-	if err != nil {
-		return Report{}, err
-	}
-	if sec != nil {
-		defer sec.Close()
-	}
-	// The signatures file: what Verify checks with record trust, and the
-	// folder-side checks (orphans, removed chains) either way.
-	// A damaged one is a FINDING, never a reason to report nothing: it is
-	// reported, and Verify goes on (with record trust, every entry is then
-	// unsigned or checked as far as the file allows).
-	var sigProblem string
-	sig, err := openSignaturesReadOnly(s.signaturesPath(), s.lockTimeout)
-	switch {
-	case errors.Is(err, errNotSignaturesFile):
-		sig, sigProblem = nil, "the signatures file is not one this sink writes (a bucket is missing); "+
-			"its record signatures could not be read"
-	case err != nil:
-		return Report{}, err
-	}
-	signing := false
-	if sig != nil {
-		defer sig.Close()
-		signing, err = sig.signing()
-		switch {
-		case errors.Is(err, errNotSignaturesFile):
-			signing, sigProblem = true, "the signatures file's signing mode was altered (a value this "+
-				"sink never writes)"
-		case err != nil:
-			return Report{}, err
+	var pending []out
+	failed := map[string]bool{} // chains already counted as failed (failures are few)
+	flush := func() error {
+		for _, o := range pending {
+			bad := len(o.cr.Problems) > 0
+			if !o.again {
+				sum.Reports++
+			}
+			if bad && !failed[o.cr.Chain] {
+				sum.Failed++
+				failed[o.cr.Chain] = true
+			}
+			if err := fn(o.cr); err != nil {
+				return err
+			}
 		}
-	}
-	// No index file means no rows: every live chain is then unaccounted.
-	subj, err := openSubjectsReadOnly(s.subjectsPath(), s.lockTimeout)
-	if err != nil {
-		return Report{}, err
-	}
-	var ix *indexSnapshot // nil: no index, no rows
-	if subj != nil {
-		defer subj.Close()
-		if ix, err = subj.snapshot(); err != nil {
-			return Report{}, err
-		}
-		defer ix.close()
-	}
-	chains, err := st.Chains(ctx)
-	if err != nil {
-		return Report{}, fmt.Errorf("sink: %w", err)
+		pending = pending[:0]
+		return nil
 	}
 
-	var rep Report
-	invalidChains := 0
-	switch {
-	case rc != nil:
-		rep.RecordSignatures = RecordSignaturesChecked
-	case signing:
-		rep.RecordSignatures = RecordSignaturesNotChecked
-	}
-	inStore := map[string]bool{}
-	reported := map[string]int{} // chain → its report's index in rep.Chains
-	for _, chain := range chains {
-		inStore[chain] = true
-		reported[chain] = len(rep.Chains)
-		if err := ctx.Err(); err != nil {
-			return rep, err
+	// 1. The chains, whole chains per page.
+	first, invalidChains := true, 0
+	var cursor *string // nil: from the first chain ("" can be a crafted chain id)
+	err := s.inPages(ctx, true, func(p *pageFiles, deadline time.Time) (bool, error) {
+		if first {
+			first = false
+			switch {
+			case rc != nil:
+				sum.RecordSignatures = RecordSignaturesChecked
+			case p.signing:
+				sum.RecordSignatures = RecordSignaturesNotChecked
+			}
 		}
-		if !ValidChainID(chain) {
-			// Never build a path from it: it could be "../../somewhere".
-			// Nor shown: a crafted id could hold anything, even a subject.
-			invalidChains++
-			rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid chain #%d>", invalidChains),
-				Anomaly:  "invalid-id",
-				Problems: []string{"the evidence file holds a chain id this sink never writes; it was not read"}})
-			continue
-		}
-		cr, err := s.verifyChain(ctx, st, sec, sig, rc, f, chain, keys, ix.state(chain))
+		chains, err := p.st.ChainsAfter(ctx, cursor, pageMaxChains)
 		if err != nil {
-			return rep, err
+			return false, fmt.Errorf("sink: %w", err)
 		}
-		rep.Chains = append(rep.Chains, cr)
-	}
-
-	// Index rows with no chain in the evidence file. A key that is not a valid
-	// chain id is never shown: it could hold anything, even a subject.
-	invalidRows := 0
-	addInvalid := func() {
-		invalidRows++
-		rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid index row #%d>", invalidRows),
-			Index: IndexMalformed, Problems: []string{indexInconsistent}})
-	}
-	if err := ix.eachReverse(ctx, func(key []byte, row IndexState) {
-		chain := string(key)
-		if !ValidChainID(chain) {
-			addInvalid()
-			return
-		}
-		if inStore[chain] {
-			return
-		}
-		cr := ChainReport{Chain: chain, Class: classOf(chain), Index: row}
-		switch row {
-		case IndexLive:
-			cr.Index = IndexOnly // a note, not a problem: the next commit of the pair uses it
-		case IndexPending:
-			cr.Problems = append(cr.Problems, erasureInterrupted)
-		default:
-			cr.Problems = append(cr.Problems, indexInconsistent)
-		}
-		reported[chain] = len(rep.Chains)
-		rep.Chains = append(rep.Chains, cr)
-	}); err != nil {
-		return rep, fmt.Errorf("sink: read the subject index: %w", err)
-	}
-	// Forward rows that disagree with the index: each still names a subject (in
-	// its key, never shown) that no consistent row accounts for, and makes every
-	// commit of its pair fail.
-	if err := ix.eachBadForward(ctx, func(v []byte) {
-		chain := string(v)
-		i, known := reported[chain]
-		if !ValidChainID(chain) || !known {
-			addInvalid()
-			return
-		}
-		cr := &rep.Chains[i]
-		if cr.Index != IndexMalformed {
-			cr.Problems = append(cr.Problems, indexInconsistent)
-		}
-		cr.Index = IndexMalformed
-	}); err != nil {
-		return rep, fmt.Errorf("sink: read the subject index: %w", err)
-	}
-
-	// A chain removed from the evidence file leaves its checkpoints and its
-	// secrets behind. They are the only trace of it, so look for them.
-	reportFor := func(name string) *ChainReport {
-		i, known := reported[name]
-		if !known {
-			reported[name] = len(rep.Chains)
-			rep.Chains = append(rep.Chains, ChainReport{Chain: name, Class: classOf(name)})
-			i = len(rep.Chains) - 1
-		}
-		return &rep.Chains[i]
-	}
-	dirs, err := f.list("anchors")
-	switch {
-	case errors.Is(err, errNotRealDir):
-		rep.Chains = append(rep.Chains, ChainReport{Chain: "anchors/", Anomaly: "invalid-folder",
-			Problems: []string{fmt.Sprintf("anchors/ is %v", errNotRealDir)}})
-	case err != nil:
-		return rep, fmt.Errorf("sink: %w", err)
-	}
-	for _, d := range dirs {
-		if inStore[d.Name()] {
-			continue
-		}
-		// Checkpoints are written only for chains with entries: whatever the
-		// index says, entries were removed.
-		cr := reportFor(d.Name())
-		cr.Anomaly = "removed"
-		cr.Problems = append(cr.Problems, "anchors/ has checkpoints for this chain, but the "+
-			"evidence file has no entries for it: the chain was REMOVED")
-	}
-	if sec != nil {
-		withRows, err := sec.chainsWithRows()
-		if err != nil {
-			return rep, fmt.Errorf("sink: read the secrets file: %w", err)
-		}
-		invalidSecrets := 0
-		if n, err := sec.malformedKeys(); err != nil {
-			return rep, fmt.Errorf("sink: read the secrets file: %w", err)
-		} else if n > 0 {
-			invalidSecrets++
-			rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid secrets row #%d>", invalidSecrets),
-				Anomaly: "removed", Problems: []string{fmt.Sprintf("the secrets file holds %d rows whose key "+
-					"this sink never writes; an erasure may not reach them: remove them by hand", n)}})
-		}
-		for _, name := range withRows {
-			if inStore[name] {
+		for i, chain := range chains {
+			if i > 0 && time.Now().After(deadline) {
+				return false, nil
+			}
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+			cursor = &chains[i]
+			if !ValidChainID(chain) {
+				// Never build a path from it: it could be "../../somewhere".
+				// Nor shown: a crafted id could hold anything, even a subject.
+				invalidChains++
+				pending = append(pending, out{cr: ChainReport{Chain: fmt.Sprintf("<invalid chain #%d>", invalidChains),
+					Anomaly:  "invalid-id",
+					Problems: []string{"the evidence file holds a chain id this sink never writes; it was not read"}}})
 				continue
+			}
+			cr, err := s.verifyChain(ctx, p.st, p.sec, p.sig, rc, p.f, chain, keys, p.ix.state(chain))
+			if err != nil {
+				return false, err
+			}
+			pending = append(pending, out{cr: cr})
+		}
+		return len(chains) < pageMaxChains, nil
+	}, flush)
+	if err != nil {
+		return sum, err
+	}
+
+	// 2. The cross-chain sweep.
+	sw := &sweep{rows: map[string]*ChainReport{}, againSeen: map[string]bool{}}
+	defer sw.closeAnchors()
+	if err := s.inPages(ctx, true, func(p *pageFiles, deadline time.Time) (bool, error) {
+		return sw.step(ctx, p, deadline)
+	}, nil); err != nil {
+		return sum, err
+	}
+	names := make([]string, 0, len(sw.rows))
+	for n := range sw.rows {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		pending = append(pending, out{cr: *sw.rows[n]})
+	}
+	for _, cr := range sw.extra {
+		pending = append(pending, out{cr: cr})
+	}
+	for _, cr := range sw.again {
+		pending = append(pending, out{cr: cr, again: true})
+	}
+	return sum, flush()
+}
+
+// sweep is the cross-chain checks' state across pages: one stage after
+// another, each with its own cursor.
+type sweep struct {
+	stage int
+	// rows are reports for chains the evidence file does not hold; extra are
+	// rows for chains it does (an index row that disagrees) and numbered rows
+	// for ids never shown.
+	rows  map[string]*ChainReport
+	extra []ChainReport
+	// again are second rows for chains the walk already reported (an index
+	// row that disagrees with one), at most one per chain.
+	again     []ChainReport
+	againSeen map[string]bool
+
+	revAfter       string
+	fwdAfter       []byte
+	anchors        *os.File
+	secAfter       *string
+	sigAfter       *string
+	mal            keyCursor
+	malCount       int
+	invalidIndex   int
+	invalidSecrets int
+	invalidSigs    int
+	invalidAnchors int
+}
+
+func (w *sweep) closeAnchors() {
+	if w.anchors != nil {
+		w.anchors.Close()
+		w.anchors = nil
+	}
+}
+
+// rowFor is the report of a chain the evidence file does not hold.
+func (w *sweep) rowFor(name string) *ChainReport {
+	if r, ok := w.rows[name]; ok {
+		return r
+	}
+	r := &ChainReport{Chain: name, Class: classOf(name)}
+	w.rows[name] = r
+	return r
+}
+
+func (w *sweep) invalidIndexRow() {
+	w.invalidIndex++
+	w.extra = append(w.extra, ChainReport{Chain: fmt.Sprintf("<invalid index row #%d>", w.invalidIndex),
+		Index: IndexMalformed, Problems: []string{indexInconsistent}})
+}
+
+// beforeAnchorsOpen runs between the sweep's Lstat of anchors/ and its open: a
+// test hook (it swaps the folder in exactly that window). nil outside tests.
+var beforeAnchorsOpen func()
+
+// inStore reports whether the evidence file holds entries for chain, now.
+func inStore(ctx context.Context, p *pageFiles, chain string) (bool, error) {
+	_, _, err := p.st.ReadTail(ctx, chain)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, store.ErrEmptyChain):
+		return false, nil
+	}
+	return false, fmt.Errorf("sink: read chain %s: %w", chain, err)
+}
+
+// step does one page of the sweep and reports whether it is done.
+func (w *sweep) step(ctx context.Context, p *pageFiles, deadline time.Time) (bool, error) {
+	progressed := false // at least one unit per page, whatever the budget
+	for ; w.stage < 8; w.stage++ {
+		for {
+			if progressed && time.Now().After(deadline) {
+				return false, nil
+			}
+			progressed = true
+			done, err := w.stageStep(ctx, p)
+			if err != nil {
+				return false, err
+			}
+			if done {
+				break
+			}
+		}
+	}
+	return true, nil
+}
+
+// stageStep does one bounded unit of the current stage; done means the stage
+// is complete.
+func (w *sweep) stageStep(ctx context.Context, p *pageFiles) (bool, error) {
+	switch w.stage {
+	case 0: // index rows with no chain in the evidence file
+		rows := p.ix.reverseAfter(w.revAfter, pageMaxKeys)
+		for _, r := range rows {
+			w.revAfter = r.key
+			if !ValidChainID(r.key) {
+				w.invalidIndexRow() // never shown: it could hold anything, even a subject
+				continue
+			}
+			in, err := inStore(ctx, p, r.key)
+			if err != nil {
+				return false, err
+			}
+			if in {
+				continue
+			}
+			cr := w.rowFor(r.key)
+			cr.Index = r.state
+			switch r.state {
+			case IndexLive:
+				cr.Index = IndexOnly // a note, not a problem: the next commit of the pair uses it
+			case IndexPending:
+				cr.Problems = append(cr.Problems, erasureInterrupted)
+			default:
+				cr.Problems = append(cr.Problems, indexInconsistent)
+			}
+		}
+		return len(rows) < pageMaxKeys, nil
+
+	case 1: // forward rows that disagree with the index (their keys name subjects: never shown)
+		bad, next, done := p.ix.badForwardAfter(w.fwdAfter, pageMaxKeys)
+		if next != nil {
+			w.fwdAfter = next
+		}
+		for _, chain := range bad {
+			if !ValidChainID(chain) {
+				w.invalidIndexRow()
+				continue
+			}
+			in, err := inStore(ctx, p, chain)
+			if err != nil {
+				return false, err
+			}
+			switch r, known := w.rows[chain]; {
+			case in:
+				if !w.againSeen[chain] {
+					w.againSeen[chain] = true
+					w.again = append(w.again, ChainReport{Chain: chain, Class: classOf(chain), Index: IndexMalformed,
+						Problems: []string{indexInconsistent}})
+				}
+			case known:
+				if r.Index != IndexMalformed {
+					r.Problems = append(r.Problems, indexInconsistent)
+				}
+				r.Index = IndexMalformed
+			default:
+				w.invalidIndexRow()
+			}
+		}
+		return done, nil
+
+	case 2: // checkpoint folders of chains the evidence file does not hold
+		if w.anchors == nil {
+			ok, err := p.f.realDir("anchors")
+			switch {
+			case errors.Is(err, errNotRealDir):
+				w.extra = append(w.extra, ChainReport{Chain: "anchors/", Anomaly: "invalid-folder",
+					Problems: []string{fmt.Sprintf("anchors/ is %v", errNotRealDir)}})
+				return true, nil
+			case err != nil:
+				return false, fmt.Errorf("sink: %w", err)
+			case !ok:
+				return true, nil
+			}
+			// Held across pages: a handle, not a lock. It must be the folder just
+			// inspected (a symlink swapped in meanwhile is refused).
+			before, err := p.f.root.Lstat("anchors")
+			if err != nil {
+				return false, fmt.Errorf("sink: %w", err)
+			}
+			if beforeAnchorsOpen != nil {
+				beforeAnchorsOpen()
+			}
+			if w.anchors, err = p.f.root.Open("anchors"); err != nil {
+				// os.Root refuses a symlink leading out of the sink: a finding,
+				// like any other anchors/ that is not a real folder.
+				w.anchors = nil
+				w.extra = append(w.extra, ChainReport{Chain: "anchors/", Anomaly: "invalid-folder",
+					Problems: []string{"anchors/ could not be opened as a folder inside the sink"}})
+				return true, nil
+			}
+			if after, err := w.anchors.Stat(); err != nil || !os.SameFile(before, after) {
+				w.closeAnchors()
+				w.extra = append(w.extra, ChainReport{Chain: "anchors/", Anomaly: "invalid-folder",
+					Problems: []string{"anchors/ changed while it was being read"}})
+				return true, nil
+			}
+		}
+		ents, err := w.anchors.ReadDir(pageMaxKeys)
+		for _, d := range ents {
+			if !ValidChainID(d.Name()) {
+				// Never shown: a folder name could hold anything.
+				w.invalidAnchors++
+				w.extra = append(w.extra, ChainReport{Chain: fmt.Sprintf("<invalid anchors folder #%d>", w.invalidAnchors),
+					Anomaly: "removed", Problems: []string{"anchors/ holds a folder named with an id this sink never mints"}})
+				continue
+			}
+			in, err := inStore(ctx, p, d.Name())
+			if err != nil {
+				return false, err
+			}
+			if in {
+				continue
+			}
+			// Checkpoints are written only for chains with entries: whatever the
+			// index says, entries were removed.
+			cr := w.rowFor(d.Name())
+			cr.Anomaly = "removed"
+			cr.Problems = append(cr.Problems, "anchors/ has checkpoints for this chain, but the "+
+				"evidence file has no entries for it: the chain was REMOVED")
+		}
+		if err != nil || len(ents) < pageMaxKeys {
+			w.closeAnchors()
+			if err != nil && !errors.Is(err, io.EOF) {
+				return false, fmt.Errorf("sink: %w", err)
+			}
+			return true, nil
+		}
+		return false, nil
+
+	case 3: // secrets rows keyed off the layout (counted)
+		if p.sec == nil {
+			return true, nil
+		}
+		n, cur, done, err := p.sec.malformedKeysAfter(w.mal, pageMaxKeys)
+		if err != nil {
+			return false, fmt.Errorf("sink: read the secrets file: %w", err)
+		}
+		w.malCount, w.mal = w.malCount+n, cur
+		if done {
+			if w.malCount > 0 {
+				w.invalidSecrets++
+				w.extra = append(w.extra, ChainReport{Chain: fmt.Sprintf("<invalid secrets row #%d>", w.invalidSecrets),
+					Anomaly: "removed", Problems: []string{fmt.Sprintf("the secrets file holds %d rows whose key "+
+						"this sink never writes; an erasure may not reach them: remove them by hand", w.malCount)}})
+			}
+			w.malCount, w.mal = 0, keyCursor{}
+		}
+		return done, nil
+
+	case 4: // secrets rows of chains the evidence file does not hold
+		if p.sec == nil {
+			return true, nil
+		}
+		names, err := p.sec.chainsWithRowsAfter(w.secAfter, pageMaxKeys)
+		if err != nil {
+			return false, fmt.Errorf("sink: read the secrets file: %w", err)
+		}
+		for i, name := range names {
+			w.secAfter = &names[i]
+			in, err := inStore(ctx, p, name)
+			if err != nil {
+				return false, err
+			}
+			if in {
+				continue // its rows were checked with the chain
 			}
 			if !ValidChainID(name) {
 				// Never shown: a crafted key could hold anything.
-				invalidSecrets++
-				rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid secrets row #%d>", invalidSecrets),
+				w.invalidSecrets++
+				w.extra = append(w.extra, ChainReport{Chain: fmt.Sprintf("<invalid secrets row #%d>", w.invalidSecrets),
 					Anomaly: "removed", Problems: []string{"the secrets file holds content or nonces under an " +
 						"id this sink never mints; remove them by hand"}})
 				continue
 			}
-			cr := reportFor(name)
+			cr := w.rowFor(name)
 			if cr.Index != IndexOnly && cr.Index != IndexPending {
 				cr.Anomaly = "removed"
 			}
@@ -324,62 +598,76 @@ func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...Verify
 				"but the evidence file has no entries for it: the chain was removed, or a first commit "+
 				"stopped before its append; "+remedy(cr.Index))
 		}
-	}
-	if sigProblem != "" {
-		rep.Chains = append(rep.Chains, ChainReport{Chain: "<invalid signatures file>", Anomaly: "invalid-file",
-			Problems: []string{sigProblem}})
-	}
-	if sig != nil {
-		if err := checkSignatureRows(&rep, sig, inStore, reportFor); err != nil {
-			return rep, err
-		}
-	}
-	sort.Slice(rep.Chains, func(i, j int) bool { return rep.Chains[i].Chain < rep.Chains[j].Chain })
-	return rep, nil
-}
+		return len(names) < pageMaxKeys, nil
 
-// checkSignatureRows reports what the signatures file holds for chains the
-// evidence file does not: REMOVED (a problem), unless the index binds the chain
-// or has it pending (a first commit's leftovers: a note); and rows keyed off
-// the layout, by count. Record trust plays no part: this is about the folder.
-func checkSignatureRows(rep *Report, sig *signaturesStore, inStore map[string]bool,
-	reportFor func(string) *ChainReport) error {
-	invalid := 0
-	addInvalid := func(problem string) {
-		invalid++
-		rep.Chains = append(rep.Chains, ChainReport{Chain: fmt.Sprintf("<invalid signatures row #%d>", invalid),
-			Anomaly: "removed", Problems: []string{problem}})
-	}
-	if n, err := sig.malformedKeys(); err != nil {
-		return fmt.Errorf("sink: read the signatures file: %w", err)
-	} else if n > 0 {
-		addInvalid(fmt.Sprintf("the signatures file holds %d rows whose key this sink never writes", n))
-	}
-	withRows, err := sig.chainsWithRows()
-	if err != nil {
-		return fmt.Errorf("sink: read the signatures file: %w", err)
-	}
-	for _, name := range withRows {
-		if inStore[name] {
-			continue
-		}
-		if !ValidChainID(name) {
-			continue // counted by malformedKeys; never shown
-		}
-		cr := reportFor(name)
-		if cr.Index == IndexOnly || cr.Index == IndexPending {
-			n, err := sig.validRowCount(name)
-			if err != nil {
-				return fmt.Errorf("sink: read the signatures file: %w", err)
+	case 5: // a signatures file that is not one this sink writes
+		if p.sigErr != nil {
+			problem := "the signatures file's signing mode was altered (a value this sink never writes)"
+			if p.sig == nil {
+				problem = "the signatures file is not one this sink writes (a bucket is missing); " +
+					"its record signatures could not be read"
 			}
-			cr.OrphanSignatures += n
-			continue
+			w.extra = append(w.extra, ChainReport{Chain: "<invalid signatures file>", Anomaly: "invalid-file",
+				Problems: []string{problem}})
 		}
-		cr.Anomaly = "removed"
-		cr.Problems = append(cr.Problems, "the signatures file holds record signatures for this chain, "+
-			"but the evidence file has no entries for it: the chain was REMOVED")
+		return true, nil
+
+	case 6: // signature rows keyed off the layout (counted)
+		if p.sig == nil {
+			return true, nil
+		}
+		n, cur, done, err := p.sig.malformedKeysAfter(w.mal, pageMaxKeys)
+		if err != nil {
+			return false, fmt.Errorf("sink: read the signatures file: %w", err)
+		}
+		w.malCount, w.mal = w.malCount+n, cur
+		if done {
+			if w.malCount > 0 {
+				w.invalidSigs++
+				w.extra = append(w.extra, ChainReport{Chain: fmt.Sprintf("<invalid signatures row #%d>", w.invalidSigs),
+					Anomaly: "removed", Problems: []string{fmt.Sprintf("the signatures file holds %d rows whose "+
+						"key this sink never writes", w.malCount)}})
+			}
+			w.malCount, w.mal = 0, keyCursor{}
+		}
+		return done, nil
+
+	case 7: // signature rows of chains the evidence file does not hold
+		if p.sig == nil {
+			return true, nil
+		}
+		names, err := p.sig.chainsWithRowsAfter(w.sigAfter, pageMaxKeys)
+		if err != nil {
+			return false, fmt.Errorf("sink: read the signatures file: %w", err)
+		}
+		for i, name := range names {
+			w.sigAfter = &names[i]
+			if !ValidChainID(name) {
+				continue // counted by the malformed-keys stage; never shown
+			}
+			in, err := inStore(ctx, p, name)
+			if err != nil {
+				return false, err
+			}
+			if in {
+				continue
+			}
+			cr := w.rowFor(name)
+			if cr.Index == IndexOnly || cr.Index == IndexPending {
+				n, err := p.sig.validRowCount(name)
+				if err != nil {
+					return false, fmt.Errorf("sink: read the signatures file: %w", err)
+				}
+				cr.OrphanSignatures += n
+				continue
+			}
+			cr.Anomaly = "removed"
+			cr.Problems = append(cr.Problems, "the signatures file holds record signatures for this chain, "+
+				"but the evidence file has no entries for it: the chain was REMOVED")
+		}
+		return len(names) < pageMaxKeys, nil
 	}
-	return nil
+	return true, nil
 }
 
 // Index problems, worded once.

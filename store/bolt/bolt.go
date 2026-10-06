@@ -557,6 +557,79 @@ func (s *Store) Chains(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+// ChainsAfter returns up to limit chain ids that sort after *after (nil
+// starts at the first), in order: Chains a page at a time. A pointer, not "",
+// marks the start: "" can itself be a chain id in a crafted file.
+//
+// # Description
+//
+// One seek, then a walk of at most limit chains, so a caller can release the
+// file between pages and resume where it stopped.
+//
+// # Inputs
+//
+//   - ctx: checked before reading
+//   - after: the last chain id of the previous page; nil for the first page
+//   - limit: the most ids to return (at least 1)
+//
+// # Outputs
+//
+//   - []string: ids in order; empty when there are no more
+//   - error: a read failure, or a malformed key
+//
+// # Example
+//
+//	var after *string
+//	for {
+//	    page, err := s.ChainsAfter(ctx, after, 256)
+//	    if err != nil || len(page) == 0 {
+//	        break
+//	    }
+//	    after = &page[len(page)-1]
+//	}
+//
+// # Limitations
+//
+//   - Chains added meanwhile appear if they sort after the cursor.
+//
+// # Assumptions
+//
+//   - Chain ids contain no NUL (as everywhere in this store).
+func (s *Store) ChainsAfter(ctx context.Context, after *string, limit int) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit < 1 {
+		return nil, fmt.Errorf("bolt: chains after: limit %d is below 1", limit)
+	}
+	var out []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		c := tx.Bucket(bucketEntries).Cursor()
+		var k []byte
+		if after == nil {
+			k, _ = c.First()
+		} else {
+			// after ‖ 0x01 sorts after every key of chain `after` itself, and
+			// before any longer id it prefixes (those continue with a byte > 0x01).
+			k, _ = c.Seek(append([]byte(*after), keySep+1))
+		}
+		for k != nil && len(out) < limit {
+			i := bytes.IndexByte(k, keySep)
+			if i < 0 {
+				return fmt.Errorf("entry key without a chain separator (%d bytes)", len(k))
+			}
+			chain := string(k[:i])
+			out = append(out, chain)
+			k, _ = c.Seek(append([]byte(chain), keySep+1))
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("bolt: chains after: %w", err)
+	}
+	return out, nil
+}
+
 // GetState returns the chain's head state.
 func (s *Store) GetState(ctx context.Context, chainID string) (*store.State, error) {
 	if err := ctx.Err(); err != nil {

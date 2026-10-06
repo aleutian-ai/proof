@@ -65,23 +65,9 @@ func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trus
 	if signer == nil {
 		return nil, errors.New("sink: a signer is required")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Read-only: a checkpoint writes checkpoint files, never the evidence file.
-	st, err := s.openStore(true)
-	if err != nil {
-		return nil, err
-	}
-	defer st.Close()
-	f, err := s.openFolder(false)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	chains, err := st.Chains(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("sink: %w", err)
-	}
+	// Read-only on the evidence file (a checkpoint writes checkpoint files,
+	// never entries), and a page at a time: the files are released between
+	// pages, so a writer never waits for every chain to be checkpointed.
 	if trusted == nil {
 		signerID, signerPub, err := anchor.KeyIDOf(signer)
 		if err != nil {
@@ -96,29 +82,29 @@ func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trus
 	skip := func(chain, problem string) {
 		out = append(out, Checkpointed{Chain: chain, Problem: problem})
 	}
-	for _, chain := range chains {
+	one := func(p *pageFiles, chain string) error {
 		if err := ctx.Err(); err != nil {
-			return out, err
+			return err
 		}
 		if !ValidChainID(chain) {
 			skip(chain, "the evidence file holds a chain id this sink never writes; not checkpointed")
-			continue
+			return nil
 		}
-		anchors, problem, err := f.readAnchors(chain)
+		anchors, problem, err := p.f.readAnchors(chain)
 		if err != nil {
-			return out, err
+			return err
 		}
 		if problem != "" {
 			skip(chain, problem+"; refusing to add to it")
-			continue
+			return nil
 		}
 		var previous *anchor.Anchor
 		if len(anchors) > 0 {
 			previous = &anchors[len(anchors)-1]
 			// Nothing new since the last checkpoint: known from the tail alone,
 			// without walking the chain.
-			if _, tail, err := st.ReadTail(ctx, chain); err == nil && previous.EntryCount == tail+1 {
-				continue
+			if _, tail, err := p.st.ReadTail(ctx, chain); err == nil && previous.EntryCount == tail+1 {
+				return nil
 			}
 		}
 		// One paged walk: it verifies the chain, binds the existing series as it
@@ -128,46 +114,64 @@ func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trus
 		w := verify.NewWalker(verify.Options{MaxBreaks: 1})
 		series := newSeriesCheck(chain, anchors, trusted)
 		total := 0
-		if err := forEachEntry(ctx, st, chain, func(e store.Entry) {
+		if err := forEachEntry(ctx, p.st, chain, func(e store.Entry) {
 			w.Add(toVerifyEntry(e))
 			series.reached(w)
 			total++
 		}); err != nil {
-			return out, err
+			return err
 		}
 		if len(anchors) > 0 {
 			series.finish(total)
 			if len(series.problems) > 0 {
 				skip(chain, "its checkpoints do not verify under the trusted keys: "+series.problems[0])
-				continue
+				return nil
 			}
 		}
 		unsigned, err := build.FromWalker(ctx, chain, w, previous, time.Time{})
 		if errors.Is(err, build.ErrChainBroken) {
 			skip(chain, err.Error())
-			continue
+			return nil
 		}
 		if err != nil {
-			return out, fmt.Errorf("sink: chain %s: %w", chain, err)
+			return fmt.Errorf("sink: chain %s: %w", chain, err)
 		}
 		signed, err := anchor.SignAnchor(ctx, signer, unsigned)
 		if err != nil {
-			return out, fmt.Errorf("sink: chain %s: %w", chain, err)
+			return fmt.Errorf("sink: chain %s: %w", chain, err)
 		}
 		raw, err := json.MarshalIndent(signed, "", "  ")
 		if err != nil {
-			return out, fmt.Errorf("sink: chain %s: %w", chain, err)
+			return fmt.Errorf("sink: chain %s: %w", chain, err)
 		}
 		dir := filepath.Join("anchors", chain)
-		if err := f.mkdirAll(dir, 0o755); err != nil {
-			return out, fmt.Errorf("sink: %w", err)
+		if err := p.f.mkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("sink: %w", err)
 		}
 		name := fmt.Sprintf("%04d.json", len(anchors)+1)
-		if err := f.writeNew(filepath.Join(dir, name), raw, 0o644); err != nil {
-			return out, err
+		if err := p.f.writeNew(filepath.Join(dir, name), raw, 0o644); err != nil {
+			return err
 		}
 		out = append(out, Checkpointed{Chain: chain,
 			File: filepath.Join("anchors", chain, name), Entries: signed.EntryCount})
+		return nil
 	}
-	return out, nil
+	var cursor *string // nil: from the first chain ("" can be a crafted chain id)
+	err := s.inPages(ctx, false, func(p *pageFiles, deadline time.Time) (bool, error) {
+		chains, err := p.st.ChainsAfter(ctx, cursor, pageMaxChains)
+		if err != nil {
+			return false, fmt.Errorf("sink: %w", err)
+		}
+		for i, chain := range chains {
+			if i > 0 && time.Now().After(deadline) {
+				return false, nil
+			}
+			cursor = &chains[i]
+			if err := one(p, chain); err != nil {
+				return false, err
+			}
+		}
+		return len(chains) < pageMaxChains, nil
+	}, nil)
+	return out, err
 }

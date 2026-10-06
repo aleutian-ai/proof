@@ -107,7 +107,7 @@ func (fx *fixture) nothingLeft(t *testing.T) {
 			t.Fatalf("chain %s: %d entries written by a failed commit", chain, len(rows))
 		}
 	}
-	if chains, _ := fx.sec.chainsWithRows(); len(chains) != 0 {
+	if chains, _ := fx.sec.chainsWithRowsAfter(nil, 1<<30); len(chains) != 0 {
 		t.Fatalf("content or nonces left behind for %v", chains)
 	}
 }
@@ -231,7 +231,7 @@ func TestCommitPairs_MovedTailIsRefused(t *testing.T) {
 	if rows, _ := fx.st.Range(context.Background(), fx.chain2, 0, 1<<62, 0); len(rows) != 0 {
 		t.Fatal("the other chain was written although the call was refused")
 	}
-	if chains, _ := fx.sec.chainsWithRows(); len(chains) != 0 {
+	if chains, _ := fx.sec.chainsWithRowsAfter(nil, 1<<30); len(chains) != 0 {
 		t.Fatalf("content or nonces left behind for %v", chains)
 	}
 }

@@ -381,42 +381,6 @@ func (x *indexSnapshot) state(chain string) IndexState {
 	return rowState(x.tx, []byte(chain), x.tx.Bucket(reverseBucket).Get([]byte(chain)))
 }
 
-// eachReverse calls fn for every reverse row, with its state. The key is
-// passed raw: it may be anything a crafted file holds, so the caller must not
-// print it unless it is a valid chain id.
-func (x *indexSnapshot) eachReverse(ctx context.Context, fn func(key []byte, state IndexState)) error {
-	if x == nil {
-		return nil
-	}
-	return x.tx.Bucket(reverseBucket).ForEach(func(k, v []byte) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		fn(k, rowState(x.tx, k, v))
-		return nil
-	})
-}
-
-// eachBadForward calls fn with the value (a would-be chain id, raw) of every
-// forward row that fails bindingOK: a row that still names a subject whose
-// chain is pending, erased or bound to another pair. The forward KEY holds the
-// subject, so it is never passed on.
-func (x *indexSnapshot) eachBadForward(ctx context.Context, fn func(chain []byte)) error {
-	if x == nil {
-		return nil
-	}
-	return x.tx.Bucket(forwardBucket).ForEach(func(k, v []byte) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		i := bytes.IndexByte(k, 0)
-		if i < 0 || !bindingOK(x.tx, string(k[:i]), string(k[i+1:]), v) {
-			fn(v)
-		}
-		return nil
-	})
-}
-
 // liveChains lists every chain with a live row.
 func (s *subjectsStore) liveChains() ([]string, error) {
 	var out []string
@@ -533,4 +497,65 @@ func (s *Sink) ChainSubjects(ctx context.Context) ([]ChainSubject, error) {
 		return nil, fmt.Errorf("sink: read the subject index: %w", err)
 	}
 	return out, nil
+}
+
+// indexRow is one reverse row: its raw key (never print one that is not a
+// valid chain id) and its state.
+type indexRow struct {
+	key   string
+	state IndexState
+}
+
+// reverseAfter returns up to limit reverse rows whose key sorts after `after`
+// ("" from the first): the reverse rows a page at a time.
+func (x *indexSnapshot) reverseAfter(after string, limit int) []indexRow {
+	if x == nil {
+		return nil
+	}
+	c := x.tx.Bucket(reverseBucket).Cursor()
+	var k, v []byte
+	if after == "" {
+		k, v = c.First()
+	} else {
+		k, v = c.Seek([]byte(after))
+		if k != nil && string(k) == after {
+			k, v = c.Next()
+		}
+	}
+	var out []indexRow
+	for ; k != nil && len(out) < limit; k, v = c.Next() {
+		out = append(out, indexRow{key: string(k), state: rowState(x.tx, k, v)})
+	}
+	return out
+}
+
+// badForwardAfter examines up to limit forward rows after the key `after`
+// (nil from the first) and returns the would-be chain ids of those that fail
+// bindingOK, the last key examined (the next call's `after`; it names a
+// subject, so it is a cursor only, never shown), and whether the bucket is
+// done.
+func (x *indexSnapshot) badForwardAfter(after []byte, limit int) (bad []string, next []byte, done bool) {
+	if x == nil {
+		return nil, nil, true
+	}
+	c := x.tx.Bucket(forwardBucket).Cursor()
+	var k, v []byte
+	if after == nil {
+		k, v = c.First()
+	} else {
+		k, v = c.Seek(after)
+		if k != nil && bytes.Equal(k, after) {
+			k, v = c.Next()
+		}
+	}
+	n := 0
+	for ; k != nil && n < limit; k, v = c.Next() {
+		n++
+		next = bytes.Clone(k)
+		i := bytes.IndexByte(k, 0)
+		if i < 0 || !bindingOK(x.tx, string(k[:i]), string(k[i+1:]), v) {
+			bad = append(bad, string(v))
+		}
+	}
+	return bad, next, k == nil
 }

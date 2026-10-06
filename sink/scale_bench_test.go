@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -74,7 +75,11 @@ func TestScale(t *testing.T) {
 	var rep Report
 	peak, alloc, took := measure(func() { rep, verr = s.Verify(ctx, ring) }, func() {
 		time.Sleep(200 * time.Millisecond)
-		w, _ := Open(dir, WithLockTimeout(10*time.Minute))
+		w, err := Open(dir, WithLockTimeout(10*time.Minute))
+		if err != nil {
+			t.Logf("writer probe: %v", err)
+			return
+		}
 		start := time.Now()
 		if _, err := w.Commit(ctx, []Record{{Class: "events", Subject: "writer-probe", Content: []byte("x")}}); err != nil {
 			t.Logf("writer probe: %v", err)
@@ -88,6 +93,60 @@ func TestScale(t *testing.T) {
 	t.Logf("Verify: %d chains in %s · peak heap %.1f MiB · allocated %.1f MiB · %.1f µs/chain · OK=%v",
 		len(rep.Chains), took.Round(time.Millisecond), mib(peak), mib(alloc),
 		float64(took.Microseconds())/float64(max(1, len(rep.Chains))), rep.OK())
+
+	// _74b: VerifyEach, reports discarded (streamed), while a writer commits
+	// every 100 ms with a SHORT lock timeout. Its waits are what a consumer
+	// sees: about one page, not the whole run.
+	var waits []time.Duration
+	var werr error
+	stopW := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		w, err := Open(dir, WithLockTimeout(5*time.Second))
+		if err != nil {
+			werr = err
+			return
+		}
+		for i := 0; ; i++ {
+			select {
+			case <-stopW:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+			start := time.Now()
+			if _, err := w.Commit(ctx, []Record{{Class: "events", Subject: fmt.Sprintf("probe-%d", i),
+				Content: []byte("x")}}); err != nil {
+				werr = err
+				return
+			}
+			waits = append(waits, time.Since(start))
+		}
+	}()
+	var sum Summary
+	peak, alloc, took = measure(func() {
+		sum, verr = s.VerifyEach(ctx, ring, func(ChainReport) error { return nil })
+	}, nil)
+	close(stopW)
+	<-writerDone
+	if verr != nil {
+		t.Fatal(verr)
+	}
+	if werr != nil {
+		t.Fatalf("a writer failed during VerifyEach: %v", werr)
+	}
+	sort.Slice(waits, func(i, j int) bool { return waits[i] < waits[j] })
+	pct := func(q float64) time.Duration {
+		if len(waits) == 0 {
+			return 0
+		}
+		return waits[min(len(waits)-1, int(q*float64(len(waits))))]
+	}
+	t.Logf("VerifyEach: %d reports in %s · peak heap %.1f MiB · allocated %.1f MiB · OK=%v",
+		sum.Reports, took.Round(time.Millisecond), mib(peak), mib(alloc), sum.OK())
+	t.Logf("writer during VerifyEach: %d commits · wait p50 %s · p99 %s · max %s",
+		len(waits), pct(0.50).Round(time.Microsecond), pct(0.99).Round(time.Microsecond),
+		pct(1).Round(time.Microsecond))
 
 	var rows []ChainSubject
 	var cerr error

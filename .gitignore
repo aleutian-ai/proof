@@ -47,5 +47,7 @@ node_modules/
 /cmd/proof-mcp/proof-mcp
 /examples/integrations/nats/nats
 /examples/integrations/nats/nats-sink
+/examples/integrations/kafka/kafka
+/examples/integrations/kafka/kafka-sink
 /examples/integrations/redis/redis
 /examples/integrations/redis/redis-sink

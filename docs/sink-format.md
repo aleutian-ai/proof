@@ -356,6 +356,18 @@ real directory. Checkpoint files MUST be read with the type and size checked
 on the file actually opened, not only by name beforehand. This implementation
 uses Go's `os.Root`, `O_NONBLOCK` (a FIFO cannot hang it) and a capped read.
 
+**Verification reads a page at a time, and is not one snapshot.** A verifier
+MAY release the files between chains so writers are not held up (this
+implementation releases them every ~50 ms of work, pausing longer than bbolt's
+50 ms lock retry so a waiting writer gets in). Every chain MUST be read whole
+under one hold, so each chain's verdict is consistent. The report as a whole is
+then a sequence of per-chain readings, not one snapshot of the folder: a chain
+committed during the run may or may not be reported, and the cross-chain checks
+(index rows, checkpoint folders, secrets and signature rows for chains the
+evidence file does not hold) MUST look at the evidence file when they run, so a
+chain committed meanwhile is never reported as removed. For a point-in-time
+verdict, stop the writers or verify a copy.
+
 **Verification changes nothing.** It opens the evidence, secrets, signatures and index
 files read-only, creates no file or folder (a mistyped folder is an error, not a
 new sink), reports a missing secrets file as events whose content is gone, and a

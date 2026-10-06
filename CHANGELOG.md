@@ -120,11 +120,25 @@ change is called out here.
     erasure counts as `erased` without a checkpoint when nothing else fails.
     `UsesRecordKey` backs a CLI warning when a checkpoint key also signs
     records.
+  - **`proof sink init`** makes the two keys the recommended way: a record key
+    (online) and a checkpoint key (kept elsewhere; `--op-vault` puts it in
+    1Password only), beside the sink folder, never inside it, and prints the
+    commands to use. `--one-key` is allowed and warned about.
   - **CLI:** `proof sink commit|erase --record-key`, `proof sink verify
     --record-trust` (repeatable); a record key given or missing against the
     sink's mode exits 2 with the fix. The NATS and Redis examples sign with
     `PROOF_RECORD_KEY_FILE` (a path, never key material) and stop on a
     configuration error instead of redelivering.
+- **Verify and Checkpoint no longer hold the sink for the whole run.** They
+  read a page of whole chains at a time (~50 ms of work), releasing the files
+  for longer than bbolt's lock retry between pages. Measured at 100k chains, a
+  writer committing every 100 ms waits p99 ~95 ms during a Verify, where it
+  waited the entire run before; Verify itself takes ~3× longer. New
+  `Sink.VerifyEach` streams each report to a callback (peak heap 3.4 MiB at
+  100k chains, against 43 MiB collected); `Verify` is unchanged for callers.
+  `proof sink verify` prints each chain as it is verified, with the
+  cross-chain findings after. The report is per-chain readings, not one
+  snapshot (`docs/sink-format.md` §6).
 - **Verify checks the stored linkage:** every entry's stored `previous_hash`
   must be the previous entry's chain hash, and a sink chain must start at
   sequence 0, so a signed record can be neither spliced in nor the front cut
@@ -186,6 +200,18 @@ change is called out here.
   the old one. `run.sh` proves this, and the check fails with the incarnation
   removed. Entries deleted while pending are reported as lost. It defaults to
   Valkey and is also run against Redis 8. It is its own module.
+- **`examples/integrations/kafka`: Kafka → proof** (franz-go). The topic is the
+  class (operator-fixed), the record key the subject. Offsets are committed only
+  after the sink commit, per partition, up to the first record not committed;
+  refused records (no key, a name) are logged by position and committed past.
+  Positions carry Kafka's own topic id and the record's leader epoch, taken
+  from the fetch response, so neither a deleted and recreated topic nor a
+  truncated log (an unclean leader election) is mistaken for records already
+  committed; `run.sh` proves the recreate case, and the check fails with the id
+  removed. `run.sh` also signs every
+  record (`proof sink init`, `PROOF_RECORD_KEY_FILE`), erases a user, and runs
+  `proof sink verify` repeatedly alongside a live consumer. Run on
+  `apache/kafka` and `apache/kafka-native` 4.1. It is its own module.
 - `store/bolt.Store.Chains` lists every chain in a file, from the store itself.
   Not part of the store port.
 

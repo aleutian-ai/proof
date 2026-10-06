@@ -360,9 +360,12 @@ if podman run --rm -v "$REPO_ROOT:/src:ro" "$IMAGE" sh -c '
 set -e
 cp -r /src /work && cd /work
 go test ./... -count=1 >/tmp/t.log 2>&1 || { cat /tmp/t.log; exit 1; }
+# The sink suite again with one-chain pages: paged Verify and Checkpoint must
+# give exactly what one long pass gives, at every page boundary.
+SINK_TINY_PAGES=1 go test ./sink -count=1 >/tmp/p.log 2>&1 || { cat /tmp/p.log; exit 1; }
 cd /work/cmd/proof-mcp && go test ./... -count=1 >/tmp/m.log 2>&1 || { cat /tmp/m.log; exit 1; }
 ' >"$WORK/log2" 2>&1; then
-    ok "library + MCP module pass on linux"
+    ok "library + MCP module pass on linux (the sink suite also with one-chain pages)"
 else
     bad "test suite failed on linux:"; detail "$WORK/log2"
 fi

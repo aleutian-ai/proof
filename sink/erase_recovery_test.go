@@ -524,7 +524,7 @@ func TestCommitPairs_FailedFirstCommitLeavesNoRows(t *testing.T) {
 	if err == nil {
 		t.Fatal("the injected failure was not reported")
 	}
-	if chains, _ := fx.sec.chainsWithRows(); len(chains) != 0 {
+	if chains, _ := fx.sec.chainsWithRowsAfter(nil, 1<<30); len(chains) != 0 {
 		t.Fatalf("the failed first commit left content or nonces for %v", chains)
 	}
 }

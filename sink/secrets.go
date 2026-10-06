@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -212,59 +213,6 @@ func (s *secretsStore) idsIn(chain string, bucket []byte) ([]string, error) {
 	return ids, err
 }
 
-// malformedKeys counts the rows whose key is not chain ‖ 0x00 ‖ entry id with a
-// valid chain id and a valid entry id. The sink never writes such a row; one
-// that exists was planted, and the prefix scans of erase and Verify would miss
-// it, so it is counted (never shown: a crafted key could hold anything).
-func (s *secretsStore) malformedKeys() (int, error) {
-	n := 0
-	err := s.db.View(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{contentBucket, noncesBucket} {
-			if err := tx.Bucket(b).ForEach(func(k, _ []byte) error {
-				i := bytes.IndexByte(k, 0)
-				if i < 0 || !ValidChainID(string(k[:i])) || !entryIDPattern.Match(k[i+1:]) {
-					n++
-				}
-				return nil
-			}); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	return n, err
-}
-
-// chainsWithRows lists, once each, every chain that has a content or nonce row.
-// Keys are chain ‖ 0x00 ‖ entry id, and a valid chain id holds no NUL, so the
-// chain is everything before the first NUL. After each chain it seeks past that
-// chain's rows, so the cost is one step per chain, not per row.
-func (s *secretsStore) chainsWithRows() ([]string, error) {
-	seen := map[string]bool{}
-	var out []string
-	err := s.db.View(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{contentBucket, noncesBucket} {
-			c := tx.Bucket(b).Cursor()
-			for k, _ := c.First(); k != nil; {
-				i := bytes.IndexByte(k, 0)
-				if i < 0 {
-					k, _ = c.Next() // malformed; counted by malformedKeys
-					continue
-				}
-				chain := string(k[:i])
-				if !seen[chain] {
-					seen[chain] = true
-					out = append(out, chain)
-				}
-				// chain ‖ 0x01 sorts after every chain ‖ 0x00 ‖ … key.
-				k, _ = c.Seek(append([]byte(chain), 1))
-			}
-		}
-		return nil
-	})
-	return out, err
-}
-
 // eraseChain removes, in ONE transaction, every nonce of a chain and every
 // content row except the genuine erasure records in keep, each kept only while
 // it holds exactly its record (anything else in a record's place may be
@@ -309,4 +257,102 @@ func (s *secretsStore) eraseChain(chain string, keep map[string][]byte) (int, er
 		return nil
 	})
 	return n, err
+}
+
+// keyCursor is a position in a scan over one or more buckets.
+type keyCursor struct {
+	bucket int
+	key    []byte // last key examined; nil: start of the bucket
+}
+
+// chainsAfterIn lists up to limit chains with a row in any of buckets, after
+// *after (nil from the first), merged and in order.
+func chainsAfterIn(tx *bolt.Tx, buckets [][]byte, after *string, limit int) []string {
+	seen := map[string]bool{}
+	var all []string
+	for _, b := range buckets {
+		c := tx.Bucket(b).Cursor()
+		var k []byte
+		if after == nil {
+			k, _ = c.First()
+		} else {
+			k, _ = c.Seek(append([]byte(*after), 1))
+		}
+		for n := 0; k != nil && n < limit; {
+			i := bytes.IndexByte(k, 0)
+			if i < 0 {
+				// Malformed (counted elsewhere). Not bounded: stopping here would
+				// end the listing early. A file stuffed with such keys can slow a
+				// page, never hide a chain; only someone who can write the folder
+				// can plant them.
+				k, _ = c.Next()
+				continue
+			}
+			chain := string(k[:i])
+			if !seen[chain] {
+				seen[chain] = true
+				all = append(all, chain)
+			}
+			n++
+			k, _ = c.Seek(append([]byte(chain), 1))
+		}
+	}
+	sort.Strings(all)
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	return all
+}
+
+// malformedAfter counts, over at most limit keys from cur, the keys that are
+// not chain ‖ 0x00 ‖ entry id with a valid chain id and entry id. It returns
+// the count, the cursor to continue from, and whether every bucket is done.
+func malformedAfter(tx *bolt.Tx, buckets [][]byte, cur keyCursor, limit int) (int, keyCursor, bool) {
+	n, seen := 0, 0
+	for cur.bucket < len(buckets) {
+		c := tx.Bucket(buckets[cur.bucket]).Cursor()
+		var k []byte
+		if cur.key == nil {
+			k, _ = c.First()
+		} else {
+			k, _ = c.Seek(cur.key)
+			if k != nil && bytes.Equal(k, cur.key) {
+				k, _ = c.Next()
+			}
+		}
+		for ; k != nil; k, _ = c.Next() {
+			if seen == limit {
+				return n, cur, false
+			}
+			seen++
+			cur.key = bytes.Clone(k)
+			i := bytes.IndexByte(k, 0)
+			if i < 0 || !ValidChainID(string(k[:i])) || !entryIDPattern.Match(k[i+1:]) {
+				n++
+			}
+		}
+		cur = keyCursor{bucket: cur.bucket + 1}
+	}
+	return n, cur, true
+}
+
+// chainsWithRowsAfter is chainsWithRows a page at a time.
+func (s *secretsStore) chainsWithRowsAfter(after *string, limit int) ([]string, error) {
+	var out []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		out = chainsAfterIn(tx, [][]byte{contentBucket, noncesBucket}, after, limit)
+		return nil
+	})
+	return out, err
+}
+
+// malformedKeysAfter is malformedKeys a page at a time.
+func (s *secretsStore) malformedKeysAfter(cur keyCursor, limit int) (int, keyCursor, bool, error) {
+	var n int
+	var done bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		n, cur, done = malformedAfter(tx, [][]byte{contentBucket, noncesBucket}, cur, limit)
+		return nil
+	})
+	return n, cur, done, err
 }

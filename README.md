@@ -522,8 +522,8 @@ sink            one chain per key in a folder: idempotent commits, per-chain
 cmd/proof       CLI — init · commit · export · import · anchor · verify · keygen · disclose · forget · sink
 cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
 
-examples/       composition, not features — encrypted-artifact; integrations/nats and
-                integrations/redis feed a sink (each its own module)
+examples/       composition, not features — encrypted-artifact; integrations/nats,
+                integrations/redis and integrations/kafka feed a sink (each its own module)
 ```
 
 ---

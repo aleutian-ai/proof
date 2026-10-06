@@ -292,44 +292,6 @@ func (s *signaturesStore) rowIDs(chain string) ([]string, error) {
 	return ids, err
 }
 
-// chainsWithRows lists, once each, every chain that has a signature row, one
-// seek per chain (as secretsStore.chainsWithRows).
-func (s *signaturesStore) chainsWithRows() ([]string, error) {
-	var out []string
-	err := s.db.View(func(tx *bolt.Tx) error {
-		c := tx.Bucket(signaturesBucket).Cursor()
-		for k, _ := c.First(); k != nil; {
-			i := bytes.IndexByte(k, 0)
-			if i < 0 {
-				k, _ = c.Next() // malformed; counted by malformedKeys
-				continue
-			}
-			chain := string(k[:i])
-			out = append(out, chain)
-			k, _ = c.Seek(append([]byte(chain), 1))
-		}
-		return nil
-	})
-	return out, err
-}
-
-// malformedKeys counts the signature rows whose key is not chain ‖ 0x00 ‖
-// entry id with a valid chain id and entry id: never written by the sink, and
-// never shown (a crafted key could hold anything).
-func (s *signaturesStore) malformedKeys() (int, error) {
-	n := 0
-	err := s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(signaturesBucket).ForEach(func(k, _ []byte) error {
-			i := bytes.IndexByte(k, 0)
-			if i < 0 || !ValidChainID(string(k[:i])) || !entryIDPattern.Match(k[i+1:]) {
-				n++
-			}
-			return nil
-		})
-	})
-	return n, err
-}
-
 // deleteChain removes every signature row of a chain, in ONE transaction. Only
 // for a chain with NO entries (a first commit that never reached it): there is
 // no entry whose signature must survive, and rows left behind would make the
@@ -370,4 +332,25 @@ func (s *signaturesStore) validRowCount(chain string) (int, error) {
 		return nil
 	})
 	return n, err
+}
+
+// chainsWithRowsAfter is chainsWithRows a page at a time.
+func (s *signaturesStore) chainsWithRowsAfter(after *string, limit int) ([]string, error) {
+	var out []string
+	err := s.db.View(func(tx *bolt.Tx) error {
+		out = chainsAfterIn(tx, [][]byte{signaturesBucket}, after, limit)
+		return nil
+	})
+	return out, err
+}
+
+// malformedKeysAfter is malformedKeys a page at a time.
+func (s *signaturesStore) malformedKeysAfter(cur keyCursor, limit int) (int, keyCursor, bool, error) {
+	var n int
+	var done bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		n, cur, done = malformedAfter(tx, [][]byte{signaturesBucket}, cur, limit)
+		return nil
+	})
+	return n, cur, done, err
 }

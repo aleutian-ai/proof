@@ -8,7 +8,7 @@ go 1.25.0
 // Never a replace directive to a local path.
 
 require (
-	github.com/aleutian-ai/proof v0.3.1-0.20260930024546-259c329621a8
+	github.com/aleutian-ai/proof v0.3.1-0.20261006011007-a7e7eab11fbc
 	github.com/redis/go-redis/v9 v9.22.0
 )
 

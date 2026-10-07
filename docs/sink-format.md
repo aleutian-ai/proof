@@ -284,6 +284,11 @@ the subject any more.
 
 ## 6. Verification
 
+(To verify a sink's evidence **elsewhere**, without the folder or proof, export
+it as a bundle: `bundle-format.md`. Its rules derive from these, with the
+differences listed in its §14.)
+
+
 A sink folder verifies when every chain passes all of the following, each chain
 checked on its own, and the index accounts for every chain:
 

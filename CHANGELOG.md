@@ -34,6 +34,22 @@ change is called out here.
 
 ### Added
 
+- **`proof sink export` and `sink.Export`: the export bundle**
+  (`docs/bundle-format.md`, normative). Exports the chains selected by
+  `--chain`, `--subject` (resolved through the secret index; never written) or
+  `--all` as one JSON bundle that anyone can verify without the folder or
+  proof.
+  - **No content by default.** `--disclose all|<ids>` adds content and nonces;
+    erased events and erasure records are never disclosed.
+  - **Damage is never hidden.** Signature rows are exported exactly as stored.
+    What a bundle cannot represent fails the export: a gap in the checkpoints,
+    non-UTF-8 checkpoint text, or a live event to disclose whose content is
+    missing.
+  - Each chain is read under one lock hold, with a gap between chains, as
+    `VerifyEach` does. The spec's limits are enforced.
+  - `--out` is required. The file is written beside it, synced, then linked into
+    place, never over an existing file, at mode 0600. Privacy warnings go to
+    standard error.
 - **`docs/format-spec.md` now specifies chain hash v3 and anchors.** §2 leads
   with v3 (the format `proof commit` writes); v2 is legacy, for existing chains.
   A new §9 covers anchors: the canonical form for every version (including the

@@ -523,6 +523,10 @@ anchor.
 
 ## 10. Test vectors
 
+(Sink export bundles, built on this format, have their own normative spec and
+vectors: `bundle-format.md` and `bundle_v1_vectors.json`.)
+
+
 `fixtures/testdata/` carries the cross-language golden vectors. Reproduce them
 exactly, or your implementation is not compatible. `fixtures/MANIFEST.json`
 records each file's SHA-256, so a vendored copy that drifts is detectable.

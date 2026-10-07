@@ -243,6 +243,21 @@ func (s *signaturesStore) get(chain, entryID string) (row signatureRow, found, m
 	return row, found, malformed, err
 }
 
+// raw returns an entry's signature row exactly as stored, whatever its length:
+// for the exporter, which never repairs or hides a damaged row.
+func (s *signaturesStore) raw(chain, entryID string) (row []byte, found bool, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket(signaturesBucket).Get(rowKey(chain, entryID)); v != nil {
+			row, found = bytes.Clone(v), true
+		}
+		return nil
+	})
+	return row, found, err
+}
+
+// signatureKeyIDSize is the key id's share of a signature row.
+const signatureKeyIDSize = keyfile.KeyIDSize
+
 // signing reports whether this sink signs its records (R3: set by the first
 // stored signatures, never cleared). A marker with any other value than
 // the one this sink writes is an error: the file was altered.

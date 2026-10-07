@@ -25,6 +25,13 @@ change is called out here.
   `by_id` bucket from existing files; it is derived data, so nothing is lost.
   A new conformance test pins that equal ids in two chains stay two entries.
 
+### Changed
+
+- **`scripts/sync-vectors.sh` vendors and checks `MANIFEST.json` too.** An
+  implementation checks its copies against the manifest beside them, so a stale
+  manifest let stale copies pass that check (the monorepo SDKs' manifest was
+  missing five vectors).
+
 ### Added
 
 - **`docs/format-spec.md` now specifies chain hash v3 and anchors.** §2 leads

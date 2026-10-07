@@ -83,6 +83,22 @@ for target in "${TARGETS[@]}"; do
         continue
     fi
 
+    # The manifest travels with the vectors: an implementation checks its copies
+    # against the manifest beside them, so a stale manifest would let stale
+    # copies pass that check.
+    if [[ "$MODE" == "write" ]]; then
+        cp "$MANIFEST" "$target/MANIFEST.json"
+    fi
+    if [[ ! -f "$target/MANIFEST.json" ]]; then
+        echo "   ${YELLOW}MISSING${NC} MANIFEST.json  (run with --write to vendor it)"
+        FAILED=$((FAILED + 1))
+    elif cmp -s "$MANIFEST" "$target/MANIFEST.json"; then
+        echo "   ${GREEN}OK${NC}      MANIFEST.json"
+    else
+        echo "   ${RED}DRIFT${NC}   MANIFEST.json (a stale contract: re-vendor with --write)"
+        FAILED=$((FAILED + 1))
+    fi
+
     for v in "${VECTORS[@]}"; do
         want="$(expected_digest "$v")"
         dest="$target/$v"

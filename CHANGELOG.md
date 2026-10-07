@@ -224,6 +224,15 @@ change is called out here.
   `opentelemetry-collector-contrib` 0.162: a crash before answering is retried
   and recognised (the check fails with the uid removed), records are signed,
   and a user is erased. It is its own module (`pdata` v1.65.0).
+- **`examples/integrations/fluent-bit`: Fluent Bit → OTLP → `otel-sink`,
+  configuration only.** Tags route (only `audit` lines go to proof). A random
+  `log.record.uid` is added before buffering, unless the app wrote its own, so
+  a retried chunk is recognised. A random id rather than `path:offset`: a
+  reused file position would make a new line look committed. `run.sh` on
+  Fluent Bit 5.1.3 shows the retry recognised and debug lines never sent. It
+  also shows the cost: a shipper that loses its read position duplicates the
+  lines it gave ids to, while app-written ids are recognised. Without the uid
+  filters the run fails.
 - `store/bolt.Store.Chains` lists every chain in a file, from the store itself.
   Not part of the store port.
 

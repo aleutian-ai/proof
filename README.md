@@ -524,7 +524,7 @@ cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
 
 examples/       composition, not features — encrypted-artifact; integrations/nats,
                 integrations/redis, integrations/kafka and integrations/otel feed a sink
-                (each its own module)
+                (each its own module); integrations/fluent-bit is config only
 ```
 
 ---

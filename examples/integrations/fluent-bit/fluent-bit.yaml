@@ -1,0 +1,77 @@
+# Copyright 2026 Aleutian AI
+# SPDX-License-Identifier: Apache-2.0
+#
+# Fluent Bit → otel-sink (examples/integrations/otel). No proof code in the
+# shipper: it tails the app's log files, routes by tag, and sends the audit
+# lines as OTLP. otel-sink answers only after the sink commit.
+
+service:
+  flush: 1
+  log_level: info
+  # Chunks are buffered on disk, so they survive a Fluent Bit restart; "full"
+  # syncs each write (a hard crash is not tested here).
+  storage.path: /state/buffer
+  storage.sync: full
+  # Retry soon after otel-sink comes back (the default backoff grows to minutes).
+  scheduler.base: 1
+  scheduler.cap: 5
+
+parsers:
+  - name: json
+    format: json
+
+pipeline:
+  inputs:
+    # The lines that are evidence. The tag routes them; it never becomes a
+    # class or a subject.
+    - name: tail
+      tag: audit
+      path: /logs/audit.log
+      parser: json
+      # One offset DB per input, the usual pattern. (A shared one kept both
+      # positions across a restart on 5.1.3 too, but separate files leave no
+      # doubt.) Losing this file means re-reading, and so duplicates.
+      db: /state/tail-audit.db
+      read_from_head: true
+      storage.type: filesystem
+    # Everything else the app logs: never sent to proof.
+    - name: tail
+      tag: debug
+      path: /logs/debug.log
+      parser: json
+      db: /state/tail-debug.db
+      read_from_head: true
+
+  filters:
+    # proof needs a stable delivery id per record (OTLP has no position).
+    # Keep the app's own log.record.uid when it wrote one; otherwise add a
+    # random one here, before the record is buffered, so a retried chunk
+    # carries the same ids. A random id, not path:offset: a rotated or
+    # recreated file reuses positions, and a reused id would make proof take a
+    # new line for an old one.
+    - name: record_modifier
+      match: audit
+      uuid_key: proof.generated_uid
+    - name: modify
+      match: audit
+      # Renames only if log.record.uid is not already there.
+      rename: proof.generated_uid log.record.uid
+      remove: proof.generated_uid
+
+  outputs:
+    - name: opentelemetry
+      match: audit
+      host: ${SINK_HOST}
+      port: ${SINK_PORT}
+      logs_uri: /v1/logs
+      # "msg" becomes the log body; every other field (log.record.uid,
+      # enduser.pseudo.id, ...) becomes a log record attribute.
+      logs_body_key: msg
+      logs_body_key_attributes: true
+      # otel-sink answers 503 until the sink has committed: keep retrying.
+      retry_limit: no_limits
+    # DEMO ONLY: shows that debug lines stay out of proof. In real use, send
+    # them to your usual log store; printing them puts app values in the
+    # container log.
+    - name: stdout
+      match: debug

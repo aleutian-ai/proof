@@ -106,6 +106,27 @@
       },
       "canonical_bytes": "{\"anchor_id\":\"anchor_0192f3a1-0000-7000-8000-000000000001\",\"chain_hash\":\"fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d\",\"created_at_ms\":1790000000000,\"entry_count\":42,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"range\":{\"end_entry_id\":\"e-0041\",\"start_entry_id\":\"e-0000\"},\"signing_key_id\":\"3fb85abc3e8bae42952ee9194ae1f615\",\"subject\":\"say \\\"hi\\\" \\\\ bye\",\"verified_through\":42,\"version\":6}",
       "canonical_sha512": "4f4e4f3f993028cf2f039b1d4c21402940d71986dea9fe2151730adae35df2b09caa89d84d4d13b61ce941a187ac98aaeac923f11e85e93216066ba662162751"
+    },
+    {
+      "name": "control_characters_in_subject",
+      "anchor": {
+        "version": 6,
+        "anchor_id": "anchor_0192f3a1-0000-7000-8000-000000000001",
+        "chain_hash": "fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d",
+        "created_at_ms": 1790000000000,
+        "entry_count": 42,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "range": {
+          "start_entry_id": "e-0000",
+          "end_entry_id": "e-0041"
+        },
+        "signing_key_id": "3fb85abc3e8bae42952ee9194ae1f615",
+        "subject": "a\bb\fc\nd\re\tf\u0000g\u0001h\u001fij",
+        "verified_through": 42,
+        "signature": "SIGNATURE_MUST_NOT_APPEAR_IN_CANONICAL_BYTES"
+      },
+      "canonical_bytes": "{\"anchor_id\":\"anchor_0192f3a1-0000-7000-8000-000000000001\",\"chain_hash\":\"fd11bf51e85d26dff046eae94677d060ea83e3c34a202743c45bdf24e6ef9afea37276edb48a97bee0db4235794cf93c2e05f53722e8c5dae07589ca02adba5d\",\"created_at_ms\":1790000000000,\"entry_count\":42,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"range\":{\"end_entry_id\":\"e-0041\",\"start_entry_id\":\"e-0000\"},\"signing_key_id\":\"3fb85abc3e8bae42952ee9194ae1f615\",\"subject\":\"a\\bb\\fc\\nd\\re\\tf\\u0000g\\u0001h\\u001fij\",\"verified_through\":42,\"version\":6}",
+      "canonical_sha512": "4dbc1dcaae4050ff60ef1d822ac3d6f1fc90f40d9ecf1b59939763c26df687921e9a52f551f40c093ee105e7609c85e99e491307fae8c54d6704ddd5ec04f660"
     }
   ]
 }

@@ -1,8 +1,15 @@
 # Sink export bundle: `aleutian.proof.bundle.v1`
 
-**Status: NORMATIVE, revision 3** (`_72a`, accepted by the owner 2026-10-07).
+**Status: NORMATIVE, revision 3.2** (`_72a`, accepted by the owner 2026-10-07).
 Revision 2 applied a four-agent review (28 findings) and the owner's decisions
-U1–U3; revision 3 applied the re-review. Implementations derive their behaviour
+U1–U3; revision 3 applied the re-review. Revision 3.1 (2026-10-08) states
+what the two independent verifiers (`_72d`, `_72e`) found unstated: §3
+numbers in the bundle, §4.3 inner members, §6 key-file text, §7.1 step 4,
+§7.6 and §10. It changes no rule the vectors already pinned. Revision 3.2
+(2026-10-08, owner decision after the `_72d`/`_72e` reviews) adds the §5 value
+limit at §9.1 position 3, renumbering the later positions, and states the
+key-file whitespace and size (§6) and §10's trust statement for an unreadable
+bundle. Implementations derive their behaviour
 from this document. If the conformance vectors expose a contradiction, this
 document changes, with a note, rather than an implementation inventing
 behaviour.
@@ -128,7 +135,9 @@ or `duplicate-key`). In a checkpoint's text, it is `checkpoint-malformed`
   - **Numbers,** where a member allows one (only in checkpoint text, §4.4), MUST
     match `0|[1-9][0-9]*` and be at most 2⁵³−1: no sign, fraction, exponent or
     leading zero. A number anywhere else is a member of the wrong JSON type
-    (§4).
+    (§4). So in the bundle, a number that RFC 8259 allows (`-1`, `1.5`, `1e3`)
+    is `structure`, never `json`; one it does not allow (`01`, `+1`, `.5`) is
+    `json`.
 
 **Value shapes** (lowercase hex, canonical base64, timestamps) are not grammar.
 They are judged only where each member is checked: `field-shape` (§7.1),
@@ -176,7 +185,10 @@ a verifier can stream. A verifier MUST accept any member order.
 | `disclosed` | object, optional | `{"content": canonical base64 of 1–65,536 bytes, "nonce": 64 lowercase hex}` |
 
 - A member that is missing, unknown, or of the wrong JSON type (including a
-  non-object top level) makes the bundle unreadable: `structure` (§9.1).
+  non-object top level) makes the bundle unreadable: `structure` (§9.1). This
+  includes the members inside `record_signature` and `disclosed`: each must
+  have exactly its two string members. Only their string values are judged
+  later (§7.7, §7.1).
 - A string member whose value is outside its shape is the chain problem
   `field-shape` (§7.1). The rest of the chain is still checked.
 - **Never in a bundle:** subjects, sources, index rows, keys of any kind,
@@ -218,6 +230,16 @@ verified:
 | Checkpoints in the bundle, all chains together | 100,000 |
 | One checkpoint's text | 1 MiB (UTF-8 bytes) → `checkpoint-malformed` |
 | Nesting depth | 8 → unreadable `json` |
+| JSON values in the bundle, at every depth | 15,000,000 → unreadable `too-large` (§9.1 position 3) |
+
+**A JSON value** is every object, array, string, number, `true`, `false` and
+`null`, at any depth, the top-level value included; member names are not
+values, and nothing inside a checkpoint's text counts (it is one string). No
+bundle that satisfies §4 within the other limits has more than 14,500,003
+values (3 + 4 per chain + 14 per entry + 1 per checkpoint), so this limit
+refuses nothing that could otherwise be read. It exists so that a verifier's
+memory is bounded by the largest readable bundle, not by how many tiny values
+fit in 256 MiB.
 
 These bound the work too: at most 100,000 checkpoint signatures, and record
 signatures bounded by the bundle size (about 58,000 in 256 MiB).
@@ -231,7 +253,9 @@ The verifier is given two key sets, out of band:
 A dimension is **checked** exactly when its set is non-empty.
 
 - **Key files** are PEM: **exactly one** block, label `PUBLIC KEY`, no headers,
-  canonical base64 body, and nothing but whitespace after it. The block holds
+  canonical base64 body (lines of any width, LF or CRLF), and nothing but
+  whitespace (space, tab, CR, LF) before or after it, in a regular file of at
+  most 16 KiB (a valid one is about 2.7 KB). The block holds
   exactly the RFC 9881 SubjectPublicKeyInfo DER of a 1952-byte ML-DSA-65 key:
   the same bytes the key id hashes (format-spec §9.6). Any other file is a
   usage error (exit 2). This is what `proof keygen` and `proof sink init`
@@ -266,7 +290,8 @@ occurred.**
    `after-erasure`: its `field-shape` is its outcome. (It still counts in §7.3
    if it holds the erasure hash.)
 4. An `entry_id` equal to an earlier well-formed entry's is problem
-   `duplicate-entry-id` at the repeat.
+   `duplicate-entry-id` at the repeat, **whether or not the repeat is itself
+   well-formed**.
 
 ### 7.2 Links
 
@@ -332,7 +357,10 @@ after it are not checked, and do not count. For checkpoint *k* (index *k*):
 | g | **Checkpoint trust only:** `signature` is canonical base64 of 3309 bytes, and verifies (ML-DSA-65, pure, empty context) over the canonical bytes (format-spec §9.2) | `checkpoint-bad-signature` |
 
 Step e hashes only values already checked: the chain id (step b) and
-well-formed entries. Without checkpoint trust, steps f and g don't run.
+well-formed entries. Without checkpoint trust, steps f and g don't run. Step
+c's `entry_count` ≥ 1 and step g's signature shape are already guaranteed by
+step a (§4.4); they are restated so that each step reads on its own, and can
+never be the failing step.
 
 - `checkpoints` (the count) is the number that passed every step that ran.
 - `unanchored` is the number of entries the last passing checkpoint does not
@@ -375,7 +403,9 @@ unauthenticated.
 | `anchored` | E ≥ 0, the chain has no problem, and entry E is checkpoint-authenticated |
 | `signed` | E ≥ 0, the chain has no problem, entry E is record-authenticated, and not `anchored` (sink-format §9.4, R6) |
 
-"No problem" includes `after-erasure`, so `anchored` and `signed` both imply
+"No problem" means no problem of the chain's own: a bundle problem
+(`duplicate-chain`, §8) does not affect a chain's erasure state. It includes
+`after-erasure`, so `anchored` and `signed` both imply
 that the chain, **as exported**, ends with its erasure (§1: a chain can be cut
 back before its erasure, which then reads `none`).
 
@@ -402,16 +432,20 @@ position (§9.3), and each is checked.
 
 An implementation determines **every** reason that applies, then reports the
 **lowest-numbered** one, whatever order its parser met them in. It need not
-hold entries beyond a count limit in memory to do so.
+hold entries beyond a count limit in memory to do so. Once position 3 applies,
+only positions 1 and 2 can still change the answer: the implementation need
+only check the rest of the input against §3, without keeping values or member
+names.
 
 1. `too-large`: over the size limit;
 2. `json`: not valid UTF-8 JSON under §3, including depth and lone surrogates;
-3. `duplicate-key`;
-4. `format`: the top level is an object, and `format` is missing or not
+3. `too-large`: over the value limit (§5);
+4. `duplicate-key`;
+5. `format`: the top level is an object, and `format` is missing or not
    exactly the v1 string;
-5. `structure`: any other §4 violation (a non-object top level, an unknown or
+6. `structure`: any other §4 violation (a non-object top level, an unknown or
    missing member, a wrong type, empty `entries`);
-6. `too-large`: over a count limit.
+7. `too-large`: over a count limit.
 
 Exit 3.
 
@@ -487,8 +521,10 @@ does not know, rather than guess.
 ## 10. Human-readable output
 
 Free-form, but it MUST:
-- say the verdict as `OK`, `FAILED` or `UNAUTHENTICATED`;
-- state both trust dimensions;
+- say the verdict as `OK`, `FAILED` or `UNAUTHENTICATED`, or, for an
+  unreadable bundle (exit 3), `UNREADABLE` with its reason code;
+- state both trust dimensions (for an unreadable bundle, which key sets were
+  given: the §9.1 result has no trust members);
 - give each failing chain's problem codes;
 - point to §1's limits, at least in one line.
 
@@ -578,16 +614,18 @@ from this document, and **MUST** contain at least:
   record signatures made with them (deterministic ML-DSA-65);
 - an ML-DSA signature made with a non-empty context, and one made with
   HashML-DSA: both MUST fail (they catch pre-standard libraries);
-- one case per problem code, and one per unreadable reason;
+- one case per problem code, and one per unreadable reason except `too-large`
+  (note 1);
 - `ok`, `unauthenticated` and `failed` bundles, each trust combination, and
   each erasure state;
 - a relabelled erasure, an append after an erasure, and a disclosure of an
   erased event;
 - every §3 grammar case: case-variant names, escaped duplicate names, numbers
-  out of grammar, lone surrogates, depth 8 (accepted) and 9 (refused);
-- every value-shape case: uppercase hex, non-canonical base64, and impossible
-  timestamps (`02-30`, second `60`, year `0000`), in entries and in checkpoint
-  text;
+  out of grammar, lone surrogates, depth 8 (accepted by the grammar) and 9
+  (refused) (note 2);
+- every value-shape case: uppercase hex and non-canonical base64, in entries
+  and in checkpoint text; impossible timestamps (`02-30`, second `60`, year
+  `0000`) in entries (note 2);
 - bundles with **several** unreadable reasons at once, to pin §9.1's
   precedence;
 - an empty bundle (`unauthenticated`), a tail-truncated chain, and a swapped
@@ -596,3 +634,18 @@ from this document, and **MUST** contain at least:
 
 The result compared is §9's structure: trust dimensions, verdicts, erasure
 states, counts, and problem codes with their counts and `first` indexes.
+
+**Note 1** (`_72c`, 2026-10-07). A `too-large` case cannot be a vector at the
+§5 limits: the smallest is a 256 MiB file or a million entries. Each
+implementation MUST instead test `too-large` itself, at every §5 limit and at
+the precedence positions 1, 3 and 7 of §9.1 (1 and 6 before revision 3.2), typically by lowering its limits in a
+test. Revision 3 required one vector per unreadable reason; that requirement
+contradicted §5 and is changed here.
+
+**Note 2** (`_72c`, 2026-10-07). Two more requirements of revision 3 could not
+be met as written, so they are reworded. Checkpoint text has no timestamp
+member, so impossible timestamps apply to entries only. A bundle's own
+structure reaches depth 6 at most (an entry's `record_signature`), so depth 8
+can only occur inside a member of the wrong type: the vector shows that the
+grammar accepts it, because the bundle is then unreadable as `structure`, not
+`json`. Neither change alters any rule.

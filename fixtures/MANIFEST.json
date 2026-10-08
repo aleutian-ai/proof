@@ -10,8 +10,12 @@
       "bytes": 2872
     },
     "anchor_v6_canonical_vectors.json": {
-      "sha256": "4949dcaba7ce634f1c70fd03ab0888f8276650d0b0c9455f965b90bc6fc95b2e",
-      "bytes": 7894
+      "sha256": "06119826a039675962c3c821f49d23cae01fa6fcf71a4f54f0488b44a1b83b9e",
+      "bytes": 9443
+    },
+    "bundle_v1_vectors.json": {
+      "sha256": "0f82f3d05d3f98ca1175c993b99c236c6558317deeff75775b2f16bdd177578a",
+      "bytes": 4540286
     },
     "chain_v3_vectors.json": {
       "sha256": "85c8082cd17cff698302fcc7075529383abacaafe8bdd3a7a744298e36714f78",
@@ -34,8 +38,8 @@
       "bytes": 11683
     },
     "record_v1_vectors.json": {
-      "sha256": "006c14db2956ccb2206953b2443994a2d7af6b4eb6e3932de2e55649f579892a",
-      "bytes": 34276
+      "sha256": "6080f350029d67b2e94c6269dadc1b79e35d75bc8d996647dd6d5b39efb0fb8c",
+      "bytes": 34446
     },
     "v3_golden_capture_request.json": {
       "sha256": "8c3d7add4cf6fe7c764d963ef59d764b8a314b9d708a22ddc48b9faab7bfedea",

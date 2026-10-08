@@ -34,6 +34,25 @@ change is called out here.
 
 ### Added
 
+- **Bundle conformance vectors** (`fixtures/testdata/bundle_v1_vectors.json`,
+  `fixtures.BundleV1Vectors`). 114 cases built by `scripts/bundle-vectors.py`
+  from `docs/bundle-format.md` alone: each is a valid bundle with one stated
+  defect, its expected result declared from that construction, never computed
+  by a verifier. They cover every problem code, every unreadable reason but
+  `too-large`, each trust combination and erasure state, the §3 grammar cases,
+  context and HashML-DSA signatures (both must fail), and one real
+  `proof sink export` (`scripts/bundlefixture`, build tag `bundlefixture`).
+  Signatures are deterministic ML-DSA-65 from fixed seeds, made in Python and
+  checked by `sink`'s tests with circl. Bundle-format §15 no longer requires a
+  `too-large` vector (note 1): implementations test it themselves.
+  Revisions 3.1 and 3.2 of the bundle format (2026-10-08) state what the two
+  independent verifiers found unstated (§3 numbers in the bundle are
+  `structure`; inner members of `record_signature`/`disclosed`; key-file text;
+  duplicate ids on malformed entries; §7.6; §10 `UNREADABLE`), and add a §5
+  limit of 15,000,000 JSON values (§9.1 position 3) so that a verifier's
+  memory is bounded by the largest readable bundle. Format-spec §9.2 now lists
+  the control-character escapes (Go 1.22+). Two vectors pin FIPS 204's hint
+  encoding: a valid signature re-encoded with a repeated hint index must fail.
 - **`proof sink export` and `sink.Export`: the export bundle**
   (`docs/bundle-format.md`, normative). Exports the chains selected by
   `--chain`, `--subject` (resolved through the secret index; never written) or

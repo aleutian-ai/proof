@@ -222,3 +222,41 @@ var recordV1Vectors []byte
 //
 //   - None.
 func RecordV1Vectors() []byte { return recordV1Vectors }
+
+// bundleV1Vectors holds the sink export bundle conformance vectors.
+//
+//go:embed testdata/bundle_v1_vectors.json
+var bundleV1Vectors []byte
+
+// BundleV1Vectors returns the bundle conformance vectors as raw JSON.
+//
+// # Description
+//
+// Each case is a whole bundle (base64), the trust a verifier is given, and the
+// exact result of docs/bundle-format.md §9 it must produce. Fixed key seeds
+// make every signature deterministic.
+//
+// # Provenance
+//
+// Built in Python by scripts/bundle-vectors.py from docs/bundle-format.md:
+// each case is a valid bundle with one stated defect, its result declared from
+// that construction. One case is a real `proof sink export`
+// (scripts/bundlefixture). Not produced by any verifier.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+//
+// # Example
+//
+//	var f struct{ Cases []struct{ Name string `json:"name"` } `json:"cases"` }
+//	err := json.Unmarshal(fixtures.BundleV1Vectors(), &f)
+//
+// # Limitations
+//
+//   - No `too-large` case: the limits are impractical in a vector file.
+//
+// # Assumptions
+//
+//   - None.
+func BundleV1Vectors() []byte { return bundleV1Vectors }

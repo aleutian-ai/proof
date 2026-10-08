@@ -107,10 +107,9 @@ def chain_v3_file() -> dict:
 
 def go_json_string(s: str) -> str:
     """A JSON string literal byte-identical to Go's encoding/json (HTML escaping on)."""
-    for ch in s:
-        if ord(ch) < 0x20:
-            raise ValueError("control characters are deliberately not used in these vectors")
-    out = json.dumps(s, ensure_ascii=False)  # escapes only " and \ here
+    # Python writes " \\ \b \f \n \r \t as short escapes and every other
+    # character below U+0020 as lowercase \u00XX, as Go 1.22+ does (format-spec §9.2).
+    out = json.dumps(s, ensure_ascii=False)
     return (out.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
                .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
 
@@ -153,6 +152,7 @@ def anchor_v6_file() -> dict:
         ("non_ascii_subject", {"subject": "sübjeçt-ü-€"}),
         ("line_separator_in_subject", {"subject": "x\u2028y\u2029z"}),
         ("quote_and_backslash_in_subject", {"subject": 'say "hi" \\ bye'}),
+        ("control_characters_in_subject", {"subject": "a\bb\fc\nd\re\tf\x00g\x01h\x1fi\x7fj"}),
     ]
     vectors = []
     for name, override in cases:
@@ -337,7 +337,9 @@ def record_v1_file() -> dict:
                     "rounded). reject lists field values that must be refused. regression_signature "
                     "is NOT independent (Python has no ML-DSA): a deterministic ML-DSA-65 "
                     "signature by proof's Go signer, pinned so another implementation can check "
-                    "it verifies and a change in proof is noticed. Computed in Python "
+                    "it verifies and a change in proof is noticed. Its key's id is not the vector's "
+                    "signing_key_id: it pins signature bytes only. Matching a record signature's "
+                    "key id to a trusted key is pinned by bundle_v1_vectors.json. Computed in Python "
                     "(scripts/independent-vectors.py). See docs/sink-format.md §9.",
         "version": 1,
         "vectors": vectors,

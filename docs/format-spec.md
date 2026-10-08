@@ -433,8 +433,12 @@ afterwards, so it **MUST NOT** carry personal data. Use a topic or a pseudonym.
   | `&` | `\u0026` |
   | U+2028 | `\u2028` |
   | U+2029 | `\u2029` |
+  | U+0008, U+0009, U+000A, U+000C, U+000D | `\b`, `\t`, `\n`, `\f`, `\r` |
+  | any other character below U+0020 | `\u00XX`, lowercase hex (`\u001f`) |
 
-  All other non-ASCII characters are written as UTF-8, not as `\u` escapes. A
+  These are Go 1.22 and later (proof builds with Go 1.24); Go 1.21 and earlier
+  wrote `\u0008` and `\u000c` instead of `\b` and `\f`. U+007F is written as
+  itself. All other non-ASCII characters are written as UTF-8, not as `\u` escapes. A
   standard JSON library in another language does **not** do this by default, and
   getting it wrong produces a valid-looking signature check that fails.
 - **Dispatch on the declared `version` only.** Never infer the version from which

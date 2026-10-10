@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/aleutian-ai/proof/internal/fault"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 )
 
@@ -183,7 +184,8 @@ loop:
 // # Assumptions
 //
 //   - None.
-func (s *Sink) UsesRecordKey(ctx context.Context, keyID string) (bool, error) {
+func (s *Sink) UsesRecordKey(ctx context.Context, keyID string) (_ bool, err error) {
+	defer fault.Recover(&err)()
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}

@@ -113,6 +113,10 @@ func (f *Frontier) Marshal() string {
 	return b.String()
 }
 
+// maxFrontierLevel is the highest level a frontier can occupy: size is a
+// non-negative int64, so its highest possible set bit is bit 62.
+const maxFrontierLevel = 62
+
 // UnmarshalFrontier parses Marshal output. Validates that the occupied levels match the
 // popcount/bit positions of size (a corrupt persisted frontier is rejected, forcing a
 // rebuild from audit_entries rather than trusting bad state).
@@ -131,6 +135,13 @@ func UnmarshalFrontier(s string) (*Frontier, error) {
 		lvl, err := strconv.Atoi(lh[0])
 		if err != nil || lvl < 0 {
 			return nil, fmt.Errorf("merkle: frontier level parse: %q", lh[0])
+		}
+		// A level is occupied only where size has that bit set. Checked before
+		// anything is allocated for it: the level index sizes the slice below,
+		// and a shift of 64 or more is zero, which would pass the final
+		// comparison with a node that belongs to no tree of this size.
+		if lvl > maxFrontierLevel || size>>uint(lvl)&1 == 0 {
+			return nil, fmt.Errorf("merkle: frontier level %d is not occupied in a tree of size %d", lvl, size)
 		}
 		hb, err := hex.DecodeString(lh[1])
 		if err != nil || len(hb) != HashSize {

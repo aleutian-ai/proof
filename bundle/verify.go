@@ -61,6 +61,10 @@ const (
 	ProblemRootMismatch ProblemKind = "root_mismatch"
 )
 
+// ErrEmptyManifest is returned for a manifest that lists no files. Nothing was
+// checked, so there is nothing to call intact.
+var ErrEmptyManifest = errors.New("bundle: the manifest lists no files; verifying nothing proves nothing")
+
 // DirResult reports whether the files on disk match a manifest.
 type DirResult struct {
 	// Intact is true only when there are no problems at all.
@@ -106,7 +110,8 @@ type DirResult struct {
 // # Outputs
 //
 //   - DirResult: every problem found, not merely the first
-//   - error: only for failures that prevent verification entirely (dir unreadable)
+//   - error: only for failures that prevent verification entirely: dir
+//     unreadable, or [ErrEmptyManifest]
 //
 // # Example
 //
@@ -123,7 +128,10 @@ type DirResult struct {
 // # Limitations
 //
 //   - Does not verify any signature. See anchor.VerifySignature and D14.
-//   - Follows no symlinks: a symlinked entry is reported unreadable, not chased.
+//   - Follows no symlinks, in any path component: a listed path that is a
+//     symlink, or that passes through a symlinked directory, is reported
+//     unreadable, not chased. Every file is opened through an [os.Root] on dir,
+//     so a path swapped for a symlink mid-check still cannot leave the bundle.
 //
 // # Assumptions
 //
@@ -139,6 +147,14 @@ func VerifyDir(dir string, files []FileEntry, claimedRoot string, maxFileBytes i
 	if !info.IsDir() {
 		return DirResult{}, fmt.Errorf("bundle: %s is not a directory", dir)
 	}
+	if len(files) == 0 {
+		return DirResult{}, ErrEmptyManifest
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return DirResult{}, fmt.Errorf("bundle: open %s: %w", dir, err)
+	}
+	defer func() { _ = root.Close() }()
 
 	res := DirResult{
 		Proven: "every file listed in the manifest is present and its bytes match " +
@@ -151,14 +167,14 @@ func VerifyDir(dir string, files []FileEntry, claimedRoot string, maxFileBytes i
 	for _, f := range files {
 		listed[f.Path] = struct{}{}
 
-		path, perr := safePath(dir, f.Path)
+		rel, perr := safePath(dir, f.Path)
 		if perr != nil {
 			res.Problems = append(res.Problems, Problem{
 				Path: f.Path, Kind: ProblemUnsafePath, Detail: perr.Error(),
 			})
 			continue
 		}
-		got, herr := hashRegularFile(path, maxFileBytes)
+		got, herr := hashRegularFile(root, rel, maxFileBytes)
 		if herr != nil {
 			kind := ProblemUnreadable
 			if errors.Is(herr, fs.ErrNotExist) {
@@ -209,7 +225,8 @@ func VerifyDir(dir string, files []FileEntry, claimedRoot string, maxFileBytes i
 	return res, nil
 }
 
-// safePath resolves a manifest-supplied relative path inside dir.
+// safePath checks a manifest-supplied relative path and returns it relative to
+// dir, cleaned, with the host's separators.
 //
 // A manifest is untrusted. Without this, an attacker controlling it could point
 // the verifier at /etc/shadow and learn — from whether the digest matched —
@@ -230,33 +247,57 @@ func safePath(dir, relSlash string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if back == ".." || strings.HasPrefix(back, ".."+string(filepath.Separator)) {
+	if back == "." || back == ".." || strings.HasPrefix(back, ".."+string(filepath.Separator)) {
 		return "", errors.New("path escapes the bundle directory")
 	}
-	return joined, nil
+	return back, nil
 }
 
-// hashRegularFile streams a file through SHA-512, refusing anything that is not
-// a regular file or that exceeds cap.
+// errNotRegular is what a listed path that is not a plain file reports.
+var errNotRegular = errors.New("not a regular file (symlink or special file)")
+
+// hashRegularFile streams the file at rel, inside root, through SHA-512,
+// refusing anything that is not a regular file reached through real
+// directories, or that exceeds cap.
 //
-// Lstat, not Stat: a symlink must be refused rather than followed, or a manifest
-// could name an in-bundle path that points anywhere on the filesystem.
-func hashRegularFile(path string, cap int64) (string, error) {
-	info, err := os.Lstat(path)
+// Every component is Lstat'ed, not only the last: a manifest could otherwise
+// name a path through a symlinked directory and have a file outside the bundle
+// hashed. The checks and the open all go through root, so a component swapped
+// for a symlink between the check and the open is refused by the open.
+func hashRegularFile(root *os.Root, rel string, cap int64) (string, error) {
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i := range parts[:len(parts)-1] {
+		info, err := root.Lstat(filepath.Join(parts[:i+1]...))
+		if err != nil {
+			return "", err
+		}
+		if !info.IsDir() {
+			return "", errors.New("a directory in the path is a symlink or not a directory")
+		}
+	}
+	info, err := root.Lstat(rel)
 	if err != nil {
 		return "", err
 	}
 	if !info.Mode().IsRegular() {
-		return "", errors.New("not a regular file (symlink or special file)")
+		return "", errNotRegular
 	}
-	if info.Size() > cap {
-		return "", fmt.Errorf("file is %d bytes, exceeding the %d-byte cap", info.Size(), cap)
-	}
-	f, err := os.Open(path)
+	f, err := root.Open(rel)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = f.Close() }()
+	// The size that is capped and read is the opened file's, not the one seen
+	// before the open.
+	if info, err = f.Stat(); err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errNotRegular
+	}
+	if info.Size() > cap {
+		return "", fmt.Errorf("file is %d bytes, exceeding the %d-byte cap", info.Size(), cap)
+	}
 
 	h := sha512.New()
 	if _, err := io.CopyN(h, f, info.Size()); err != nil && err != io.EOF {

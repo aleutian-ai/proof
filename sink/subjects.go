@@ -13,6 +13,8 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/aleutian-ai/proof/internal/fault"
 )
 
 // The subject index (evidence.db.subjects, SECRET) is the only place the sink
@@ -455,7 +457,8 @@ func (s *subjectsStore) forgetChain(chain string) error {
 //
 //   - Read-only: it takes a shared lock on the evidence file and the index, and
 //     creates nothing.
-func (s *Sink) ChainSubjects(ctx context.Context) ([]ChainSubject, error) {
+func (s *Sink) ChainSubjects(ctx context.Context) (_ []ChainSubject, err error) {
+	defer fault.Recover(&err)()
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("sink: read the subject index: %w", err)
 	}

@@ -89,3 +89,28 @@ func TestConsistency_Negatives(t *testing.T) {
 		t.Error("m==0 with non-empty rootA must not verify")
 	}
 }
+
+// TestConsistency_WrongOldSizeRejected: a proof for (m, n) verifies for that m
+// only. Every other old size is tried against the same old root and proof, for
+// every pair up to N. This pins RFC 9162 §2.1.4.2's final size check, without
+// which a (2, 3) proof also verified as (1, 3).
+func TestConsistency_WrongOldSizeRejected(t *testing.T) {
+	t.Parallel()
+	const N = 40
+	full := leaves(N)
+	for n := 1; n <= N; n++ {
+		rootB := RootFromLeaves(full[:n])
+		for m := 0; m <= n; m++ {
+			rootA := RootFromLeaves(full[:m])
+			proof, err := ConsistencyProof(m, full[:n])
+			if err != nil {
+				t.Fatalf("m=%d n=%d: gen err: %v", m, n, err)
+			}
+			for wrong := 0; wrong <= n; wrong++ {
+				if wrong != m && VerifyConsistency(wrong, n, rootA, rootB, proof) {
+					t.Fatalf("the proof for m=%d n=%d verified as m=%d", m, n, wrong)
+				}
+			}
+		}
+	}
+}

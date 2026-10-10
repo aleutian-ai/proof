@@ -17,6 +17,10 @@ scripts
 CHANGELOG.md
 README.md
 
+# Binaries built at the repo root. The images build their own.
+/proof
+/proof-mcp
+
 # LICENSE is deliberately NOT excluded: it is copied into the final images,
 # because an image is a distribution and Apache-2.0 §4(a) asks that recipients
 # get the licence text, not merely a label naming it.

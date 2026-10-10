@@ -40,6 +40,11 @@ type anchoredEntry struct {
 	Timestamp   time.Time
 	ContentHash string
 	ChainHash   string
+
+	// Tombstone marks an erased entry: toVerifyEntries gives it the tombstone
+	// entry type, which with a tomb_ id is what a verifier recognises
+	// (format-spec §5).
+	Tombstone bool
 }
 
 // buildAnchoredChain links n entries with producer-shaped UUID entry ids.
@@ -142,20 +147,7 @@ func anchorOver(t *testing.T, entries []anchoredEntry, previousAnchorHash string
 func bindAnchor(t *testing.T, a anchor.Anchor, entries []anchoredEntry) error {
 	t.Helper()
 
-	rows := make([]verify.Entry, 0, len(entries))
-	for _, e := range entries {
-		rows = append(rows, verify.Entry{
-			EntryID:     e.EntryID,
-			EntryType:   "request",
-			Timestamp:   e.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-			RunID:       e.RunID,
-			SequenceNum: e.SequenceNum,
-			GlobalSeq:   e.SequenceNum,
-			ContentHash: e.ContentHash,
-			ChainHash:   e.ChainHash,
-		})
-	}
-	res, err := verify.BindAnchor(a, rows, anchor.SeedAnchorHash)
+	res, err := verify.BindAnchor(a, toVerifyEntries(entries), anchor.SeedAnchorHash)
 	if err != nil {
 		return err
 	}
@@ -230,13 +222,16 @@ func TestAnchor_ErasureDoesNotBreakTheAnchor(t *testing.T) {
 	full := buildAnchoredChain(t, 5)
 	a := anchorOver(t, full, anchor.SeedAnchorHash)
 
-	// Erase entry 2 the producer's way: content replaced, chain hash PRESERVED.
+	// Erase entry 2 the producer's way: content replaced, the entry retyped and
+	// given a tomb_ id, chain hash PRESERVED.
 	tombstoneHash, err := chainformat.GenerateTombstoneContentHash()
 	if err != nil {
 		t.Fatalf("generate tombstone: %v", err)
 	}
 	erased := append([]anchoredEntry(nil), full...)
 	erased[2].ContentHash = tombstoneHash
+	erased[2].EntryID = chainformat.TombstoneEntryIDPrefix + erased[2].EntryID
+	erased[2].Tombstone = true
 	// ChainHash deliberately NOT recomputed.
 
 	// The entry-level walk cannot re-derive a tombstone, so a verifier must skip
@@ -589,9 +584,13 @@ func TestAnchor_KeylessAndKeyedClaimsDiffer(t *testing.T) {
 func toVerifyEntries(entries []anchoredEntry) []verify.Entry {
 	rows := make([]verify.Entry, 0, len(entries))
 	for _, e := range entries {
+		entryType := "request"
+		if e.Tombstone {
+			entryType = chainformat.TombstoneEntryType
+		}
 		rows = append(rows, verify.Entry{
 			EntryID:     e.EntryID,
-			EntryType:   "request",
+			EntryType:   entryType,
 			Timestamp:   e.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
 			RunID:       e.RunID,
 			SequenceNum: e.SequenceNum,

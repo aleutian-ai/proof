@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/aleutian-ai/proof/chainformat"
+	"github.com/aleutian-ai/proof/internal/fault"
 	"github.com/aleutian-ai/proof/store"
 )
 
@@ -154,7 +155,8 @@ type ExportSummary struct {
 // # Assumptions
 //
 //   - The caller writes w to a temporary file and keeps it only on success.
-func (s *Sink) Export(ctx context.Context, sel ExportSelection, w io.Writer) (ExportSummary, error) {
+func (s *Sink) Export(ctx context.Context, sel ExportSelection, w io.Writer) (_ ExportSummary, err error) {
+	defer fault.Recover(&err)()
 	var sum ExportSummary
 	listed, err := checkSelection(sel)
 	if err != nil {

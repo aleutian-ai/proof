@@ -240,3 +240,30 @@ func TestChainHashV2_IsUntouched(t *testing.T) {
 		t.Error("v2 and v3 share a domain prefix")
 	}
 }
+
+// TestComputeChainHash_RefusesYearsWithNoFourDigitForm: the preimage writes a
+// four-digit year, and the formatter writes a negative year as 0000, so year -5
+// and year 0 once hashed alike. Both checked functions refuse the range.
+func TestComputeChainHash_RefusesYearsWithNoFourDigitForm(t *testing.T) {
+	content := strings.Repeat("ab", 64)
+	for _, year := range []int{-5, -1, 10000} {
+		ts := time.Date(year, 1, 1, 0, 0, 0, 0, time.UTC)
+		if _, err := ComputeChainHashV3("", 0, ts, content); err == nil {
+			t.Errorf("v3 hashed a timestamp in year %d", year)
+		}
+		if _, err := ComputeChainHash("", "run", 0, ts, content); err == nil {
+			t.Errorf("v2 hashed a timestamp in year %d", year)
+		}
+	}
+	for _, year := range []int{0, 9999} {
+		ts := time.Date(year, 6, 1, 0, 0, 0, 0, time.UTC)
+		if _, err := ComputeChainHashV3("", 0, ts, content); err != nil {
+			t.Errorf("year %d refused: %v", year, err)
+		}
+	}
+	// Taken in UTC: an offset that moves the instant into year -1 is refused.
+	east := time.Date(0, 1, 1, 0, 0, 0, 0, time.FixedZone("east", 3600))
+	if err := ValidateTimestamp(east); err == nil {
+		t.Error("an instant in UTC year -1 was accepted")
+	}
+}

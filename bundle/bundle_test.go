@@ -386,6 +386,66 @@ func TestVerifyDir_RefusesSymlinks(t *testing.T) {
 	}
 }
 
+// TestVerifyDir_RefusesASymlinkedDirectory: a listed path through a symlinked
+// directory is refused, whether the link points outside the bundle or inside
+// it. Only the last component was once checked, so "sub/secret" with "sub" a
+// link to another directory had a file outside the bundle hashed, and the
+// digest comparison then said whether a guess about it was right.
+func TestVerifyDir_RefusesASymlinkedDirectory(t *testing.T) {
+	for _, where := range []string{"outside the bundle", "inside the bundle"} {
+		t.Run(where, func(t *testing.T) {
+			dir := t.TempDir()
+			target := t.TempDir()
+			if where == "inside the bundle" {
+				target = filepath.Join(dir, "real")
+				if err := os.Mkdir(target, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(target, "secret"), []byte("content"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(dir, "sub")); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			// The digest is the RIGHT one: if the link were followed, the file
+			// would verify.
+			res, err := VerifyDir(dir, []FileEntry{{Path: "sub/secret", SHA512: sha512HexOf("content")}}, "", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.FilesChecked != 0 {
+				t.Fatal("a file reached through a symlinked directory was hashed")
+			}
+			var refused bool
+			for _, p := range res.Problems {
+				if p.Path == "sub/secret" && p.Kind == ProblemUnreadable {
+					refused = true
+				}
+				if p.Kind == ProblemContentMismatch {
+					t.Fatal("the result says whether the outside file matched the digest")
+				}
+			}
+			if !refused {
+				t.Fatalf("want sub/secret refused as unreadable, got %+v", res.Problems)
+			}
+		})
+	}
+}
+
+// TestVerifyDir_RefusesAnEmptyManifest: a manifest that lists nothing checks
+// nothing, and is an error, never an intact bundle.
+func TestVerifyDir_RefusesAnEmptyManifest(t *testing.T) {
+	res, err := VerifyDir(t.TempDir(), nil, "", 0)
+	if !errors.Is(err, ErrEmptyManifest) {
+		t.Fatalf("err = %v, want ErrEmptyManifest", err)
+	}
+	if res.Intact {
+		t.Fatal("an empty manifest was reported intact")
+	}
+}
+
 // TestVerifyDir_EnforcesTheSizeCap pins the denial-of-service guard.
 func TestVerifyDir_EnforcesTheSizeCap(t *testing.T) {
 	dir, files := writeBundle(t, map[string]string{"big.txt": strings.Repeat("x", 4096)})

@@ -27,7 +27,7 @@ fix is to figure out why, NOT to re-pin.
 |---|---|
 | `ascii_basic.json` | Headline rule: alphabetical key sort |
 | `html_chars.json` | E1 H1: `<`, `>`, `&` survive verbatim (no `<` etc.) |
-| `line_separators.json` | U+2028 / U+2029 — Go default escapes these in `json.Marshal`, our encoder must not |
+| `line_separators.json` | U+2028 / U+2029 — written as `\u2028` / `\u2029`, as Go's `encoding/json` always does; the ports match |
 | `emoji_supplementary.json` | UTF-8 supplementary plane (4-byte sequences) |
 | `int64_extremes.json` | INT64_MIN / INT64_MAX preserved as integers, not coerced to float |
 | `empty_collections.json` | `{}` vs `null` vs `""` vs `[]` distinctions |

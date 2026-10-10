@@ -164,7 +164,8 @@ problems.
 | `hash_mismatch` | the recomputed chain hash differs from the stored one |
 | `sequence_gap` | `global_seq` is not contiguous — entries missing or reordered |
 | `invalid_tombstone` | an entry claims to be a tombstone but its content hash is malformed |
-| `invalid_timestamp` | the stored timestamp could not be parsed |
+| `invalid_timestamp` | the stored timestamp is not in the form `YYYY-MM-DDTHH:MM:SS.ffffffZ` |
+| `invalid_field` | a hash, sequence number or run id is not in the shape its format requires |
 | `anchor_mismatch` | the chain does not match the anchor covering it |
 
 ### A tombstone must never produce a break
@@ -187,7 +188,44 @@ on a chain containing a tombstone, it is recomputing a hash it should be reading
 | replays an existing entry as a new one | ✅ |
 | destroys the payload but leaves the chain | ✅ — the commitment survives; the content is gone |
 | erases an entry through the tombstone path | not an attack — verifies as intact, by design |
+| rewrites the entries **before a tombstone** (or before an entry they turn into one) | ❌ — with or without an anchor; see below |
+| changes an entry's `entry_id` or `entry_type` | ❌ — neither is in any hash; see below |
+
+Every ✅ row assumes the edited entry comes **after the chain's last tombstone**.
 
 Every row above is exercised by the integration tests in this repository, including
-the truncation row, which asserts the failure *is* undetectable — so that if a
-defence is ever added, the documentation claiming otherwise fails loudly.
+the truncation and tombstone rows, which assert the failure *is* undetectable — so
+that if a defence is ever added, the documentation claiming otherwise fails loudly.
+
+### What a tombstone leaves unverified
+
+A tombstone keeps the erased entry's original chain hash, and a verifier takes
+that hash as stored: it cannot be recomputed, because the content hash it was
+computed from is gone ([format-spec.md §5](format-spec.md)). So nothing links
+the entries *before* a tombstone to the entries after it.
+
+```
+  e0 ── e1 ── T2 ── e3 ── e4          T2 = tombstone, chain hash taken as stored
+  └──┬──┘           └──┬──┘
+  not linked to     linked to the head,
+  anything after    and so bound by an anchor
+```
+
+Someone who can write the store can replace `e0` and `e1` with different entries
+that link among themselves, leave `T2`'s chain hash alone, and the chain still
+verifies as `INTACT`. A signed anchor still binds, because the head it signed
+depends only on `T2`'s stored hash and what follows. They can also do this to a
+chain with no tombstone, by turning an entry into one: `entry_type` and
+`entry_id` are in no hash, and they are what marks an entry as erased.
+
+The verifier reports the exposure and does not hide it:
+
+- `verify.Result` carries `tombstones_found` and `last_tombstone`.
+- `verify.BindResult` carries `tombstones` and `entries_not_bound`, and its
+  `proven` / `not_proven` text names the entries the anchor does not bind.
+- `proof verify` prints the same.
+
+Closing it needs a format change: a tombstone has to retain something the
+original chain hash can be checked against. That is planned for the next chain
+format version. The sink (`docs/sink-format.md`) is not affected: it erases by
+destroying a nonce and keeps the content hash, so every entry stays recomputable.

@@ -44,22 +44,40 @@
 //     radius. [Result.FirstBreak] is the signal.
 //   - Skips hash recomputation for tombstones and validates their format only.
 //     A tombstone keeps the original entry's chain hash, which is not
-//     reproducible from its remaining fields.
+//     reproducible from its remaining fields. THE CONSEQUENCE: a tombstone's
+//     chain hash is taken as stored, so nothing links the entries BEFORE a
+//     tombstone to the entries after it. Whoever can write the store can
+//     replace every entry before a tombstone (or before an entry they turn
+//     into one) and the walk still reports INTACT, under a signed anchor too.
+//     [Result.TombstonesFound] and [Result.LastTombstone] say whether, and up
+//     to where, a result is exposed to this. Closing it needs a format change.
+//   - entry_id and entry_type are in no hash. Either can be changed without a
+//     break; entry_type decides whether an entry is read as a tombstone.
 //
 // # Assumptions
 //
 //   - Entries arrive in ascending global_seq order, as every exporter in this
 //     module produces them. Out-of-order input reports breaks on an intact chain.
-//   - Timestamps are in the exact form they were hashed in. A re-derived,
-//     lower-precision timestamp breaks verification for sub-millisecond entries.
+//   - Timestamps are stored in the form they were hashed in, [TimestampLayout].
+//     Any other spelling of the same instant is a break.
 package verify
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/aleutian-ai/proof/chainformat"
 )
+
+// TimestampLayout is the one form an entry's timestamp is stored in: UTC, the
+// literal Z, exactly six fractional digits (docs/format-spec.md §4). It is the
+// form the chain hash covers, so requiring it of the stored string leaves a
+// timestamp exactly one spelling.
+const TimestampLayout = "2006-01-02T15:04:05.000000Z"
+
+// chainHashPattern is the shape of every chain hash: SHA-512, lowercase hex.
+var chainHashPattern = regexp.MustCompile(`^[0-9a-f]{128}$`)
 
 // Verdict is the overall outcome of a verification.
 type Verdict string
@@ -110,9 +128,17 @@ const (
 	// Those values would look protected while being free to change.
 	BreakFormatFieldMisuse BreakType = "format_field_misuse"
 
-	// BreakInvalidTimestamp: the stored timestamp could not be parsed, so the
-	// hash cannot be recomputed.
+	// BreakInvalidTimestamp: the stored timestamp is not in [TimestampLayout].
+	// One that does not parse at all leaves the hash unrecomputable; one that
+	// parses but is spelled differently (another offset, another precision)
+	// is a second spelling of a value the hash covers only one of.
 	BreakInvalidTimestamp BreakType = "invalid_timestamp"
+
+	// BreakInvalidField: a field is not in the shape its format requires: a
+	// chain hash or content hash that is not a digest, a negative sequence
+	// number, a v2 entry with no run id. Such an entry may still hash to its
+	// stored chain hash, which is why the shape is checked on its own.
+	BreakInvalidField BreakType = "invalid_field"
 )
 
 // Entry is one exported row.
@@ -174,6 +200,12 @@ type Result struct {
 	// a break; see the note on Breaks.
 	TombstonesFound int `json:"tombstones_found"`
 
+	// LastTombstone is the index of the last erased entry, or -1. A tombstone's
+	// chain hash is taken as stored, so the entries up to and including this
+	// index are not linked to the entries after it: see the package's
+	// Limitations.
+	LastTombstone int `json:"last_tombstone"`
+
 	// FirstBreak is the index of the earliest failure, or -1.
 	//
 	// THIS is the signal. A single altered entry cascades — verification
@@ -204,10 +236,10 @@ type Options struct {
 	// PreviousHash is the chain hash the FIRST supplied entry links from.
 	//
 	// Empty — the zero value, and the usual case — means these entries begin a
-	// chain. Set it to verify a SEGMENT: entries taken from the middle of a
-	// chain link from their predecessor, not from nothing, so verifying them
-	// against an empty previous hash reports a break on the first entry of a
-	// perfectly good segment. [store.Reader.Predecessor] exists to supply it.
+	// chain, and the first must be at global_seq 0. Set it to verify a SEGMENT:
+	// entries taken from the middle of a chain link from their predecessor, not
+	// from nothing, and the first is at global_seq 1 or later.
+	// [store.Reader.Predecessor] exists to supply it.
 	//
 	// This does NOT establish that the predecessor is genuine. It says "these
 	// entries link, given that one", which is the most a segment can support.
@@ -289,7 +321,7 @@ type Walker struct {
 
 // NewWalker starts a walk. opts is as for Chain.
 func NewWalker(opts Options) *Walker {
-	return &Walker{opts: opts, res: Result{Verdict: VerdictIntact, FirstBreak: -1},
+	return &Walker{opts: opts, res: Result{Verdict: VerdictIntact, FirstBreak: -1, LastTombstone: -1},
 		previousHash: opts.PreviousHash}
 }
 
@@ -323,6 +355,7 @@ func (w *Walker) Add(e Entry) {
 	w.res.EntriesVerified++
 	if i == 0 {
 		w.first = e
+		w.checkStart(e)
 	}
 	w.last = e
 
@@ -334,9 +367,21 @@ func (w *Walker) Add(e Entry) {
 	}
 	w.previousSeq = e.GlobalSeq
 
+	// Every entry's chain hash is a digest, whatever else the entry is. Checked
+	// first because three paths below advance on the STORED hash.
+	if !chainHashPattern.MatchString(e.ChainHash) {
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakInvalidField,
+			Detail: "chain_hash is not 128 lowercase hex characters",
+		})
+		w.previousHash = e.ChainHash
+		return
+	}
+
 	// Rule 2 — tombstones. Format only, then advance on the STORED hash.
 	if chainformat.IsTombstone(e.EntryType, e.EntryID) {
 		w.res.TombstonesFound++
+		w.res.LastTombstone = i
 		if !chainformat.ValidateTombstoneContentHash(e.ContentHash) {
 			w.addBreak(Break{
 				Position: i, EntryID: e.EntryID, Type: BreakInvalidTombstone,
@@ -359,13 +404,32 @@ func (w *Walker) Add(e Entry) {
 		w.previousHash = e.ChainHash
 		return
 	}
+	if ts.UTC().Format(TimestampLayout) != e.Timestamp {
+		// The hash covers the instant in one spelling. A stored string in any
+		// other spelling (an offset, fewer or more digits) would hash the same
+		// and read differently, so it is refused rather than normalised.
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakInvalidTimestamp,
+			Detail: "timestamp is not in the form YYYY-MM-DDTHH:MM:SS.ffffffZ",
+		})
+	}
 
 	// The two formats cannot be told apart by looking at a digest, so the
 	// entry has to say which preimage produced it. Absent means v2, which is
 	// what every entry written before the field existed carries.
+	//
+	// The field shapes are checked before the hash is recomputed: the preimage
+	// is '|'-delimited, so a hash over malformed fields proves nothing about
+	// which fields produced it.
 	var expected string
+	var shapeErr error
 	switch chainformat.NormalizeFormatVersion(e.FormatVersion) {
 	case chainformat.FormatV2:
+		shapeErr = chainformat.ValidateChainHashInputs(
+			w.previousHash, e.RunID, e.SequenceNum, e.ContentHash)
+		if shapeErr == nil && e.GlobalSeq < 0 {
+			shapeErr = fmt.Errorf("globalSeq must be non-negative, got %d", e.GlobalSeq)
+		}
 		expected = chainformat.ComputeChainHashUnchecked(
 			w.previousHash, e.RunID, e.SequenceNum, ts, e.ContentHash)
 	case chainformat.FormatV3:
@@ -379,12 +443,22 @@ func (w *Walker) Add(e Entry) {
 			w.previousHash = e.ChainHash
 			return
 		}
+		shapeErr = chainformat.ValidateChainHashInputsV3(w.previousHash, e.GlobalSeq, e.ContentHash)
 		expected = chainformat.ComputeChainHashV3Unchecked(
 			w.previousHash, e.GlobalSeq, ts, e.ContentHash)
 	default:
 		w.addBreak(Break{
 			Position: i, EntryID: e.EntryID, Type: BreakUnknownFormat,
 			Detail: fmt.Sprintf("chain hash format version %d is not implemented by this build", e.FormatVersion),
+		})
+		w.previousHash = e.ChainHash
+		return
+	}
+	if shapeErr != nil {
+		// The validators name the field and its length, never its value.
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakInvalidField,
+			Detail: shapeErr.Error(),
 		})
 		w.previousHash = e.ChainHash
 		return
@@ -397,4 +471,33 @@ func (w *Walker) Add(e Entry) {
 		})
 	}
 	w.previousHash = expected
+}
+
+// checkStart checks where the walk begins: a whole chain starts at global_seq 0
+// and links from nothing; a segment starts later and links from a well-formed
+// predecessor hash.
+func (w *Walker) checkStart(e Entry) {
+	if w.opts.PreviousHash == "" {
+		if e.GlobalSeq != 0 {
+			w.addBreak(Break{
+				Position: 0, EntryID: e.EntryID, Type: BreakSequenceGap,
+				Detail: fmt.Sprintf("a chain starts at global_seq 0, and the first entry is at %d; "+
+					"to verify a segment, supply its predecessor's chain hash", e.GlobalSeq),
+			})
+		}
+		return
+	}
+	if !chainHashPattern.MatchString(w.opts.PreviousHash) {
+		w.addBreak(Break{
+			Position: 0, EntryID: e.EntryID, Type: BreakInvalidField,
+			Detail: "the supplied previous hash is not 128 lowercase hex characters",
+		})
+	}
+	if e.GlobalSeq < 1 {
+		w.addBreak(Break{
+			Position: 0, EntryID: e.EntryID, Type: BreakSequenceGap,
+			Detail: fmt.Sprintf("a segment has a predecessor, so its first entry is at global_seq 1 "+
+				"or later; got %d", e.GlobalSeq),
+		})
+	}
 }

@@ -6,10 +6,8 @@ package verify
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/aleutian-ai/proof/anchor"
-	"github.com/aleutian-ai/proof/chainformat"
 )
 
 // BindOutcome is why an anchor did or did not describe a chain.
@@ -59,6 +57,16 @@ type BindResult struct {
 
 	// EntriesCovered is how many entries the anchor commits to.
 	EntriesCovered int64 `json:"entries_covered"`
+
+	// Tombstones is how many erased entries the chain holds.
+	Tombstones int `json:"tombstones"`
+
+	// EntriesNotBound is how many entries, counted from the first, the anchor
+	// does NOT bind: every entry up to and including the last tombstone. A
+	// tombstone's chain hash is taken as stored, so the head the anchor signed
+	// depends only on the entries after it. Zero when the chain has no
+	// tombstone. Proven and NotProven say the same in words.
+	EntriesNotBound int64 `json:"entries_not_bound"`
 
 	// Trust is what a verified signature established, empty for a keyless bind.
 	Trust anchor.Trust `json:"trust,omitempty"`
@@ -154,30 +162,46 @@ func BindAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string) (Bi
 		return BindResult{}, fmt.Errorf("verify: malformed anchor: %w", err)
 	}
 
-	head, brk, err := walkForHead(entries)
-	if err != nil {
-		return BindResult{}, err
+	// The walk is Chain's own. BindAnchor once had a second walker, and the two
+	// disagreed about what a tombstone is: this one took any entry whose content
+	// hash began "TOMBSTONE:" as erased and adopted its stored chain hash.
+	w := NewWalker(Options{MaxBreaks: 1})
+	for _, e := range entries {
+		w.Add(e)
 	}
-	return bindWithHead(a, entries[0].EntryID, entries[len(entries)-1].EntryID,
-		int64(len(entries)), head, brk, previousAnchorHash)
+	return w.bind(a, previousAnchorHash)
 }
 
-// bindWithHead is BindAnchor after the walk: the chain's first and last entry
-// ids, its length, its head (valid when brk < 0) and the index of its first
-// break (or -1) are already known. Shared with Walker.VerifyAnchor, so the two
+// bind is BindAnchor after the walk: it binds a to exactly the entries the
+// walker has seen. Shared by BindAnchor and Walker.VerifyAnchor, so the two
 // paths cannot drift apart.
-func bindWithHead(a anchor.Anchor, firstID, lastID string, count int64, head string, brk int,
-	previousAnchorHash string) (BindResult, error) {
+func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, error) {
+	firstID, lastID, count := w.first.EntryID, w.last.EntryID, int64(w.Count())
 	res := BindResult{
-		EntriesCovered: a.EntryCount,
-		Proven:         "the chain in front of you is the one this anchor committed to",
+		EntriesCovered:  a.EntryCount,
+		Tombstones:      w.res.TombstonesFound,
+		EntriesNotBound: int64(w.res.LastTombstone + 1),
+		Proven:          "the chain in front of you is the one this anchor committed to",
 		NotProven: "that the anchor is genuine — no signature was checked, so an " +
 			"adversary able to rewrite the chain could also have minted this anchor",
 	}
-	if brk >= 0 {
+	if res.Tombstones > 0 {
+		res.Proven = boundAfterTombstone(res.EntriesNotBound, count)
+		res.NotProven = notBoundBeforeTombstone(res.EntriesNotBound) + "; or " + res.NotProven
+	}
+	if brk := w.res.FirstBreak; brk >= 0 {
+		// An entry this build cannot recompute is not evidence of tampering, and
+		// is not reported as a broken chain. Say what it actually is.
+		if len(w.res.Breaks) > 0 {
+			switch first := w.res.Breaks[0]; first.Type {
+			case BreakUnknownFormat, BreakFormatFieldMisuse:
+				return BindResult{}, fmt.Errorf("verify: entry %d: %s", brk, first.Detail)
+			}
+		}
 		res.Outcome, res.Detail = BindChainBroken, fmt.Sprintf("linkage breaks at entry %d", brk)
 		return res, nil
 	}
+	head := w.last.ChainHash
 
 	if firstID != a.Range.StartEntryID {
 		res.Outcome = BindRangeStartMismatch
@@ -281,7 +305,10 @@ func withSignature(res BindResult, a anchor.Anchor, src anchor.KeySource) (BindR
 	// situations and the caller needs to tell them apart.
 	trust, verr := anchor.VerifySignature(a, src)
 	if verr != nil {
-		return res, verr
+		// Nothing is reported as bound or proven beside a signature error: a
+		// caller that reads the result and drops the error must not find
+		// Bound=true in it.
+		return BindResult{EntriesCovered: res.EntriesCovered}, verr
 	}
 
 	res.SignatureVerified = true
@@ -290,41 +317,31 @@ func withSignature(res BindResult, a anchor.Anchor, src anchor.KeySource) (BindR
 		res.Proven = "the chain matches this anchor, and " + trust.Establishes()
 		res.NotProven = "that this is the whole chain beyond the anchored range, or that " +
 			"the anchor reached you by a path its subject could not rewrite"
+		if res.Tombstones > 0 {
+			res.Proven = boundAfterTombstone(res.EntriesNotBound, res.EntriesCovered) +
+				", and " + trust.Establishes()
+			res.NotProven = notBoundBeforeTombstone(res.EntriesNotBound) + "; or " + res.NotProven
+		}
 	}
 	return res, nil
 }
 
-// walkForHead re-derives every chain hash and returns the head, or the index of
-// the first break.
-//
-// A TOMBSTONE IS NOT RECOMPUTED. Its content hash is random, so nothing can
-// derive it, and its chain hash is deliberately the original — the value anchors
-// were signed over. A walker that recomputes tombstones reports a lawfully
-// erased chain as tampered, which is the bug that shipped in three SDKs.
-func walkForHead(entries []Entry) (head string, firstBreak int, err error) {
-	previousHash := ""
-	for i, e := range entries {
-		if chainformat.IsTombstoneContentHash(e.ContentHash) {
-			previousHash = e.ChainHash // erasure is not tampering
-			continue
-		}
-		ts, perr := time.Parse(time.RFC3339Nano, e.Timestamp)
-		if perr != nil {
-			// Do not echo the value; report the position and the expected shape.
-			return "", i, fmt.Errorf("verify: entry %d: timestamp is not RFC3339", i)
-		}
-		want, herr := expectedChainHash(e, previousHash, ts)
-		if herr != nil {
-			// An entry this build cannot recompute is not evidence of tampering,
-			// and must not be reported as a break. Say what it actually is.
-			return "", i, fmt.Errorf("verify: entry %d: %w", i, herr)
-		}
-		if want != e.ChainHash {
-			return "", i, nil
-		}
-		previousHash = want
+// boundAfterTombstone and notBoundBeforeTombstone word a bind over a chain that
+// holds an erased entry. notBound is how many leading entries the anchor does
+// not bind (through the last tombstone); count is the chain's length.
+func boundAfterTombstone(notBound, count int64) string {
+	if notBound >= count {
+		return "the chain ends in an erased entry whose stored chain hash is the head this " +
+			"anchor committed to; no entry's content is bound by it"
 	}
-	return previousHash, -1, nil
+	return fmt.Sprintf("entries %d to %d, the ones after the last erased entry, are the ones "+
+		"this anchor committed to", notBound, count-1)
+}
+
+func notBoundBeforeTombstone(notBound int64) string {
+	return fmt.Sprintf("that the first %d entries, up to and including the last erased one, "+
+		"are the ones the anchor was signed over: an erased entry's chain hash is taken as "+
+		"stored, so whoever can write the store can replace everything before it", notBound)
 }
 
 // validatePreviousAnchorHash checks the shape of a caller-supplied predecessor hash.
@@ -375,63 +392,6 @@ func validatePreviousAnchorHash(previousAnchorHash string) error {
 	return nil
 }
 
-// expectedChainHash recomputes an entry's chain hash under the format it declares.
-//
-// # Description
-//
-// The single dispatch shared by [Chain] and [walkForHead]. It exists because
-// those two paths once disagreed: `_40` taught Chain about v3 and left the
-// anchor binder recomputing every entry as v2, so from the moment v3 became the
-// default, binding a new chain to its anchor reported "linkage breaks at entry
-// 0" — a correct chain accused of tampering.
-//
-// Two verifiers in one package that answer differently is not a bug to fix once;
-// it is a bug to make impossible.
-//
-// # Inputs
-//
-//   - e: the entry to recompute
-//   - previousHash: the preceding entry's chain hash, empty for the first
-//   - ts: e.Timestamp already parsed
-//
-// # Outputs
-//
-//   - string: the hash this entry should carry
-//   - error: if the entry declares a format this build does not implement, or
-//     misuses a field its format does not bind
-//
-// # Example
-//
-//	want, err := expectedChainHash(e, previousHash, ts)
-//
-// # Limitations
-//
-//   - Recomputes. It does not compare; callers decide what a mismatch means.
-//
-// # Assumptions
-//
-//   - Tombstones are handled by the caller: their chain hash is retained from
-//     the original entry and cannot be recomputed from their own fields.
-func expectedChainHash(e Entry, previousHash string, ts time.Time) (string, error) {
-	switch chainformat.NormalizeFormatVersion(e.FormatVersion) {
-	case chainformat.FormatV2:
-		return chainformat.ComputeChainHashUnchecked(
-			previousHash, e.RunID, e.SequenceNum, ts, e.ContentHash), nil
-	case chainformat.FormatV3:
-		if e.RunID != "" || e.SequenceNum != 0 {
-			// v3 binds neither field. Carrying them anyway invites a reader to
-			// treat them as attested when they are free to change.
-			return "", fmt.Errorf("a v3 entry must not carry run_id or sequence_num; " +
-				"neither is bound into its hash")
-		}
-		return chainformat.ComputeChainHashV3Unchecked(
-			previousHash, e.GlobalSeq, ts, e.ContentHash), nil
-	default:
-		return "", fmt.Errorf("chain hash format version %d is not implemented by this build",
-			e.FormatVersion)
-	}
-}
-
 // VerifyAnchor binds an anchor to exactly the entries this walker has seen, and
 // verifies its signature: the same checks as the package-level VerifyAnchor over
 // those entries, without holding them.
@@ -471,9 +431,7 @@ func expectedChainHash(e Entry, previousHash string, ts time.Time) (string, erro
 //
 // # Limitations
 //
-//   - Uses Chain's rules (a sequence gap is a break, a tombstone is recognised
-//     by its type and id), which are stricter than BindAnchor's on malformed
-//     tombstones.
+//   - As [BindAnchor]'s: both bind through the same walk.
 func (w *Walker) VerifyAnchor(a anchor.Anchor, previousAnchorHash string, src anchor.KeySource) (BindResult, error) {
 	if w.Count() == 0 {
 		return BindResult{}, ErrNoEntries
@@ -484,8 +442,7 @@ func (w *Walker) VerifyAnchor(a anchor.Anchor, previousAnchorHash string, src an
 	if err := anchor.ValidateVersionInvariants(a); err != nil {
 		return BindResult{}, fmt.Errorf("verify: malformed anchor: %w", err)
 	}
-	res, err := bindWithHead(a, w.first.EntryID, w.last.EntryID, int64(w.Count()),
-		w.last.ChainHash, w.res.FirstBreak, previousAnchorHash)
+	res, err := w.bind(a, previousAnchorHash)
 	if err != nil {
 		return res, err
 	}

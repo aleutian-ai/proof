@@ -189,6 +189,11 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		if errors.Is(err, sink.ErrBusy) {
 			return exitBusy
 		}
+		if verb == "verify" && errors.Is(err, sink.ErrCorrupt) {
+			// A damaged evidence file is a failed verification, not a file
+			// the command could not find.
+			return exitBroken
+		}
 		return exitIOError
 	case failed:
 		return exitBroken

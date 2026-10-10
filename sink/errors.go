@@ -10,6 +10,7 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/aleutian-ai/proof/internal/fault"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 )
 
@@ -17,6 +18,20 @@ import (
 // folder, holds its files past the lock timeout. It is retryable: nothing was
 // changed. See WithLockTimeout.
 var ErrBusy = errors.New("sink: the folder is in use by another process")
+
+// ErrCorrupt is returned by the operations that only read the folder (Verify,
+// VerifyEach, Export, Checkpoint, ChainSubjects, UsesRecordKey) when one of its
+// files cannot be read as the database it should be: truncated, overwritten,
+// or not a sink file. The read panicked or faulted inside the storage layer,
+// and the operation stopped there. For Verify it means the folder does not
+// verify.
+//
+// The operations that write (Commit, EraseSubject, EraseSubjectClass,
+// ResumeErasures) do NOT return it: a panic inside a write transaction leaves
+// the storage layer holding a lock that closing the file then waits on, so
+// recovering there would turn a crash into a hang. On a damaged file they
+// still panic. Run Verify first when a folder's integrity is in doubt.
+var ErrCorrupt = fault.ErrCorrupt
 
 // ErrInvalidRecord is returned (wrapped, usually in a *RecordError) for a
 // record that can never be committed: a bad key, empty or oversized content, or

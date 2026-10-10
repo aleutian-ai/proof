@@ -138,6 +138,16 @@ by the type system. That cost was paid: three SDKs got it wrong, because the rul
 was written in one implementation's comments. Now in format-spec §5, which is
 what this document set exists for.
 
+**Cost, found in review (2026-10-10):** a hash that is retained and never
+recomputed is a link nobody checks. The entries before a tombstone are not
+linked to the entries after it, so whoever can write the store can replace them,
+under a signed anchor too, and can turn any entry into a tombstone to do it
+(`entry_type` and `entry_id` are in no hash). The verifier reports how many
+entries a result leaves unbound; it cannot detect the rewrite. See
+verification-model.md, "What a tombstone leaves unverified". The fix is a
+tombstone that retains a value the original chain hash can be checked against,
+which is a new chain format version.
+
 ---
 
 ## D7 · `EntryV3` is a sealed interface

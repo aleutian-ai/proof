@@ -151,6 +151,9 @@ func TestVerifyAnchor_CatchesTruncation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
+		// Renumbered as well as re-linked: a chain starts at global_seq 0, and a
+		// remainder that kept its old numbers is caught by the walk itself.
+		kept[i].GlobalSeq = int64(i)
 		kept[i].ChainHash = chainformat.ComputeChainHashV3Unchecked(
 			prev, kept[i].GlobalSeq, ts, kept[i].ContentHash)
 		prev = kept[i].ChainHash

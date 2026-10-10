@@ -13,6 +13,7 @@ import (
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/anchor/build"
+	"github.com/aleutian-ai/proof/internal/fault"
 	"github.com/aleutian-ai/proof/store"
 	"github.com/aleutian-ai/proof/verify"
 )
@@ -61,7 +62,8 @@ import (
 //
 //   - Walks each chain with new entries once, a page at a time; a chain with
 //     nothing new is skipped from its tail alone.
-func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trusted anchor.KeySource) ([]Checkpointed, error) {
+func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trusted anchor.KeySource) (_ []Checkpointed, err error) {
+	defer fault.Recover(&err)()
 	if signer == nil {
 		return nil, errors.New("sink: a signer is required")
 	}
@@ -157,7 +159,7 @@ func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trus
 		return nil
 	}
 	var cursor *string // nil: from the first chain ("" can be a crafted chain id)
-	err := s.inPages(ctx, false, func(p *pageFiles, deadline time.Time) (bool, error) {
+	err = s.inPages(ctx, false, func(p *pageFiles, deadline time.Time) (bool, error) {
 		chains, err := p.st.ChainsAfter(ctx, cursor, pageMaxChains)
 		if err != nil {
 			return false, fmt.Errorf("sink: %w", err)

@@ -116,6 +116,8 @@ func NormalizeFormatVersion(version int) int {
 //   - Validates nothing. Use [ComputeChainHashV3] at API boundaries, or
 //     [ValidateChainHashInputsV3] directly; this variant will happily hash
 //     malformed input into a valid-looking but meaningless digest.
+//   - A timestamp whose UTC year is outside 0000-9999 has no four-digit form:
+//     a negative year is written as 0000. [ValidateTimestamp] refuses it.
 //
 // # Assumptions
 //
@@ -262,6 +264,9 @@ func emptyOr(allowEmpty bool) string {
 //   - As [ComputeChainHashV3Unchecked].
 func ComputeChainHashV3(previousHash string, globalSeq int64, timestamp time.Time, contentHash string) (string, error) {
 	if err := ValidateChainHashInputsV3(previousHash, globalSeq, contentHash); err != nil {
+		return "", fmt.Errorf("invalid chain hash inputs: %w", err)
+	}
+	if err := ValidateTimestamp(timestamp); err != nil {
 		return "", fmt.Errorf("invalid chain hash inputs: %w", err)
 	}
 	return ComputeChainHashV3Unchecked(previousHash, globalSeq, timestamp, contentHash), nil

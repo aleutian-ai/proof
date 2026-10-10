@@ -44,6 +44,7 @@ node_modules/
 # drops a 5 MB executable called `proof` right next to the source, which
 # `git add .` then stages — the MCP binary below was caught the same way.
 /proof
+/proof-mcp
 /cmd/proof-mcp/proof-mcp
 /examples/integrations/nats/nats
 /examples/integrations/nats/nats-sink

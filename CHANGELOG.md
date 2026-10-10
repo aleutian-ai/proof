@@ -7,6 +7,73 @@ change is called out here.
 
 ## Unreleased
 
+### Security
+
+Fixes from an external review of `6a77fa3` (2026-10-10).
+
+- **The anchor binder had its own tombstone rule.** `verify.BindAnchor` and
+  `verify.VerifyAnchor` took any entry whose content hash began `TOMBSTONE:` as
+  erased and adopted its stored chain hash, without looking at its type or id.
+  Marking only the last entry that way let every other entry be replaced under
+  a valid signed anchor. Binding now runs the same walk as `verify.Chain`, where
+  an entry is a tombstone by `entry_type` and the `tomb_` id prefix
+  (format-spec §5).
+- **A real tombstone still leaves the entries before it unbound, and the result
+  now says so.** *(Limitation, not fixed: it needs a new chain format version.)*
+  A tombstone's chain hash is taken as stored, so whoever can write the store
+  can replace everything before one, or before an entry they turn into one
+  (`entry_type` and `entry_id` are in no hash). `verify.Result` gains
+  `LastTombstone`; `verify.BindResult` gains `Tombstones` and `EntriesNotBound`,
+  and its `Proven` / `NotProven` text names the entries an anchor does not bind;
+  `proof verify` prints the same. See verification-model.md, "What a tombstone
+  leaves unverified", and decisions.md D6.
+- **The verifier checks field shapes.** *(Breaking.)* A chain or content hash
+  that is not a digest, a negative sequence number or a v2 entry with no run id
+  is a break, new type `invalid_field`, even when the entry hashes to its stored
+  chain hash. A whole chain starts at `global_seq` 0; entries that start later
+  are a segment and need `Options.PreviousHash`.
+- **A stored timestamp has one spelling.** *(Breaking.)* It must be exactly
+  `YYYY-MM-DDTHH:MM:SS.ffffffZ` (new constant `verify.TimestampLayout`). Another
+  offset, no fraction or more than six digits is `invalid_timestamp`: each
+  hashed the same as the canonical form, so the string could be changed without
+  a break.
+- **`verify.VerifyAnchor` returns nothing bound beside a signature error.** It
+  returned `Bound=true` with the error.
+- **`merkle.VerifyConsistency` makes RFC 9162 §2.1.4.2's final size check.** A
+  proof for (m, n) also verified for some smaller old sizes against the same
+  old root: 1,261 wrong-size acceptances for n ≤ 40, now 0.
+- **`merkle.UnmarshalFrontier` bounds the level index.** `0|50000000:<hash>`
+  allocated about 1.2 GB, and level 64 passed the size check because `1<<64` is
+  0 in Go. A level must be a set bit of the size.
+- **`bundle.VerifyDir` follows no symlinked directory and refuses an empty
+  manifest.** *(Breaking: an empty manifest is `ErrEmptyManifest`, it was
+  `Intact=true`.)* Only the last path component was checked, so `sub/secret`
+  with `sub` a symlink had a file outside the bundle hashed. Files are now
+  opened through an `os.Root` with every component checked.
+- **`chainformat.ComputeChainHash` and `ComputeChainHashV3` refuse a year
+  outside 0000-9999.** A negative year was written as `0000`, so year -5 and
+  year 0 hashed alike. New `chainformat.ValidateTimestamp`.
+- **A damaged store file is an error on the paths that only read.**
+  `sink.Verify`, `VerifyEach`, `Export`, `Checkpoint`, `ChainSubjects` and
+  `UsesRecordKey` return the new `sink.ErrCorrupt` where bbolt panicked or the
+  memory map faulted. `proof sink verify` exits 1 and `proof export`, `anchor`,
+  `sink export` and `sink checkpoint` exit 3; they exited 2, the usage-error
+  code, from the Go runtime. *(Not fixed: the paths that write still panic on a
+  damaged file. Recovering there hangs, because bbolt's close waits on a lock
+  the failed transaction holds.)*
+
+### Fixed
+
+- **Two sink tests failed on Linux.** `TestEraseSubject_RewritesTheIndex` and
+  `TestErasureRecovery_StateMachine` detected a rewrite by inode. An erasure
+  compacts the subject index twice, and on ext4 the second copy can get the
+  inode the first freed. They count compactions now.
+- **`/proof-mcp` is ignored** by `.gitignore` and `.dockerignore`. A 9 MB
+  binary of that name is tracked at the repo root; remove it with `git rm`.
+- Comments and docs that disagreed with the code: `canonical` said U+2028 and
+  U+2029 are written raw (they are escaped, and a vector pins it); `keywrap`
+  said its checksum authenticates a record (its key is public).
+
 ### Removed
 
 - **`anchor.ValidateChainHashInputs`.** *(Breaking; no known users.)* It checked

@@ -139,18 +139,20 @@ func incomplete(t *testing.T, err error) *ErasureIncompleteError {
 	return ie
 }
 
-func sameFile(t *testing.T, a, b os.FileInfo) bool {
-	t.Helper()
-	return os.SameFile(a, b)
-}
-
-func statSubjects(t *testing.T, s *Sink) os.FileInfo {
-	t.Helper()
-	fi, err := os.Stat(s.subjectsPath())
-	if err != nil {
-		t.Fatal(err)
+// countCompactions counts the successful compactions of path from here on, by
+// wrapping the sink's compactor. It is how a test sees that a file was
+// rewritten: a rewritten file's inode is not evidence, because a second
+// compaction in the same call can be handed the inode the first one freed.
+func countCompactions(s *Sink, path string) func() int {
+	n, inner := 0, s.compact
+	s.compact = func(p string, d time.Duration) error {
+		err := inner(p, d)
+		if err == nil && p == path {
+			n++
+		}
+		return err
 	}
-	return fi
+	return func() int { return n }
 }
 
 func TestErasureRecovery_StateMachine(t *testing.T) {
@@ -204,13 +206,13 @@ func TestErasureRecovery_StateMachine(t *testing.T) {
 	// State 3: resume while u-3's chain is still stuck. Nothing is re-linked, the
 	// index is rewritten this time (the compaction the last call owed), and u-1's
 	// chains are completed (already erased: nothing appended) and cleared.
-	before := statSubjects(t, s)
+	compactions := countCompactions(s, s.subjectsPath())
 	resumed, err := s.ResumeErasures(ctx)
 	ie = incomplete(t, err)
 	if ie.Forgotten || !ie.Compacted || !slices.Equal(ie.Pending, []string{u3}) || len(resumed) != 2 {
 		t.Fatalf("resume = %v, {Forgotten:%v Compacted:%v Pending:%v}", resumed, ie.Forgotten, ie.Compacted, ie.Pending)
 	}
-	if sameFile(t, before, statSubjects(t, s)) {
+	if compactions() == 0 {
 		t.Fatal("resume did not rewrite the subject index after the failed compaction")
 	}
 	raw := subjectsBytes(t, s)
@@ -231,11 +233,11 @@ func TestErasureRecovery_StateMachine(t *testing.T) {
 	invariant(t, s)
 
 	// State 5: nothing left; resume succeeds, and still compacts (D1).
-	before = statSubjects(t, s)
+	compactions = countCompactions(s, s.subjectsPath())
 	if again, err := s.ResumeErasures(ctx); err != nil || len(again) != 0 {
 		t.Fatalf("resume with nothing pending = %+v, %v", again, err)
 	}
-	if sameFile(t, before, statSubjects(t, s)) {
+	if compactions() == 0 {
 		t.Fatal("resume with nothing pending did not compact")
 	}
 	if c := cidIn(t, s, "payments", "u-2"); c != chains["payments/u-2"] {

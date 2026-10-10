@@ -55,7 +55,7 @@ var (
 	ErrInvalidMAC = errors.New("wrapped key integrity check failed — blob may be corrupted")
 )
 
-// V3 is the authenticated wire format for a v3 wrapped DEK.
+// V3 is the wire format for a v3 wrapped DEK, with a corruption checksum.
 //
 // # Description
 //

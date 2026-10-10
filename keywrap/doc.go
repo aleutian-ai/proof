@@ -6,8 +6,13 @@
 // # Description
 //
 // A wrapped key is the [xwing] ciphertext plus the framing needed to identify,
-// authenticate, and version it on the wire: a version byte, the recipient key
-// id, the KEM ciphertext, and a MAC over the whole structure.
+// version and checksum it on the wire: a version byte, the recipient key id,
+// the KEM ciphertext, and a keyed checksum over the whole structure.
+//
+// The checksum is HMAC-SHA-512 under a PUBLIC, constant key, in the field the
+// format calls "mac". It detects accidental corruption. It authenticates
+// nothing: anyone can compute it over any bytes. What stops a modified record
+// is ML-KEM's implicit rejection and the AEAD that the unwrapped key opens.
 //
 // The format is versioned because it is written to durable storage and must be
 // parseable by code shipped years later. Parsers reject unknown versions rather
@@ -21,9 +26,12 @@
 //     distinction is deliberate: "this is an old record needing migration" and
 //     "this is not a record I recognise" call for different responses, and
 //     collapsing them sends an operator looking for corruption that is not there.
+//     It is returned only for a record of V3's size whose checksum holds, since
+//     size and checksum are checked first; a real v1 record is a different size
+//     and gets the size error.
 //
 // # Assumptions
 //
-//   - The MAC covers every byte that a parser will act on, so a truncated or
-//     spliced record fails before any field is trusted.
+//   - The checksum covers every byte that a parser will act on, so a truncated
+//     or accidentally damaged record fails before any field is read.
 package keywrap

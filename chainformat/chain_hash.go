@@ -249,6 +249,44 @@ func ValidateChainHashInputs(previousHash, runID string, sequenceNum int64, cont
 	return nil
 }
 
+// ValidateTimestamp checks that a timestamp has a chain-hash form.
+//
+// # Description
+//
+// The preimage writes the year as four digits (docs/format-spec.md §4). A year
+// outside 0000-9999, taken in UTC, has no such form: the formatter writes a
+// negative year as 0000, so year -5 and year 0 would hash alike, and writes a
+// year above 9999 with five digits. Both checked hash functions call this.
+//
+// # Inputs
+//
+//   - t: the entry timestamp
+//
+// # Outputs
+//
+//   - error: nil, or that the year is out of range
+//
+// # Example
+//
+//	if err := chainformat.ValidateTimestamp(ts); err != nil {
+//	    return err
+//	}
+//
+// # Limitations
+//
+//   - Checks the year only. Precision finer than a microsecond is truncated by
+//     the formatter, not refused.
+//
+// # Assumptions
+//
+//   - None.
+func ValidateTimestamp(t time.Time) error {
+	if year := t.UTC().Year(); year < 0 || year > 9999 {
+		return fmt.Errorf("timestamp year must be 0000 to 9999 in UTC, got %d", year)
+	}
+	return nil
+}
+
 // appendTimestampMicro appends a timestamp formatted as "2006-01-02T15:04:05.000000Z"
 // to the buffer without allocating. This matches BigQuery's
 // FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%E6SZ', ts) output.
@@ -290,6 +328,8 @@ func appendTimestampMicro(buf []byte, t time.Time) []byte {
 // specified width. For example, appendIntPadded(buf, 5, 2) appends "05".
 //
 // If the integer has more digits than width, all digits are written (no truncation).
+// A negative value is written as zero: callers check the range first
+// ([ValidateTimestamp] for the year; the other components cannot be negative).
 func appendIntPadded(buf []byte, val int, width int) []byte {
 	// Format into a fixed temporary buffer (right-to-left).
 	// Maximum width needed is 10 (for year 9999 or 6-digit microseconds).
@@ -372,6 +412,9 @@ func appendIntPadded(buf []byte, val int, width int) []byte {
 //     Re-deriving it from a lower-precision value changes the hash.
 func ComputeChainHash(previousHash, runID string, sequenceNum int64, timestamp time.Time, contentHash string) (string, error) {
 	if err := ValidateChainHashInputs(previousHash, runID, sequenceNum, contentHash); err != nil {
+		return "", fmt.Errorf("chainformat: compute chain hash: %w", err)
+	}
+	if err := ValidateTimestamp(timestamp); err != nil {
 		return "", fmt.Errorf("chainformat: compute chain hash: %w", err)
 	}
 	return ComputeChainHashUnchecked(previousHash, runID, sequenceNum, timestamp, contentHash), nil

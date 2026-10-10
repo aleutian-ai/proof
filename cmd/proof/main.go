@@ -21,7 +21,7 @@
 //	0  verification passed / command succeeded
 //	1  verification FAILED — the chain is broken
 //	2  usage error
-//	3  I/O or parse error
+//	3  I/O or parse error, including a store file too damaged to read
 //
 // The distinction between 1 and 3 matters in a script: "the chain is broken" and
 // "I could not read the file" call for different responses, and collapsing them
@@ -39,6 +39,7 @@ import (
 	"strings"
 
 	"github.com/aleutian-ai/proof/chainformat"
+	"github.com/aleutian-ai/proof/internal/fault"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
@@ -55,6 +56,51 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 // run is main's testable body.
 func run(args []string, stdout, stderr *os.File) int {
+	if !readsStoreOnly(args) {
+		return dispatch(args, stdout, stderr)
+	}
+	code, err := dispatchRecovered(args, stdout, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "proof: %v\n", err)
+		if len(args) > 1 && args[0] == "sink" && args[1] == "verify" {
+			// A damaged evidence file is a failed verification.
+			return exitBroken
+		}
+		return exitIOError
+	}
+	return code
+}
+
+// readsStoreOnly reports whether the command only reads store files: the
+// commands whose panics are recovered.
+//
+// A damaged store file panics or faults inside the storage layer. Unrecovered,
+// the Go runtime ends the process with status 2, which here means a usage
+// error. The commands that write are left to do that: a panic inside a write
+// transaction leaves the storage layer holding a lock that the deferred close
+// then waits on, so recovering there would turn the crash into a hang.
+func readsStoreOnly(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "export", "anchor":
+		return true
+	case "sink":
+		return len(args) > 1 && (args[1] == "verify" || args[1] == "checkpoint" || args[1] == "export")
+	}
+	return false
+}
+
+// dispatchRecovered runs the command and reports a panic or memory fault in
+// the storage layer as an error.
+func dispatchRecovered(args []string, stdout, stderr *os.File) (_ int, err error) {
+	defer fault.Recover(&err)()
+	return dispatch(args, stdout, stderr), nil
+}
+
+// dispatch runs the named subcommand.
+func dispatch(args []string, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		usage(stderr)
 		return exitUsage
@@ -256,7 +302,17 @@ func printResult(w *os.File, res verify.Result, anchorFollows bool) {
 			fmt.Fprintf(w, ", %d erased", res.TombstonesFound)
 		}
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, "\n  Proven:     nothing was edited under you.")
+		if res.TombstonesFound == 0 {
+			fmt.Fprintln(w, "\n  Proven:     nothing was edited under you.")
+		} else {
+			// An erased entry's chain hash is taken as stored, so the walk
+			// links nothing before it to anything after it.
+			fmt.Fprintf(w, "\n  Proven:     nothing after entry %d, the last erased one, was edited under you.\n",
+				res.LastTombstone)
+			fmt.Fprintf(w, "  NOT proven: that entries 0 to %d are unedited. An erased entry's chain hash\n"+
+				"              is taken as stored, so whoever can write the store can replace\n"+
+				"              everything before it.\n", res.LastTombstone)
+		}
 		if anchorFollows {
 			// Saying "no anchor was checked" two lines above an anchor result
 			// would be simply untrue. The truncation caveat still belongs here,

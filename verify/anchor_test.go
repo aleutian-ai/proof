@@ -176,10 +176,11 @@ func TestBindAnchor_StillCatchesTampering(t *testing.T) {
 			c[2].ContentHash = strings.Repeat("ff", 64)
 			return c
 		}, BindChainBroken},
-		// The REAL truncation attack: drop entries from the front and RE-LINK, so
-		// what remains is internally flawless and linkage alone cannot object.
-		// Catching this is the whole reason anchors exist — see the README's
-		// "Why linkage alone cannot see truncation".
+		// The REAL truncation attack: drop entries from the front, RENUMBER and
+		// RE-LINK, so what remains is internally flawless (it starts at
+		// global_seq 0) and linkage alone cannot object. Catching this is the
+		// whole reason anchors exist — see the README's "Why linkage alone
+		// cannot see truncation".
 		{"entries removed from the front, then re-linked", func(e []Entry) []Entry {
 			kept := append([]Entry(nil), e[1:]...)
 			prev := ""
@@ -188,12 +189,18 @@ func TestBindAnchor_StillCatchesTampering(t *testing.T) {
 				if err != nil {
 					t.Fatalf("parse ts: %v", err)
 				}
+				kept[i].GlobalSeq = int64(i)
 				kept[i].ChainHash = chainformat.ComputeChainHashV3Unchecked(
 					prev, kept[i].GlobalSeq, ts, kept[i].ContentHash)
 				prev = kept[i].ChainHash
 			}
 			return kept
 		}, BindRangeStartMismatch},
+		// Without the renumbering the remainder starts at global_seq 1, which no
+		// whole chain does: the walk itself objects.
+		{"entries removed from the front, not renumbered", func(e []Entry) []Entry {
+			return append([]Entry(nil), e[1:]...)
+		}, BindChainBroken},
 		{"entries removed from the end", func(e []Entry) []Entry {
 			return append([]Entry(nil), e[:len(e)-1]...)
 		}, BindRangeEndMismatch},

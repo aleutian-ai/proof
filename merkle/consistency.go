@@ -134,6 +134,13 @@ func VerifyConsistency(m, n int, rootA, rootB []byte, proof [][]byte) bool {
 		lastNode /= 2
 	}
 
+	// RFC 9162 §2.1.4.2's final size check: the walk must have consumed the whole
+	// height of the size-n tree. Without it a proof for (m, n) also verifies for
+	// some smaller m' whose path is a suffix of m's, against the same old root.
+	if lastNode != 0 {
+		return false
+	}
+
 	return subtle.ConstantTimeCompare(hash1, rootA) == 1 &&
 		subtle.ConstantTimeCompare(hash2, rootB) == 1
 }

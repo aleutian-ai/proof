@@ -26,10 +26,11 @@ func series(t *testing.T, entries []Entry, counts ...int) ([]anchor.Anchor, anch
 	var out []anchor.Anchor
 	prevHash, prevID := anchor.SeedAnchorHash, anchor.SeedAnchorID
 	for i, n := range counts {
-		head, brk, err := walkForHead(entries[:n])
-		if err != nil || brk >= 0 {
-			t.Fatalf("building the series: %v, break %d", err, brk)
+		res, err := Chain(entries[:n], Options{})
+		if err != nil || res.FirstBreak >= 0 {
+			t.Fatalf("building the series: %v, break %d", err, res.FirstBreak)
 		}
+		head := entries[n-1].ChainHash
 		a := anchorOver(t, entries[:n], head, prevHash)
 		a.AnchorID = "anchor_0000000" + string(rune('0'+i)) + "-0000-0000-0000-000000000000"
 		a.PreviousAnchorID = prevID

@@ -88,6 +88,12 @@ func TestUnmarshalFrontier_RejectsCorruption(t *testing.T) {
 		"3|0:zz",               // bad hex
 		"3|0:" + hexRepeat(32), // wrong hash length
 		"-1",                   // negative size
+		// A level index far beyond any tree: refused before it sizes an allocation.
+		"0|50000000:" + hexRepeat(64),
+		// 1<<64 is 0 in Go, so level 64 once slipped past the size-bits check.
+		"0|64:" + hexRepeat(64),
+		"1|0:" + hexRepeat(64) + "|64:" + hexRepeat(64),
+		"1|0:" + hexRepeat(64) + "|63:" + hexRepeat(64),
 	} {
 		if _, err := UnmarshalFrontier(bad); err == nil {
 			t.Errorf("expected rejection for %q", bad)

@@ -62,14 +62,25 @@ var ErrLoneSurrogate = errors.New("canonical: string contains unpaired UTF-16 su
 //     and compact separators.
 //
 // HTML escaping is the cross-language-stability risk: Go's
-// encoding/json default escapes `<`, `>`, `&`, ` `, ` `
-// inside string values, but Python's `json.dumps(sort_keys=True,
+// encoding/json default escapes `<`, `>` and `&` inside string
+// values, but Python's `json.dumps(sort_keys=True,
 // separators=(",", ":"))` does NOT. Any field that legitimately
 // contains those characters (e.g., a `report_endpoint` URL with
 // `?a=1&b=2`) would produce divergent bytes between Go producer
 // and Python verifier — breaking signature verification. We
-// suppress HTML escaping on every scalar so the byte output matches
-// what other-language encoders produce by default.
+// suppress HTML escaping on every scalar so those three survive
+// verbatim.
+//
+// U+2028 and U+2029 are NOT covered by that switch: encoding/json
+// writes them as `\u2028` and `\u2029` whatever SetEscapeHTML says,
+// and so does this encoder. The Python and JS ports escape them the
+// same way; testdata/line_separators.json pins it.
+//
+// Keys are sorted by their UTF-8 bytes, which is Unicode code point
+// order. A port in a language whose strings are UTF-16 (JavaScript)
+// must not use its default sort: UTF-16 code unit order puts a key
+// containing U+10000 or above BEFORE one containing U+E000-U+FFFF,
+// and code point order puts it after.
 //
 // The second pass uses json.Decoder.UseNumber so integer fields
 // don't get coerced to float64 (which would change "0" to "0").

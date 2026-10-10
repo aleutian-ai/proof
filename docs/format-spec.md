@@ -180,16 +180,23 @@ YYYY-MM-DDTHH:MM:SS.ffffffZ        e.g. 2026-01-20T12:00:01.123456Z
 entry, and the failure appears much later as an unverifiable chain rather than as
 an error at the point of the mistake.
 
-Store the timestamp in the precision it was hashed at. A verifier that re-parses
-a stored string and re-formats it to microseconds reproduces the hash; one that
-round-trips through milliseconds does not.
+Store the timestamp as exactly the string that was hashed. A verifier MUST
+report an entry whose stored `timestamp` is any other spelling of the instant
+(an offset such as `+05:30`, no fractional digits, more than six) as a break,
+`invalid_timestamp`: the hash covers one spelling, and a second one that hashes
+the same is a field an editor can change without detection.
+
+The year is `0000` to `9999`. A timestamp outside that range has no
+four-digit form and MUST be refused by a producer.
 
 ---
 
 ## 5. Tombstones — the rule most likely to be got wrong
 
 When an entry's content is erased, the entry **stays in place**. Its
-`content_hash` is replaced; everything else about the row is unchanged.
+`content_hash` is replaced, its `entry_type` becomes `tombstone` and its
+`entry_id` is replaced (§5.4); `chain_hash`, `global_seq` and `timestamp` are
+unchanged.
 
 ```
 content_hash = "TOMBSTONE:" ‖ 64 lowercase hex characters      (74 chars total)
@@ -256,6 +263,40 @@ ceases to exist and MUST NOT resolve.
 Keeping it alive would let anyone holding the old id look it up, receive the
 tombstone, and confirm that *that specific entry* was erased — defeating the
 anti-correlation property the random content hash exists to provide.
+
+### 5.5 What a verifier checks on every entry, and what a tombstone leaves unchecked
+
+One rule decides whether an entry is a tombstone, in every code path: the two
+conditions above (`entry_type` and the `tomb_` prefix). A `content_hash` that
+begins `TOMBSTONE:` on an entry of any other type does **not** make it one; that
+entry is recomputed like any other and reports `hash_mismatch`.
+
+Before recomputing, a verifier MUST check the shape of what it was given, and
+report a break (`invalid_field`, or `invalid_timestamp` for the timestamp) when:
+
+- `chain_hash` is not 128 lowercase hex characters, on any entry, tombstones
+  included;
+- `content_hash` is neither 128 lowercase hex characters nor a well-formed
+  tombstone value;
+- `global_seq` is negative, or (v2) `sequence_num` is negative or `run_id` is
+  empty;
+- `timestamp` is not exactly the form in §4.
+
+A hash recomputed over malformed fields can equal the stored one, so the shape
+is checked on its own and not left to the comparison.
+
+A whole chain starts at `global_seq` 0. A verifier given entries that start
+later is verifying a segment and needs the predecessor's chain hash; without it
+the first entry is a break (`sequence_gap`).
+
+**The limitation.** A tombstone's chain hash is taken as stored, so nothing
+links the entries before a tombstone to the entries after it. Whoever can write
+the store can replace every entry before a tombstone, and can turn an entry
+into a tombstone to do so, because `entry_type` and `entry_id` are in no hash.
+A verifier cannot detect this. It MUST report how many entries a result leaves
+exposed (every entry up to and including the last tombstone) and MUST NOT
+describe those entries as verified or as bound by an anchor. See
+verification-model.md, "What a tombstone leaves unverified".
 
 ---
 
@@ -564,6 +605,9 @@ byte-for-byte, you agree with every other implementation.
 - [ ] Chain hash v2 reproduces all `chain_vectors.json` vectors (§2.3)
 - [ ] `previous_hash` validated as empty-or-128-hex **before** hashing (§3)
 - [ ] Timestamps formatted to exactly six fractional digits, truncated (§4)
+- [ ] A stored timestamp in any other spelling is a break (§4)
+- [ ] Field shapes checked before recomputing; a whole chain starts at `global_seq` 0 (§5.5)
+- [ ] One tombstone rule in every path; the entries a tombstone leaves unbound are reported (§5.5)
 - [ ] Tombstones: format validated, hash **NOT** recomputed (§5.1)
 - [ ] A chain containing a tombstone verifies as **intact**
 - [ ] Erased entries' original ids do not resolve (§5.4)

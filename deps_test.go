@@ -51,12 +51,13 @@ var allowedDeps = map[string][]string{
 	"/mldsa": {"github.com/cloudflare/circl", "golang.org/x/sys"},
 	// mlkem is pure ML-KEM from crypto/mlkem — stdlib only, like xwing. The
 	// CNSA 2.0 profile must not drag in a third-party implementation.
-	"/mlkem":        {},
-	"/keywrap":      {},
-	"/merkle":       {},
-	"/fixtures":     {},
-	"/bundle":       {},
-	"/internal/mem": {},
+	"/mlkem":          {},
+	"/keywrap":        {},
+	"/merkle":         {},
+	"/fixtures":       {},
+	"/bundle":         {},
+	"/internal/fault": {},
+	"/internal/mem":   {},
 
 	// Unicode NFC validation requires the Unicode tables, which the standard
 	// library does not ship. canonical rejects non-NFC strings fail-closed

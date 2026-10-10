@@ -262,30 +262,23 @@ func cidIn(t *testing.T, s *Sink, class, subject string) string {
 // fresh file. Whether bbolt happens to overwrite freed pages first depends on
 // page allocation (it did for the nonce file in _68's finding, and may not
 // here); the rewrite is what guarantees it, so the test checks the rewrite
-// happened: the index is a different file after the erasure.
+// happened: the index was compacted during the erasure.
 func TestEraseSubject_RewritesTheIndex(t *testing.T) {
 	s, _ := multi(t)
-	before, err := os.Stat(s.subjectsPath())
-	if err != nil {
-		t.Fatal(err)
-	}
+	compactions := countCompactions(s, s.subjectsPath())
 	if _, err := s.EraseSubject(context.Background(), "u-1"); err != nil {
 		t.Fatal(err)
 	}
-	after, err := os.Stat(s.subjectsPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if os.SameFile(before, after) {
+	if compactions() == 0 {
 		t.Fatal("the subject index was not rewritten after an erasure")
 	}
 	// Nothing to erase: rewritten all the same. Every call compacts, so a
 	// compaction an earlier call failed (or crashed in) is always redone (D1).
+	compactions = countCompactions(s, s.subjectsPath())
 	if _, err := s.EraseSubject(context.Background(), "u-nobody"); err != nil {
 		t.Fatal(err)
 	}
-	again, _ := os.Stat(s.subjectsPath())
-	if os.SameFile(after, again) {
+	if compactions() == 0 {
 		t.Fatal("an erasure of nothing did not rewrite the index")
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/commitment"
+	"github.com/aleutian-ai/proof/internal/fault"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
@@ -100,7 +101,8 @@ import (
 // # Assumptions
 //
 //   - keys and any record trust source are safe for concurrent use.
-func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...VerifyOption) (Report, error) {
+func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...VerifyOption) (_ Report, err error) {
+	defer fault.Recover(&err)()
 	var rep Report
 	at := map[string]int{} // chain → its report's index, to merge a sweep row into it
 	sum, err := s.VerifyEach(ctx, keys, func(cr ChainReport) error {
@@ -207,7 +209,8 @@ func (s Summary) OK() bool { return s.Failed == 0 }
 //
 //   - keys and any record trust source are safe for concurrent use.
 func (s *Sink) VerifyEach(ctx context.Context, keys anchor.KeySource, fn func(ChainReport) error,
-	opts ...VerifyOption) (Summary, error) {
+	opts ...VerifyOption) (_ Summary, err error) {
+	defer fault.Recover(&err)()
 	var sum Summary
 	if keys == nil {
 		return sum, errors.New("sink: a key source is required")
@@ -257,7 +260,7 @@ func (s *Sink) VerifyEach(ctx context.Context, keys anchor.KeySource, fn func(Ch
 	// 1. The chains, whole chains per page.
 	first, invalidChains := true, 0
 	var cursor *string // nil: from the first chain ("" can be a crafted chain id)
-	err := s.inPages(ctx, true, func(p *pageFiles, deadline time.Time) (bool, error) {
+	err = s.inPages(ctx, true, func(p *pageFiles, deadline time.Time) (bool, error) {
 		if first {
 			first = false
 			switch {

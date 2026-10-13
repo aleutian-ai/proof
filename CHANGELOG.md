@@ -7,6 +7,8 @@ change is called out here.
 
 ## Unreleased
 
+## v0.4.0 — 2026-10-13
+
 ### Security
 
 Fixes from an external review of `6a77fa3` (2026-10-10).

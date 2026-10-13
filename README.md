@@ -229,9 +229,8 @@ See [docs/verification-model.md](docs/verification-model.md) and
 $ go install github.com/aleutian-ai/proof/cmd/proof@latest
 ```
 
-`@latest` is the last tagged release, which is older than this README. The
-outputs shown here are from a build of this tree: `go install ./cmd/proof` in a
-clone.
+The outputs shown here are from v0.4.0. `proof version` prints what your
+binary was built from; in a clone, `go install ./cmd/proof` builds the tree.
 
 `testdata/demo/entries.json` is a five-entry chain that ships with the
 repository (`scripts/make-demo.sh` wrote it):

@@ -472,3 +472,302 @@ func TestKeygen_ZeroClearsTheBuffer(t *testing.T) {
 		t.Errorf("zero left %v", b)
 	}
 }
+
+// TestKeygen_ForceLeavesThePrivateKey0600: --force over an existing 0644 file
+// once kept the old mode, because writing into an existing file does not
+// change it, while the output said "(0600 …)". The key is now a new file.
+func TestKeygen_ForceLeavesThePrivateKey0600(t *testing.T) {
+	dir := t.TempDir()
+	priv, pub := keyPaths(dir, keyfile.MLDSA65, "")
+	for _, p := range []string{priv, pub} {
+		if err := os.WriteFile(p, []byte("an older file\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// WriteFile's mode passes through the umask; make it exact.
+		if err := os.Chmod(p, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	code, stdout, stderr := capture(t, "keygen", "--alg=ml-dsa-65", "--out-dir="+dir, "--force")
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	privPEM, _, privInfo, _ := readKeyPair(t, dir, "ml-dsa-65")
+	if got := privInfo.Mode().Perm(); got != 0o600 {
+		t.Errorf("private key mode = %04o after --force over a 0644 file, want 0600\n%s", got, stdout)
+	}
+	if _, _, err := keyfile.ParsePrivateKey(privPEM); err != nil {
+		t.Errorf("the private key written by --force does not parse: %v", err)
+	}
+	assertNoTempFiles(t, dir)
+}
+
+// TestKeygen_NeverWritesThroughASymlink: a symlink at a key's path, dangling
+// or not, is not followed. os.Stat reported a dangling one as absent, and the
+// write then created the private key wherever the link pointed.
+func TestKeygen_NeverWritesThroughASymlink(t *testing.T) {
+	for _, which := range []string{"private", "public"} {
+		for _, dangling := range []bool{true, false} {
+			name := which + " key, link to an existing file"
+			if dangling {
+				name = which + " key, dangling link"
+			}
+			t.Run(name, func(t *testing.T) {
+				dir, elsewhere := t.TempDir(), t.TempDir()
+				target := filepath.Join(elsewhere, "target")
+				if !dangling {
+					if err := os.WriteFile(target, []byte("untouched"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				priv, pub := keyPaths(dir, keyfile.MLDSA65, "")
+				link := priv
+				if which == "public" {
+					link = pub
+				}
+				if err := os.Symlink(target, link); err != nil {
+					t.Fatal(err)
+				}
+				targetUntouched := func(when string) {
+					t.Helper()
+					got, err := os.ReadFile(target)
+					switch {
+					case dangling && !os.IsNotExist(err):
+						t.Fatalf("%s: the link's target now exists: a key was written through it", when)
+					case !dangling && string(got) != "untouched":
+						t.Fatalf("%s: the link's target was overwritten", when)
+					}
+				}
+
+				// Without --force the link is something at the path: refused.
+				code, _, stderr := capture(t, "keygen", "--alg=ml-dsa-65", "--out-dir="+dir)
+				if code != exitUsage || !strings.Contains(stderr, "--force") {
+					t.Errorf("exit %d, want %d and a mention of --force: %s", code, exitUsage, stderr)
+				}
+				targetUntouched("without --force")
+				if which == "public" {
+					if _, err := os.Lstat(priv); !os.IsNotExist(err) {
+						t.Error("the private key was written by a refused run")
+					}
+				}
+
+				// With --force the link itself is replaced by the key.
+				code, _, stderr = capture(t, "keygen", "--alg=ml-dsa-65", "--out-dir="+dir, "--force")
+				if code != exitOK {
+					t.Fatalf("--force: exit %d, stderr: %s", code, stderr)
+				}
+				targetUntouched("with --force")
+				info, err := os.Lstat(link)
+				if err != nil || !info.Mode().IsRegular() {
+					t.Fatalf("the key at the link's path is not a regular file: %v, %v", info, err)
+				}
+				privPEM, pubPEM, privInfo, _ := readKeyPair(t, dir, "ml-dsa-65")
+				if privInfo.Mode().Perm() != 0o600 {
+					t.Errorf("private key mode = %04o, want 0600", privInfo.Mode().Perm())
+				}
+				if _, _, err := keyfile.ParsePrivateKey(privPEM); err != nil {
+					t.Errorf("private key: %v", err)
+				}
+				if _, _, err := keyfile.ParsePublicKey(pubPEM); err != nil {
+					t.Errorf("public key: %v", err)
+				}
+				assertNoTempFiles(t, dir)
+			})
+		}
+	}
+}
+
+// assertNoTempFiles checks a key directory holds key files and nothing else.
+func assertNoTempFiles(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), "-private.pem") && !strings.HasSuffix(e.Name(), "-public.pem") {
+			t.Errorf("%s was left in the key directory", e.Name())
+		}
+	}
+}
+
+// fakeVault stands in for the 1Password CLI. It keeps what `op item create`
+// was given: the text fields, and the CONTENTS of the attached files, which is
+// what a real vault stores and what a read returns.
+type fakeVault struct {
+	t      *testing.T
+	fields map[string]string
+	files  map[string][]byte
+	calls  [][]string
+
+	// afterCreate lets a case change what the vault holds, as a faulty upload
+	// or a different item answering the read would.
+	afterCreate func(v *fakeVault)
+	createReply string
+}
+
+const (
+	fakeItemID  = "abcdefghijklmnopqrstuvwxyz"
+	fakeVaultID = "zyxwvutsrqponmlkjihgfedcba"
+)
+
+func (v *fakeVault) run(args ...string) ([]byte, error) {
+	v.calls = append(v.calls, args)
+	switch {
+	case len(args) >= 2 && args[0] == "item" && args[1] == "create":
+		v.fields, v.files = map[string]string{}, map[string][]byte{}
+		for _, a := range args[2:] {
+			name, value, ok := strings.Cut(a, "=")
+			switch {
+			case !ok || strings.HasPrefix(a, "--"):
+			case strings.HasSuffix(name, "[file]"):
+				data, err := os.ReadFile(value)
+				if err != nil {
+					v.t.Fatalf("the fake vault cannot read %s: %v", value, err)
+				}
+				v.files[strings.TrimSuffix(name, "[file]")] = data
+			case strings.HasSuffix(name, "[text]"):
+				v.fields[strings.TrimSuffix(name, "[text]")] = value
+			}
+		}
+		if v.afterCreate != nil {
+			v.afterCreate(v)
+		}
+		if v.createReply != "" {
+			return []byte(v.createReply), nil
+		}
+		return []byte(`{"id":"` + fakeItemID + `","title":"t","vault":{"id":"` + fakeVaultID + `","name":"V"}}`), nil
+	case len(args) == 2 && args[0] == "read":
+		name, ok := strings.CutPrefix(args[1], "op://"+fakeVaultID+"/"+fakeItemID+"/")
+		if !ok {
+			return nil, errors.New("no such item")
+		}
+		data, ok := v.files[name]
+		if !ok {
+			return nil, errors.New("no such file")
+		}
+		return append([]byte(nil), data...), nil
+	case len(args) >= 2 && args[0] == "item" && args[1] == "get":
+		// The old read-back: the fingerprint text field, which is always what
+		// was just written.
+		return []byte(v.fields["fingerprint"] + "\n"), nil
+	}
+	return nil, errors.New("the fake vault does not implement: " + strings.Join(args, " "))
+}
+
+// TestKeygen_OnePasswordReadBackChecksTheStoredKeys: the read-back once
+// compared the item's fingerprint TEXT field with the fingerprint it had just
+// written there, so it passed whatever was attached. It now fetches the two
+// attached key files and fingerprints those.
+func TestKeygen_OnePasswordReadBackChecksTheStoredKeys(t *testing.T) {
+	otherPair := func(t *testing.T) (priv, pub []byte) {
+		t.Helper()
+		dir := t.TempDir()
+		if code, _, stderr := capture(t, "keygen", "--alg=ml-dsa-65", "--out-dir="+dir); code != exitOK {
+			t.Fatalf("second key: exit %d: %s", code, stderr)
+		}
+		priv, pub, _, _ = readKeyPair(t, dir, "ml-dsa-65")
+		return priv, pub
+	}
+
+	cases := []struct {
+		name        string
+		afterCreate func(t *testing.T) func(v *fakeVault)
+		createReply string
+		wantStderr  string // empty: the read-back must pass
+	}{
+		{name: "the vault holds this key"},
+		{
+			name: "another private key is attached",
+			afterCreate: func(t *testing.T) func(v *fakeVault) {
+				priv, _ := otherPair(t)
+				return func(v *fakeVault) { v.files["privkey_pem"] = priv }
+			},
+			wantStderr: "the private key read back is not the key that was generated",
+		},
+		{
+			name: "another public key is attached",
+			afterCreate: func(t *testing.T) func(v *fakeVault) {
+				_, pub := otherPair(t)
+				return func(v *fakeVault) { v.files["pubkey_pem"] = pub }
+			},
+			wantStderr: "the public key read back is not the key that was generated",
+		},
+		{
+			name: "the private key attachment is empty",
+			afterCreate: func(t *testing.T) func(v *fakeVault) {
+				return func(v *fakeVault) { v.files["privkey_pem"] = nil }
+			},
+			wantStderr: "the private key read back is not a key file",
+		},
+		{
+			name: "the private key was not attached",
+			afterCreate: func(t *testing.T) func(v *fakeVault) {
+				return func(v *fakeVault) { delete(v.files, "privkey_pem") }
+			},
+			wantStderr: "reading the private key back failed",
+		},
+		{
+			name:        "op does not say which item it created",
+			createReply: `{"title":"t"}`,
+			wantStderr:  "could not be read back",
+		},
+		{
+			name:        "op names an item id that is not one",
+			createReply: `{"id":"../../other/item?attribute=x","vault":{"id":"` + fakeVaultID + `"}}`,
+			wantStderr:  "could not be read back",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &fakeVault{t: t, createReply: tc.createReply}
+			if tc.afterCreate != nil {
+				v.afterCreate = tc.afterCreate(t)
+			}
+			saved := opCommand
+			opCommand = v.run
+			defer func() { opCommand = saved }()
+
+			dir := t.TempDir()
+			code, stdout, stderr := capture(t, "keygen", "--alg=ml-dsa-65", "--out-dir="+dir, "--op-vault=V")
+			if code != exitOK {
+				t.Fatalf("exit %d, stderr: %s", code, stderr)
+			}
+			// The fake's own old-style answer always matches: this is the
+			// check that used to be the whole read-back.
+			if v.fields["fingerprint"] == "" {
+				t.Fatal("the fingerprint text field was not written")
+			}
+
+			verified := strings.Contains(stdout, "read back and verified")
+			if tc.wantStderr == "" {
+				if !verified || strings.Contains(stderr, "1Password") {
+					t.Errorf("an honest vault was not verified.\nstdout: %s\nstderr: %s", stdout, stderr)
+				}
+			} else {
+				if verified {
+					t.Errorf("the read-back passed:\n%s", stdout)
+				}
+				if !strings.Contains(stderr, tc.wantStderr) || !strings.Contains(stderr, "check the item by hand") {
+					t.Errorf("stderr does not say %q and to check by hand: %s", tc.wantStderr, stderr)
+				}
+			}
+			// Whatever the vault did, the local files are this key, and no key
+			// material reached the command line or the output.
+			privPEM, _, _, _ := readKeyPair(t, dir, "ml-dsa-65")
+			_, seed, err := keyfile.ParsePrivateKey(privPEM)
+			if err != nil {
+				t.Fatalf("local private key: %v", err)
+			}
+			assertNoSeedIn(t, "stdout", stdout, seed)
+			assertNoSeedIn(t, "stderr", stderr, seed)
+			for _, call := range v.calls {
+				assertNoSeedIn(t, "op arguments", strings.Join(call, " "), seed)
+				if call[0] == "item" && call[1] == "get" {
+					t.Errorf("the read-back asked for a field of the item, not its files: %v", call)
+				}
+			}
+		})
+	}
+}

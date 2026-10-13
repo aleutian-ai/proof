@@ -5,7 +5,7 @@
 
 Writes fixtures/testdata/bundle_v1_vectors.json and updates MANIFEST.json.
 
-How the expected results are made (owner decision V2): each case is BUILT here
+How the expected results are made: each case is BUILT here
 from a known-good bundle plus one stated defect, and its expected result is
 DECLARED from that construction and the spec's rules. No verifier runs here:
 a verifier in this script would be a second copy of the SDKs' code, written

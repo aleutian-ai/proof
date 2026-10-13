@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/anchor/build"
@@ -34,6 +35,7 @@ func cmdAnchor(args []string, stdout, stderr *os.File) int {
 	keyPath := fs.String("key", "", "ML-DSA-65 private key (PKCS#8 PEM, from `proof keygen`)")
 	prevPath := fs.String("previous", "", "the previous anchor's JSON; omit for the first anchor in a chain")
 	outPath := fs.String("out", "", "write the anchor here instead of stdout")
+	force := fs.Bool("force", false, "replace the --out file if it exists")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -54,6 +56,12 @@ func cmdAnchor(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stderr, "proof anchor: --key is required (an ML-DSA-65 private key from `proof keygen`)")
 		return exitUsage
 	}
+	// Before the key is loaded or anything is signed: an anchor already at
+	// --out may be the only copy of one that was handed to someone.
+	if err := refuseExistingOutput(*outPath, *force); err != nil {
+		fmt.Fprintf(stderr, "proof anchor: %v\n", err)
+		return exitUsage
+	}
 
 	signer, err := loadSigner(*keyPath)
 	if err != nil {
@@ -62,8 +70,10 @@ func cmdAnchor(args []string, stdout, stderr *os.File) int {
 	}
 	defer signer.Close()
 
-	entries, err := readChain(*dbPath, *chainID)
-	if err != nil {
+	// The chain is walked a page at a time and never held: the walker keeps
+	// what an anchor is made from, the first and last entries and the count.
+	w := verify.NewWalker(verify.Options{MaxBreaks: 1})
+	if err := walkChain(*dbPath, *chainID, w); err != nil {
 		fmt.Fprintf(stderr, "proof anchor: %v\n", err)
 		// A held lock is retryable; a missing or corrupt file is not.
 		if errors.Is(err, boltstore.ErrLocked) {
@@ -71,7 +81,7 @@ func cmdAnchor(args []string, stdout, stderr *os.File) int {
 		}
 		return exitIOError
 	}
-	if len(entries) == 0 {
+	if w.Count() == 0 {
 		fmt.Fprintf(stderr, "proof anchor: chain %q has no entries\n", *chainID)
 		return exitIOError
 	}
@@ -85,11 +95,7 @@ func cmdAnchor(args []string, stdout, stderr *os.File) int {
 		}
 	}
 
-	built, err := build.Anchor(ctx.Background(), build.Input{
-		Subject:  *subject,
-		Entries:  entries,
-		Previous: previous,
-	})
+	built, err := build.FromWalker(ctx.Background(), *subject, w, previous, time.Time{})
 	if err != nil {
 		// A broken chain is a VERDICT, not an I/O failure. It shares an exit
 		// code with `proof verify` so a script can treat "this chain is broken"
@@ -108,20 +114,20 @@ func cmdAnchor(args []string, stdout, stderr *os.File) int {
 		return exitIOError
 	}
 
-	out := stdout
-	if *outPath != "" {
-		f, err := os.Create(*outPath)
-		if err != nil {
-			fmt.Fprintf(stderr, "proof anchor: %v\n", err)
-			return exitIOError
-		}
-		defer f.Close()
-		out = f
+	out, err := openOutput(*outPath, stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "proof anchor: %v\n", err)
+		return exitIOError
 	}
-	enc := json.NewEncoder(out)
+	defer out.abort()
+	enc := json.NewEncoder(out.w)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(signed); err != nil {
 		fmt.Fprintf(stderr, "proof anchor: encode anchor: %v\n", err)
+		return exitIOError
+	}
+	if err := out.commit(); err != nil {
+		fmt.Fprintf(stderr, "proof anchor: write anchor: %v\n", err)
 		return exitIOError
 	}
 
@@ -221,8 +227,12 @@ func loadAnchorFile(path string) (*anchor.Anchor, error) {
 }
 
 // readChain loads every entry of a chain in ascending sequence order.
+//
+// It only reads. The database is opened read-only: a path that names no
+// database is an error, never a new empty one, and nothing in an existing one
+// is changed.
 func readChain(dbPath, chainID string) ([]verify.Entry, error) {
-	s, err := boltstore.Open(dbPath)
+	s, err := boltstore.Open(dbPath, boltstore.WithReadOnly())
 	if err != nil {
 		return nil, err
 	}
@@ -237,4 +247,28 @@ func readChain(dbPath, chainID string) ([]verify.Entry, error) {
 		entries = append(entries, toExported(r))
 	}
 	return entries, nil
+}
+
+// walkChain adds every entry of a chain to w, in ascending sequence order,
+// reading the store a page at a time. Like readChain, it only reads.
+func walkChain(dbPath, chainID string, w *verify.Walker) error {
+	s, err := boltstore.Open(dbPath, boltstore.WithReadOnly())
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	for from := int64(0); ; {
+		rows, err := s.Range(ctx.Background(), chainID, from, 1<<62, exportPage)
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			w.Add(toExported(r))
+		}
+		if len(rows) < exportPage {
+			return nil
+		}
+		from = rows[len(rows)-1].GlobalSeq + 1
+	}
 }

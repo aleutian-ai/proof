@@ -494,3 +494,95 @@ func TestVerifyDir_StatesWhatIsNotProven(t *testing.T) {
 		t.Errorf("the result must say no signature was checked: %q", res.NotProven)
 	}
 }
+
+// TestVerifyDir_OneFileHasOnePath: a manifest once named one file under four
+// spellings and got four rows checked and an intact verdict. Only the clean
+// form names a file, and a path listed twice is a problem.
+func TestVerifyDir_OneFileHasOnePath(t *testing.T) {
+	dir, files := writeBundle(t, map[string]string{"a.txt": "alpha"})
+	digest := files[0].SHA512
+	if err := os.MkdirAll(filepath.Join(dir, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	aliases := []string{"./a.txt", "x/../a.txt", "a.txt/", "a.txt/.", "x/..//a.txt", ".//a.txt"}
+	for _, alias := range aliases {
+		t.Run(alias, func(t *testing.T) {
+			res, err := VerifyDir(dir, []FileEntry{
+				{Path: "a.txt", SHA512: digest},
+				{Path: alias, SHA512: digest},
+			}, "", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Intact {
+				t.Fatal("a second spelling of a listed file verified")
+			}
+			if res.FilesChecked != 1 {
+				t.Errorf("FilesChecked = %d, want 1: there is one file", res.FilesChecked)
+			}
+			if len(res.Problems) != 1 || res.Problems[0].Kind != ProblemUnsafePath || res.Problems[0].Path != alias {
+				t.Errorf("problems = %+v, want one unsafe_path for %q", res.Problems, alias)
+			}
+		})
+	}
+
+	t.Run("the four spellings together", func(t *testing.T) {
+		res, err := VerifyDir(dir, []FileEntry{
+			{Path: "a.txt", SHA512: digest}, {Path: "./a.txt", SHA512: digest},
+			{Path: "x/../a.txt", SHA512: digest}, {Path: "a.txt/", SHA512: digest},
+		}, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Intact || res.FilesChecked != 1 || len(res.Problems) != 3 {
+			t.Errorf("intact %v, FilesChecked %d, problems %+v; want not intact, 1 file, 3 problems",
+				res.Intact, res.FilesChecked, res.Problems)
+		}
+	})
+
+	t.Run("the same path twice", func(t *testing.T) {
+		twice := []FileEntry{{Path: "a.txt", SHA512: digest}, {Path: "a.txt", SHA512: digest}}
+		res, err := VerifyDir(dir, twice, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Intact || res.FilesChecked != 1 {
+			t.Errorf("intact %v, FilesChecked %d; want not intact, 1 file", res.Intact, res.FilesChecked)
+		}
+		if len(res.Problems) != 1 || res.Problems[0].Kind != ProblemDuplicatePath {
+			t.Errorf("problems = %+v, want one duplicate_path", res.Problems)
+		}
+		// ManifestRoot refuses the same manifest.
+		if _, err := ManifestRoot(twice); !errors.Is(err, ErrManifestRoot) {
+			t.Errorf("ManifestRoot error = %v, want ErrManifestRoot", err)
+		}
+	})
+
+	t.Run("a name the file does not have", func(t *testing.T) {
+		// Only where the file system ignores case does "A.TXT" open a.txt.
+		if _, err := os.Lstat(filepath.Join(dir, "A.TXT")); err != nil {
+			t.Skip("this file system is case-sensitive")
+		}
+		res, err := VerifyDir(dir, []FileEntry{
+			{Path: "a.txt", SHA512: digest}, {Path: "A.TXT", SHA512: digest},
+		}, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Intact || res.FilesChecked != 1 {
+			t.Errorf("intact %v, FilesChecked %d; want not intact, 1 file", res.Intact, res.FilesChecked)
+		}
+	})
+
+	t.Run("a clean nested path still verifies", func(t *testing.T) {
+		d, fs := writeBundle(t, map[string]string{"a.txt": "alpha", "sub/dir/b.txt": "beta"})
+		res, err := VerifyDir(d, fs, "", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !res.Intact || res.FilesChecked != 2 {
+			t.Errorf("intact %v, FilesChecked %d, problems %+v", res.Intact, res.FilesChecked, res.Problems)
+		}
+	})
+}

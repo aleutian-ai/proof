@@ -118,7 +118,8 @@ chain preimage directly.
 The genuine-erasure hash depends only on public data (the fixed record and a
 position). It proves the entry is an erasure record for its position, not who
 wrote it: an erasure is only as trustworthy as the folder until a checkpoint
-covers it (§6, `erased-unanchored`).
+covers it (§6, `erased-unanchored`), and a checkpoint covers one only with
+evidence that the operator made it (§5.1).
 
 Timestamps are assigned by the sink when it commits, 1 µs apart within a batch.
 They are recorded, and hashed into the chain, but they are **advisory**: the
@@ -226,7 +227,8 @@ kept, and it stays known through them). In this order:
 
 Appending first means a crash part-way leaves a chain that says "erased, but
 something is still here" (run erase again), never one that looks tampered with.
-The erasure entry is itself covered by the next checkpoint.
+The erasure entry is covered by a checkpoint made with evidence of who wrote it
+(§5.1): in practice, by the erase call's own process.
 
 **The recovery invariant.** When an erasure call succeeds: the index holds no
 row of the subject in scope; every chain it had there is erased as in step 3;
@@ -245,7 +247,9 @@ erasure call, or a resume, completes them without re-linking the subject.
 no subject. It also repairs a **relinked** index: a consistent live row on a
 chain that ends with a genuine erasure (an index restored from before an
 erasure) is forgotten again (step 2 for that one row) and completed like any
-pending erasure.
+pending erasure. A relinked chain's erasure entry was on the chain before the
+call, with an index that did not record an erasure: the call reports such a
+chain as relinked, and that erasure entry is NOT one it vouches for (§5.1).
 
 **What erasure does not reach.** Only the live files in this folder. Not:
 - backups, including backups of `evidence.db.subjects` (see Correlation
@@ -280,7 +284,90 @@ the subject any more.
   MUST be strictly greater than checkpoint *n* − 1's: a series only grows.
 - A new checkpoint is written only when the chain has entries the last one does
   not cover. The existing series MUST verify under the signing key before
-  anything is signed on top of it.
+  anything is signed on top of it, and the chain MUST pass every check of §6:
+  nothing is signed that verification would fail.
+
+### 5.1 Checkpointing an erasure
+
+An erasure record takes no key (§2). A checkpoint over one is the operator's
+signature that the chain was erased, so a writer MUST NOT checkpoint a chain
+that ends with a genuine erasure no verified checkpoint covers (state
+`erased-unanchored`, §6) unless it has evidence that the operator made that
+erasure. Two kinds count:
+
+1. **Confirmation in the same process.** The erase call returns, for each
+   chain, its erasure entry's id, and the checkpoint is told those (chain,
+   entry id) pairs: a chain is confirmed only when it ends with exactly the
+   entry confirmed FOR THAT CHAIN. (An entry id alone is not enough: it is in
+   the evidence file for anyone to read, and can be written onto another
+   chain.) `proof sink erase --key K` and `proof sink erase --resume --key K`
+   do this in one run. Neither id is printed: beside the subject on the
+   command line it would map the subject to its chain. An erasure entry that
+   was already on a chain the index still bound to a subject when the erase
+   call began is NOT confirmed by that call, whichever call it is (§4.4).
+2. **A record signature** (§9). In a signing sink the erasure entry is signed.
+   A checkpoint given record trust (`proof sink checkpoint --record-trust PUB`)
+   signs over an erasure whose own signature verifies, when nothing else about
+   the chain fails and it has no orphan signature rows (R6, §9.4).
+
+3. **The operator's word, by chain.** An honest erasure can miss both: on a
+   sink that does not sign, an erase without `--key`, a run that died between
+   erasing and checkpointing, or a checkpoint that failed. Afterwards nothing
+   in the folder can attribute it. The operator names the chain, taken from
+   `proof sink verify` (which names no subject), and vouches for it:
+   `proof sink checkpoint --key K --confirm-erased-chain <chain id>`. The chain
+   MUST still be exactly in that state (it ends with a genuine erasure no
+   verified checkpoint covers, has no index row, and passes every check of
+   §6); otherwise nothing is signed for it and it is reported. A writer MUST
+   warn that this signs an erasure it cannot attribute.
+
+With none of these, the chain is reported as not checkpointed, with what to
+do, and stays `erased-unanchored`. A forged erasure is therefore never turned
+into a signed `erased` unless the operator vouches for it. It is not undone
+either: the events it covered are gone, and the chain is reported on every
+checkpoint run until someone does.
+
+**What this does not close.** An erase call completes every erasure the index
+marks pending (§4.3 step 3), and vouches for those too. The pending marker is a
+row in the folder, and takes no key: someone who can write the index can mark a
+chain pending, and the operator's next erase call then erases it, with a real
+erasure entry of its own. A chain the index had *relinked* (§4.4) is the
+exception: its erasure entry was already there, and the call does not vouch for
+it.
+
+### 5.2 Series heads (optional)
+
+A folder cannot show that its checkpoints are complete: with
+`anchors/<chain>/` removed, a writer starts a new series at `0001.json` over
+the chain as it stands. A writer and a verifier MAY be given a record of each
+chain's **series head**, kept where whoever can rewrite the folder cannot
+rewrite it: the number of checkpoints, and the last one's anchor chain hash
+(its `chain_hash`, format-spec §9).
+
+- A series with fewer checkpoints than its head, or with another anchor chain
+  hash at the head's number, "was cut or restarted". A verifier MUST report it
+  as a problem; a writer MUST NOT extend it.
+- After writing a checkpoint durably, a writer records the new head. A series
+  longer than its head is therefore not a problem (a crash between the two);
+  the writer verifies such a chain in full and records its head on its next
+  run. The same applies to a chain that had checkpoints before heads were
+  first kept: its series is recorded as it stands (trust on first use).
+- This implementation's `proof sink checkpoint --heads FILE` and
+  `proof sink verify --heads FILE` keep heads in one JSON file, replaced
+  atomically on each write and never reached through a symlink, and refuse a
+  file inside the sink folder:
+
+  ```
+  {"format": "aleutian.proof.sink.heads.v1",
+   "heads": {"<chain id>": {"checkpoints": 2, "anchor_chain_hash": "<128 hex>"}}}
+  ```
+
+  It holds chain ids, like `anchors/`: no subject, and still pseudonymous
+  personal data.
+- Without heads nothing changes, and the limitation stands. Heads are asked
+  about chains the evidence file holds: a chain removed whole, with its
+  checkpoints, is not noticed through them. They do not help against someone
+  who can rewrite the heads too; that needs a witness outside the operator.
 
 ## 6. Verification
 
@@ -346,6 +433,18 @@ checked on its own, and the index accounts for every chain:
    always, signature rows for chains `evidence.db` does not hold (REMOVED
    unless the index binds the chain or has it pending) and rows keyed off the
    layout (by number).
+9. **Source positions** (§7): every row of `evidence.db.sources` MUST point at
+   an entry that its chain holds with that id at that sequence, and no entry
+   may have more than one. A position that points at no entry is what a commit
+   that stopped leaves (`proof sink repair` removes it); an entry with several
+   is rows written into the file. Both are counted per chain. A source is
+   never shown, and a row that is not a position is reported by number
+   (`<invalid sources row #n>`).
+
+A verifier MAY additionally be told to compare each series with its recorded
+head (§5.2), and to treat a chain no verified checkpoint covers as a failure
+(`--require-checkpoint`: without it, a folder whose `anchors/` was removed
+still verifies).
 
    A verifier MUST NOT print an index key that is not a valid chain id, nor
    any forward-row key: either may hold a subject. It reports such rows by
@@ -373,34 +472,43 @@ evidence file does not hold) MUST look at the evidence file when they run, so a
 chain committed meanwhile is never reported as removed. For a point-in-time
 verdict, stop the writers or verify a copy.
 
-**Verification changes nothing.** It opens the evidence, secrets, signatures and index
+**Verification changes nothing.** It opens the evidence, secrets, sources, signatures and index
 files read-only, creates no file or folder (a mistyped folder is an error, not a
 new sink), reports a missing secrets file as events whose content is gone, and a
-missing index as chains with no row. Opening a crafted `evidence.db` with bbolt
-is still parsing untrusted input with a library that may panic on corruption:
-to verify a folder from someone else, use an exported bundle
-(`proof sink export`, then `proof sink verify-bundle`; see bundle-format.md),
-not the files.
+missing index as chains with no row. A file that is truncated or whose pages
+were overwritten makes verification fail with an error (§8), not crash. Opening
+a *crafted* `evidence.db` with bbolt is still parsing untrusted input with a
+library written for its own files (pages that point back at each other are
+followed without end): to verify a folder from someone else, use an exported
+bundle (`proof sink export`, then `proof sink verify-bundle`; see
+bundle-format.md), not the files.
 
 **What verification cannot establish:**
 - that an entry's `entry_type` is what was written (it is bound by neither the
   chain nor the checkpoints; erasure records are protected by §2's domain
   separation and the genuine-erasure rule, not by the chain), unless record
   signatures were checked (§9.4), which bind it;
-- that no checkpoint was deleted (a folder cannot vouch for its own
-  completeness, so keep checkpoints where the writer cannot rewrite them);
+- that no checkpoint was deleted, from the folder alone (a folder cannot vouch
+  for its own completeness, so keep checkpoints where the writer cannot
+  rewrite them). **Closed with series heads** (§5.2): a series shorter than
+  its recorded head, or restarted, is a problem, and is not extended. **Not
+  closed** without them: with `anchors/<chain>/` removed, the next checkpoint
+  signs a new `0001.json` over the chain as it stands, and verification
+  passes. Nor against someone who can rewrite the heads as well;
 - that an erasure entry made after the last checkpoint is genuine, rather
-  than appended by someone with write access: hence `erased-unanchored`
-  (checkpoint after erasing), unless its record signature verifies under the
-  record trust given. **The checkpoint does not settle it either.** Checkpoint
-  verifies a chain in full before signing, and a forged erasure at the END of
-  a chain, with its index row removed, verifies exactly as a real one does. A
-  checkpoint made after it covers it, and the chain then reads `erased`. Only
-  an erasure in the middle of a chain is caught (nothing follows an erasure);
-- that the checkpoint series was not restarted: with `anchors/<chain>/`
-  removed, the next Checkpoint signs a new `0001.json` over the chain as it
-  stands, and Verify passes. Nothing inside the folder can remember that a
-  longer series existed;
+  than appended by someone with write access: hence `erased-unanchored`,
+  unless its record signature verifies under the record trust given. A forged
+  erasure at the END of a chain, with its index row removed, verifies exactly
+  as a real one does. **Closed:** a checkpoint no longer covers it (§5.1), so
+  it never reads `erased`; an `erased` chain is one whose erasure the
+  checkpointing process made, or whose record signature verified. **Not
+  closed:** the forged erasure is not undone, and stays `erased-unanchored`
+  for good; and an erasure the sink itself completed because the index marked
+  the chain pending is vouched for like any other, though the marker takes no
+  key (§5.1);
+- that a record reported as a duplicate was one, when both the sources file
+  and the stored content were rewritten to match it, or when its source was
+  pointed at an entry that already holds the same bytes (§7);
 - which subject a chain belonged to once it is erased, by design.
 
 Steps 2 and 3 need only `evidence.db`, the checkpoints and a public key; step 8
@@ -420,13 +528,27 @@ A committed record MAY carry a **source**: its position upstream, e.g.
 
 - A source MUST be unique for good. It MUST include whatever changes when the
   upstream source is recreated (its incarnation), because positions restart
-  then. A reused source is taken as already committed, and the new record is
-  **dropped** (and reported as a committed duplicate).
+  then.
 - Before appending, the sink records `source → (entry id, global sequence)` for
   the record's chain.
-- When the same source comes again for that chain, the record is a duplicate if
-  the chain holds that entry id at that sequence. Otherwise the earlier attempt
-  never reached the chain, and the record is committed.
+- When the same source comes again for that chain: if the chain does not hold
+  that entry id at that sequence, the earlier attempt never reached the chain,
+  and the record is committed. If it does, the record is a duplicate **only if
+  that entry's stored content equals the record's**, byte for byte. A
+  duplicate is a record the chain already holds; a position alone proves
+  nothing, because the sources file takes no key.
+- A record whose source is already committed with **different** content, or
+  whose committed content is missing or unreadable, MUST be refused (this
+  implementation: `ErrSourceConflict`), not dropped: nothing in the call is
+  committed, and the record is reported as not committed. It fails the same
+  way on every redelivery, so a consumer dead-letters it. The same holds for a
+  source given twice in one call. Rows written into the sources file for
+  sources that have not arrived yet therefore cannot make new records vanish.
+  **Not closed:** a writer of the folder who knows a future record's exact
+  bytes can rewrite the stored content to match, or point the source at an
+  entry that already holds those bytes (events that repeat byte for byte);
+  verification reports an entry with more than one source position (§6
+  step 9).
 - Sources are positions, not content. But they link a chain to exact upstream
   messages, so **erasure deletes them** (§4.3). The cost: a redelivery arriving
   after its subject's erasure is committed again, to the subject's NEW chain
@@ -434,6 +556,13 @@ A committed record MAY carry a **source**: its position upstream, e.g.
   erasing a subject. The new chain is visible, and can be erased again.
 - Timestamps and payload digests MUST NOT be used as sources: a timestamp is a
   claim, and identical bytes can be two distinct events.
+
+**From the command line.** `proof sink commit --source-field F` takes each
+line's source from a top-level JSON field (a string, or a whole number);
+`--source-prefix P` gives line *n* of the input the source `P:n`, for input
+with no id of its own. With either, committing the same input again commits
+nothing new. A prefix MUST name the input for good: the same prefix on other
+input is a conflict, line by line.
 
 **Per-record outcomes.** A commit call reports, for each record in the order
 given, whether it is committed (newly, or as a duplicate) and whether it was a
@@ -458,19 +587,59 @@ nothing is removed.
 
 A failure that belongs to one (class, subject) pair's stored state (an
 inconsistent index row, an index restored from before an erasure) names that
-pair's records, so a consumer can set those aside and retry the rest; every
-other failure is retried whole. Errors never name a chain.
+pair's records, and a source conflict names its one record, so a consumer can
+set those aside and retry the rest; every other failure is retried whole.
+Errors never name a chain, a source or content.
 
 The files are separate, so this is not crash atomicity: a crash (or a failed
-removal) may leave preparatory state (index rows, content, nonces, source
-positions) in individual files. It is never committed evidence until the
-append succeeds. It persists until the same records are committed again (which
-reuses or replaces it) or the subject is erased (which removes all of it: the
+removal) may leave preparatory state (index rows, content, nonces, record
+signatures, source positions) in individual files. It is never committed
+evidence until the append succeeds. Committing the same records again does
+NOT clear it: the retry gets new entry ids, so it reuses the index row and
+replaces the source positions, and the earlier attempt's content, nonce and
+signature rows stay, matching no entry. They persist until **`proof sink
+repair`** removes them, or the subject is erased (which removes all of it: the
 index rows come first, so everything is reachable). If removing a failed call's
 rows itself fails, the new index rows are kept, so the subject's erasure still
 reaches them. Rows a failed commit deleted stay in the secrets file's free pages
-until the next erasure call rewrites it. Verify reports leftover content and
-nonce rows and index-only rows; it does not read source positions.
+until the next erasure or repair rewrites it. Verify reports leftover content
+and nonce rows, source positions that point at no entry, and index-only rows;
+orphan signature rows are a note (§9.4).
+
+**Repair.** `proof sink repair` holds the folder and removes, for every chain
+with entries, each content row, nonce, source position and record signature row
+that no entry of the chain accounts for; for a chain the index binds that has
+no entries yet (a first commit that stopped), its content, nonces and source
+positions, keeping the index row. It then rewrites the secrets, sources and
+signatures files, and prints counts only. It is not run on every commit:
+finding the rows means reading the chain.
+
+Rows that match no entry are also what REMOVING entries leaves, and nothing
+proves that a row never belonged to a committed entry. So repair MUST leave a
+chain alone, and count it, when anything it can see says the chain held more
+than it holds now, or the rows are another operation's to finish:
+
+| chain | left alone when |
+|---|---|
+| any | its erasure is pending (resume removes the rows); its checkpoints cannot be read; a checkpoint covers more entries than it holds; its checkpoint series is behind its recorded head (`--heads`, §5.2); it cannot be read to its end |
+| with no entries | also: the index does not bind it; it has any checkpoint; it has a recorded head; it has any record signature row |
+
+A chain with no entries, a live index row and a checkpoint is a chain whose
+entries were removed (or an evidence file restored from an older copy), not a
+first commit: its content is the only copy of those events, and is kept. On a
+sink that signs, a first commit that stopped has signature rows (they are
+stored before the append), as a chain whose signed entries were removed does:
+it is left alone until the pair commits again, after which what the first
+attempt left is an ordinary leftover. One chain that cannot be read does not
+stop the others.
+
+**What repair cannot tell:** on a chain no checkpoint (and no head) covers,
+entries removed from the END leave rows exactly like a crashed commit's, and
+repair deletes them. What it deletes is not recoverable. On a chain with
+entries, orphan signature rows are removed with the rest, although
+verification only notes them: the same ambiguity applies to them, and a
+trailing run of orphan signatures is what could stand in for removed entries
+(§9.3).
 
 ## 8. The Go implementation's files (informative, not an interface)
 
@@ -491,6 +660,25 @@ exported bundle, not these files.
 
 The pending marker cannot be mistaken for a live row: a live row starts with a
 class, which starts with `[a-z0-9]`.
+
+**A damaged file.** bbolt reads its file through a memory map and trusts every
+page: a file cut short, or one whose pages were overwritten, makes it panic or
+fault. No operation lets that out. Before bbolt is given a file at all, on
+every open, the page size, page ids and freelist count in its meta pages and
+freelist header are checked against the file's length, and a value that cannot
+fit is refused (bbolt would otherwise allocate what a crafted count asks for,
+until the process dies). **This covers damage, not design:** a file crafted
+beyond that (pages that point back at each other, a count inside a data page)
+is outside what is promised, and can hang or end the process. Every call into bbolt is guarded and
+returns an error (`ErrCorrupt`); a file that failed that way is not used again
+by that operation and is abandoned rather than closed (closing can wait for
+good on a lock the failed transaction left held), with its lock released. The
+operations that write also read each file through, read-only, before first
+writing to it, once per file per process, and refuse a damaged one before
+anything is written (about 0.1 s per GiB with the file in the page cache;
+`--skip-check` on the command line, `WithoutIntegrityCheck` in Go). From the
+command line a damaged file is exit 1 for `verify` and exit 3 for every other
+verb.
 
 Each MUST be a regular file: bbolt follows a symlink and would write wherever it
 points. Each is opened with `O_NOFOLLOW` and checked to be a regular file on the
@@ -583,20 +771,24 @@ pseudonymous personal data:
   against.
 - A value that is not exactly 3325 bytes is malformed and MUST NOT be parsed.
   A `record_signing` value other than `ml-dsa-65` is an error.
-- **The signing mode** is set by the first commit whose signatures were
-  *stored*, even if its append then fails, and never cleared (fail closed). A
+- **The signing mode** is set by `proof sink init` (before the sink has any
+  entry, so that a first commit without a record key is refused instead of
+  making the sink unsigned for good), or else by the first commit whose
+  signatures were *stored*, even if its append then fails, and never cleared
+  (fail closed). A
   signer failure stores nothing and sets nothing. The mode only guards the writer: whether signatures are
   required is the verifier's policy (a trusted record key given), never read
   from the folder, because anyone who can delete signatures can delete the mode.
   A lost or deleted signatures file is therefore noticed only by a verifier
   given a record key.
-- **Erasure** adds the signatures of its erasure entries and never deletes a
-  row: a signature covers a salted commitment whose nonce erasure deletes, and
-  keeps the erased chain verifiable. The file is rewritten (compacted) with the
+- **Erasure** adds the signatures of its erasure entries and never deletes the
+  row of an entry: a signature covers a salted commitment whose nonce erasure
+  deletes, and keeps the erased chain verifiable. (Repair removes rows that
+  are no entry's, §7.) The file is rewritten (compacted) with the
   other files on every erasure (§4.3 step 4), so rows a failed commit deleted
   leave its free pages.
-- Opening a crafted signatures file with bbolt is parsing untrusted input with
-  a library that may panic on corruption, as for `evidence.db` (§6).
+- Opening a crafted signatures file with bbolt is parsing untrusted input, as
+  for `evidence.db` (§6); a damaged one is an error (§8).
 
 ### 9.3 What record signatures do not establish
 
@@ -611,7 +803,7 @@ pseudonymous personal data:
   orphaned event signatures at the erasure's position could replace it after
   truncation, making the chain look never erased. A checkpoint over the
   erasure (or `--record-trust` plus the index state) bounds it, as for any
-  truncation.
+  truncation. `proof sink repair` removes orphan rows (§7).
 - **A compromised record key** can sign anything until it is distrusted;
   records a checkpoint covers stay pinned by the checkpoint key.
 - **An erasure that crashed after storing its signature**, before its entry
@@ -638,6 +830,7 @@ The verifier decides whether record signatures are required, never the folder.
 - **Orphan rows** (a signature matching no entry of its chain: a crash or a
   failed cleanup) are counted as a note, not a problem: a folder cannot tell
   them from a crash. See §9.3 for why that is not the same as harmless.
+  `proof sink repair` removes them (§7).
 - **R6.** A chain ending with a genuine erasure counts as `erased` without a
   checkpoint when the erasure entry's own record signature verified under the
   record trust given AND the chain has no problem at all (content and nonces

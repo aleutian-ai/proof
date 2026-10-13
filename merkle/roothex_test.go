@@ -43,9 +43,9 @@ func TestRootHex_Empty(t *testing.T) {
 	}
 }
 
-// TestRootHex_HexDecodeDiscipline: the ADR-pinned failure modes — bad hex and
+// TestRootHex_HexDecodeDiscipline: the failure modes — bad hex and
 // wrong-length content_hash — must be hard errors, not silently truncated (the JS
-// Buffer.from footgun the crypto review flagged).
+// Buffer.from footgun).
 func TestRootHex_HexDecodeDiscipline(t *testing.T) {
 	t.Parallel()
 	if _, err := RootHex([]string{"nothex!!"}); err == nil {

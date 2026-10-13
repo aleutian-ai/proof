@@ -18,13 +18,34 @@ machine.
   └──────────────────────────────────────────┘            └──────────────────┘
 ```
 
+## The demo is not a deployment recipe
+
+There is no broker here. The one network hop is from the container to Ollama on
+the host, over plain HTTP with no TLS and no authentication, which is how Ollama
+listens by default.
+
+The image is not reproducible and should not be reused. In the
+[`Containerfile`](Containerfile):
+
+- the base image, `alpine:3.20`, is pinned by tag, not by digest, so it is
+  whatever that tag points at on the day of the build;
+- `apk add` installs whatever package versions that day's Alpine index has;
+- opencode is installed by `curl -fsSL https://opencode.ai/install | bash`,
+  run as root at build time: an unversioned installer, fetched over the network
+  and not checked against any checksum or signature.
+
+So the build trusts opencode.ai, Docker Hub and the Alpine mirrors at the moment
+it runs, and two builds can differ. That is acceptable for a throwaway local
+image. For anything else, pin the base by digest and install a named opencode
+release whose checksum you verify.
+
 ## Run it
 
 Needs podman, Go, and Ollama running with a model that supports tool calling.
 
 ```sh
 ./run.sh                          # ministral-3:3b (3 GB)
-MODEL=ornith-1.5:35b ./run.sh     # any Ollama model with "tools" in `ollama show`
+MODEL=ornith-1.5:9b ./run.sh     # any Ollama model with "tools" in `ollama show`
 ```
 
 The script builds static Linux binaries of `proof` and `proof-mcp`, builds the

@@ -19,7 +19,7 @@ import (
 )
 
 // Verify's cross-check of the evidence file against the subject index
-// (ticket _69c, states S1–S7).
+// (docs/sink-format.md §6, index accountability).
 
 func verifyAll(t *testing.T, s *Sink) Report {
 	t.Helper()
@@ -53,9 +53,9 @@ func updateIndex(t *testing.T, s *Sink, fn func(tx *bolt.Tx) error) {
 	}
 }
 
-// S1 and S3: live chains, and an erased subject's chains, are not problems;
+// Live chains, and an erased subject's chains, are not problems;
 // the report carries class and state, never the subject. An erasure no
-// checkpoint covers yet is "erased-unanchored" (E1); a checkpoint over it makes
+// checkpoint covers yet is "erased-unanchored"; a checkpoint over it makes
 // it "erased".
 func TestVerifyIndex_LiveAndErased(t *testing.T) {
 	ctx := context.Background()
@@ -64,7 +64,8 @@ func TestVerifyIndex_LiveAndErased(t *testing.T) {
 	if _, err := s.Checkpoint(ctx, signer, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.EraseSubject(ctx, "u-1"); err != nil {
+	erased, err := s.EraseSubject(ctx, "u-1")
+	if err != nil {
 		t.Fatal(err)
 	}
 	r, err := s.Verify(ctx, ring)
@@ -74,7 +75,9 @@ func TestVerifyIndex_LiveAndErased(t *testing.T) {
 	if got := chainReport(t, r, chains["auth/u-1"]).Index; got != IndexErasedUnanchored {
 		t.Fatalf("an erasure no checkpoint covers: %q, want %q", got, IndexErasedUnanchored)
 	}
-	if _, err := s.Checkpoint(ctx, signer, nil); err != nil {
+	// The checkpoint covers the erasures because the caller confirms it made
+	// them, with the ids the erase call returned.
+	if _, err := s.Checkpoint(ctx, signer, nil, confirm(erased.Erased...)); err != nil {
 		t.Fatal(err)
 	}
 	if r, err = s.Verify(ctx, ring); err != nil || !r.OK() {
@@ -93,7 +96,7 @@ func TestVerifyIndex_LiveAndErased(t *testing.T) {
 	}
 }
 
-// S2: a chain whose subject was forgotten but not yet erased fails, naming the
+// A chain whose subject was forgotten but not yet erased fails, naming the
 // remedy. If a forward row still names the subject (a half-forgotten index),
 // that is reported too: the subject survives its erasure.
 func TestVerifyIndex_PendingIsAProblem(t *testing.T) {
@@ -122,7 +125,7 @@ func TestVerifyIndex_PendingIsAProblem(t *testing.T) {
 	}
 }
 
-// S4: a live chain with no index row is unaccounted for. So is one whose last
+// A live chain with no index row is unaccounted for. So is one whose last
 // entry is an erasure in name only (relabelled, wrong hash).
 func TestVerifyIndex_UnaccountedChain(t *testing.T) {
 	cases := map[string]bool{"plain": false, "fake erasure at the end": true}
@@ -161,8 +164,8 @@ func TestVerifyIndex_UnaccountedChain(t *testing.T) {
 	}
 }
 
-// S5: an index row with no chain yet (a first commit stopped before its
-// append) is reported, and is NOT a problem (owner decision V1).
+// An index row with no chain yet (a first commit stopped before its
+// append) is reported, and is NOT a problem.
 func TestVerifyIndex_IndexOnlyIsANote(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -198,7 +201,7 @@ func TestVerifyIndex_IndexOnlyIsANote(t *testing.T) {
 	}
 }
 
-// S6: a pending row whose chain has no entries is a problem.
+// A pending row whose chain has no entries is a problem.
 func TestVerifyIndex_PendingWithoutChain(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {
@@ -221,7 +224,7 @@ func TestVerifyIndex_PendingWithoutChain(t *testing.T) {
 	}
 }
 
-// S7: rows that disagree with the index are problems, never read as subjects.
+// Rows that disagree with the index are problems, never read as subjects.
 func TestVerifyIndex_MalformedRows(t *testing.T) {
 	cases := map[string]func(tx *bolt.Tx, c map[string]string) (string, error){
 		"reverse row names another pair": func(tx *bolt.Tx, c map[string]string) (string, error) {

@@ -65,8 +65,8 @@ var chainVectors []byte
 //
 // # Provenance
 //
-// These vectors were NOT generated from this module. They were taken from the
-// JavaScript verifier and independently confirmed against the Go producer, so
+// These vectors are NOT generated from this module. scripts/spec-vectors.py
+// computes every expected hash in Python from docs/format-spec.md §2.3, so
 // they represent agreement between two implementations rather than a module
 // agreeing with itself. Regenerating them from this code would destroy that
 // property — a self-derived vector proves only that the encoder is
@@ -91,6 +91,12 @@ var captureRequestV3Golden []byte
 // the highest-traffic entry type on the platform, and the vector every verifier
 // — Go, Python, JavaScript — must reproduce byte-for-byte.
 //
+// # Provenance
+//
+// Written by scripts/spec-vectors.py, which encodes each input and hashes it in
+// Python from docs/format-spec.md §6. The Go encoder reads this file; it does
+// not write it.
+//
 // # Outputs
 //
 //   - []byte: the fixture JSON. Read-only; see the package Assumptions.
@@ -102,6 +108,12 @@ func CaptureRequestV3Golden() []byte { return captureRequestV3Golden }
 //
 // The canonical fixture for [github.com/aleutian-ai/proof/merkle]. Distributed
 // to non-Go verifiers as fixtures/testdata/merkle_golden.json — the same bytes.
+//
+// # Provenance
+//
+// Written by scripts/spec-vectors.py, which computes the roots and proofs in
+// Python from RFC 9162 and docs/format-spec.md §7. The merkle package reads
+// this file; it does not write it.
 //
 // # Outputs
 //
@@ -117,8 +129,10 @@ func MerkleGolden() []byte { return merkleGolden }
 
 // commitmentVectors is the salted-commitment golden vector: nonce and content
 // paired with the expected commitment, plus cases every implementation must
-// reject. Expected values were computed with
-// Python's hashlib, independently of the Go implementation they test.
+// reject. Expected values are computed with Python's hashlib by
+// scripts/spec-vectors.py, independently of the Go implementation they test.
+// In the wrong-length-nonce reject cases the stored commitment is what the
+// formula gives without a length check, so only a refusal passes them.
 //
 //go:embed testdata/commitment_vectors.json
 var commitmentVectors []byte

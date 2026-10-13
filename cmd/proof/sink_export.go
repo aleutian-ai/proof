@@ -19,7 +19,7 @@ import (
 )
 
 const sinkExportUsage = `usage:
-  proof sink export [--dir D] (--chain C… | --subject S [--class K] | --all)
+  proof sink export [--dir D] (--chain C… | --subject S | --subject-file FILE [--class K] | --all)
                     [--disclose none|all|<entry id>,…] --out bundle.json
 
 Writes the selected chains as a bundle (docs/bundle-format.md) that anyone can
@@ -41,7 +41,9 @@ func cmdSinkExport(args []string, stdout, stderr io.Writer) int {
 	fs.Var(&chains, "chain", "a chain id to export; repeatable")
 	subject := fs.String("subject", "", "export this subject's chains (found through the secret index; "+
 		"the subject itself is never written)")
-	class := fs.String("class", "", "with --subject: only this class")
+	subjectFile := fs.String("subject-file", "", "instead of --subject: a file holding the subject "+
+		"(- for standard input), so it is not on the command line")
+	class := fs.String("class", "", "with --subject or --subject-file: only this class")
 	all := fs.Bool("all", false, "export every chain")
 	disclose := fs.String("disclose", "none", "none, all, or a comma-separated list of entry ids whose "+
 		"content and nonce to include")
@@ -57,6 +59,11 @@ func cmdSinkExport(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "proof sink export: --out is required (a bundle never goes to standard output)")
 		return exitUsage
 	}
+	if *subject != "" && *subjectFile != "" {
+		fmt.Fprintln(stderr, "proof sink export: give --subject or --subject-file, not both")
+		return exitUsage
+	}
+	bySubject := *subject != "" || *subjectFile != ""
 	sel := sink.ExportSelection{Chains: chains, Subject: *subject, Class: *class, All: *all}
 	switch *disclose {
 	case "none":
@@ -72,22 +79,31 @@ func cmdSinkExport(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	n := 0
-	for _, set := range []bool{len(chains) > 0, *subject != "", *all} {
+	for _, set := range []bool{len(chains) > 0, bySubject, *all} {
 		if set {
 			n++
 		}
 	}
 	if n != 1 {
-		fmt.Fprintln(stderr, "proof sink export: give exactly one of --chain, --subject or --all")
+		fmt.Fprintln(stderr, "proof sink export: give exactly one of --chain, --subject (or --subject-file) and --all")
 		return exitUsage
 	}
-	if *class != "" && *subject == "" {
-		fmt.Fprintln(stderr, "proof sink export: --class narrows --subject")
+	if *class != "" && !bySubject {
+		fmt.Fprintln(stderr, "proof sink export: --class narrows --subject or --subject-file")
 		return exitUsage
 	}
 	if _, err := os.Lstat(*out); err == nil {
 		fmt.Fprintf(stderr, "proof sink export: %s exists; a bundle is never overwritten\n", *out)
 		return exitUsage
+	}
+	if *subjectFile != "" {
+		// Read only once the command line is known to be usable.
+		v, err := readSubjectFile(*subjectFile, os.Stdin)
+		if err != nil {
+			fmt.Fprintf(stderr, "proof sink export: %v\n", err)
+			return exitIOError
+		}
+		*subject, sel.Subject = v, v
 	}
 
 	s, err := sink.Open(*dir)

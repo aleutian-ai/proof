@@ -763,3 +763,65 @@ func TestV2RunIDsAreUnique(t *testing.T) {
 		t.Error("two v2 Append calls produced the same run id")
 	}
 }
+
+// TestAppendRefusesWhatNothingElseCanCarry: an entry id that is not valid UTF-8
+// is rewritten by a JSON export, and a timestamp outside years 0000 to 9999 has
+// no chain-hash form. Both are refused before anything is written, by Append
+// and by AppendChains.
+func TestAppendRefusesWhatNothingElseCanCarry(t *testing.T) {
+	badID := input("e01", time.Second)
+	badID.EntryID = "e01-\xff\xfe"
+	year := func(y int) linker.Input {
+		in := input("e01", time.Second)
+		in.Timestamp = time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC)
+		return in
+	}
+	far := input("e01", time.Second)
+	far.Timestamp = time.Unix(1<<60, 0)
+
+	tests := []struct {
+		name    string
+		in      linker.Input
+		wantErr string
+	}{
+		{"entry id is not UTF-8", badID, "not valid UTF-8"},
+		{"year 10000", year(10000), "year must be 0000 to 9999"},
+		{"year -183", year(-183), "year must be 0000 to 9999"},
+		{"an eleven-digit year", far, "year must be 0000 to 9999"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			backends(t, func(t *testing.T, s store.Store) {
+				l, err := linker.New(s)
+				if err != nil {
+					t.Fatalf("new: %v", err)
+				}
+				batch := []linker.Input{input("e00", 0), tc.in}
+				_, err = l.Append(context.Background(), chainID, batch)
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("Append error = %v, want it to mention %q", err, tc.wantErr)
+				}
+				if err != nil && strings.Contains(err.Error(), "\xff") {
+					t.Errorf("the error carries the raw bytes of the id: %q", err)
+				}
+				_, err = l.AppendChains(context.Background(),
+					[]linker.ChainInputs{{ChainID: chainID, Inputs: batch}})
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("AppendChains error = %v, want it to mention %q", err, tc.wantErr)
+				}
+				rows, err := s.Range(context.Background(), chainID, 0, 1<<40, 0)
+				if err == nil && len(rows) != 0 {
+					t.Errorf("a refused batch wrote %d rows", len(rows))
+				}
+			})
+		})
+	}
+
+	// The edges of the range are accepted.
+	for _, y := range []int{0, 9999} {
+		l, _ := linker.New(memory.New())
+		if _, err := l.Append(context.Background(), chainID, []linker.Input{year(y)}); err != nil {
+			t.Errorf("year %d refused: %v", y, err)
+		}
+	}
+}

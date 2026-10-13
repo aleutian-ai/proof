@@ -53,15 +53,116 @@ Fixes from an external review of `6a77fa3` (2026-10-10).
 - **`chainformat.ComputeChainHash` and `ComputeChainHashV3` refuse a year
   outside 0000-9999.** A negative year was written as `0000`, so year -5 and
   year 0 hashed alike. New `chainformat.ValidateTimestamp`.
-- **A damaged store file is an error on the paths that only read.**
-  `sink.Verify`, `VerifyEach`, `Export`, `Checkpoint`, `ChainSubjects` and
-  `UsesRecordKey` return the new `sink.ErrCorrupt` where bbolt panicked or the
-  memory map faulted. `proof sink verify` exits 1 and `proof export`, `anchor`,
-  `sink export` and `sink checkpoint` exit 3; they exited 2, the usage-error
-  code, from the Go runtime. *(Not fixed: the paths that write still panic on a
-  damaged file. Recovering there hangs, because bbolt's close waits on a lock
-  the failed transaction holds.)*
-
+- **A damaged store file is an error, on every path.** No operation on a
+  truncated or overwritten store file panics or hangs, the ones that write
+  included. Every bbolt-backed store (`store/bolt`, the sink's files, the nonce
+  store) returns an error wrapping `ErrCorrupt` (`bolt.ErrCorrupt`,
+  `sink.ErrCorrupt`, one value); a handle that failed inside the storage layer
+  is abandoned rather than closed, with its lock released and its memory map
+  left until the process exits. Files are read through once before a process
+  first writes to them (`bolt.WithoutCheck`, `sink.WithoutIntegrityCheck`,
+  `--skip-check`; about 0.1 s per GiB in cache), and every open first checks
+  the sizes and counts in the meta pages and freelist header against the
+  file's length. A panic in caller-supplied code (a signer, a key source, a
+  callback) is not reported as damage: it is re-raised to the caller after the
+  transaction rolls back. `proof sink verify` exits 1 on
+  a damaged file and every other verb 3; they exited 2, the usage-error code,
+  from the Go runtime. *(Not covered: a file deliberately crafted beyond the
+  meta pages and freelist header. Pages that point back at each other are
+  followed without end.)*
+- **Sink: a reused source with different content is refused.** *(Breaking.)*
+  A record whose `Source` is already committed with different content, or whose
+  committed content is missing, gets the new `sink.ErrSourceConflict` and
+  nothing in the call is committed. It was reported `Committed, Duplicate` and
+  dropped, so rows written into `.sources` made new records vanish. Verify now
+  checks the sources file: a position that points at no entry, or an entry with
+  more than one, is a problem. *(Not closed: a source pointed at an entry that
+  already holds the same bytes still reads as a duplicate.)*
+- **Sink: `Checkpoint` does not sign over an erasure it cannot confirm.**
+  *(Breaking.)* A chain that ends with an erasure no checkpoint covers is
+  signed only when the caller confirms it (`sink.ConfirmErasures`, with the
+  results the erase call returned: a chain is confirmed only when it ends with
+  the entry that call made on that chain), its record signature verifies
+  (`sink.CheckpointRecordTrust`), or the operator names the chain and vouches
+  for it (`sink.ConfirmErasedChains`). On an unsigned sink, `proof sink erase`
+  followed by `proof sink checkpoint` no longer covers the erasure: use
+  `proof sink erase --key K` (or `--resume --key K`), which checkpoints the
+  erased chains in the same run; for an erasure that missed that, `proof sink
+  checkpoint --confirm-erased-chain <chain id>`. On a signing sink, `proof
+  sink checkpoint --record-trust PUB`. An erase run does not vouch for an
+  erasure entry it found already on a chain (`EraseResult.Relinked`). A forged
+  erasure stays `erased-unanchored`. *(Not closed: someone who can write the
+  subject index can mark a chain as an interrupted erasure, and the next erase
+  run completes and checkpoints it; and an operator who vouches for an erasure
+  they did not make signs the forgery.)*
+- **Sink: checkpoint series heads.** New `sink.CheckpointHeads`,
+  `sink.FileHeads`, `sink.TrackHeads`, `sink.WithCheckpointHeads` and `--heads
+  FILE` on `proof sink checkpoint`, `verify` and `erase`: with the heads kept
+  outside the folder, a series that is shorter than it was, or was restarted,
+  is a failure and is not extended. Off unless asked for.
+- **`proof sink init` puts the sink in signing mode.** *(Breaking.)* It creates
+  the folder and the signatures file (`sink.RequireRecordSigning`), so a first
+  commit without `--record-key` is refused instead of making the sink unsigned
+  for good. It refuses a sink that already holds unsigned records.
+- **`proof sink repair`** and `(*Sink).Repair`: removes content, nonce, source
+  and record signature rows that match no entry (what a commit that crashed
+  before its append leaves, and Verify reported forever). It prints counts. It
+  leaves a chain alone when a checkpoint, a recorded head (`--heads`) or, for
+  a chain with no entries, a record signature says the chain held more, when
+  its erasure is pending, or when it cannot be read. *(Not closed: on a chain
+  no checkpoint covers, entries removed from the end look like a crashed
+  commit, and repair deletes their content.)*
+- **`proof sink commit --source-field F` / `--source-prefix P`**: with either,
+  committing the same input again commits nothing new. The CLI never set a
+  source, so a retry duplicated every entry.
+- **`proof sink verify --require-checkpoint`** makes a chain with no verified
+  checkpoint a failure; `--subject-file FILE|-` on `proof sink erase` and
+  `export` keeps a subject off the command line.
+- **`proof export` and `proof anchor` only read.** *(Breaking: exit codes.)*
+  The database is opened read-only. A `--db` that names nothing is exit 3 and
+  creates nothing (it was created, and export printed `[]` and exited 0). A
+  chain with no entries is exit 3, not an empty file.
+- **`--out` does not overwrite.** *(Breaking.)* `export --out` and `anchor
+  --out` refuse an existing file or symlink (exit 2) unless `--force` is given;
+  the file is written beside its destination and renamed.
+- **Exit codes.** *(Breaking.)* `commit` with a content hash that is not 128
+  lowercase hex is exit 2 (was 3). `verify` with a missing or unusable
+  `--anchor`, `--previous` or `--key` file is exit 3 (was 2).
+- **`proof commit` bounds its input and refuses repeated entry ids.**
+  *(Breaking.)* A line over 1 MiB or stdin over 1 GiB is refused. An
+  `entry_id` given twice, or already on the chain, refuses the whole commit.
+  The check reads the chain, so a commit's time grows with the chain's length.
+  A bad timestamp is reported by field name, without Go's parse error or the
+  value.
+- **`proof import --previous-hash` is stored, and an import must continue the
+  chain.** *(Breaking.)* Into a chain that has entries, the import must start
+  at the tail's `global_seq` + 1 and link from the tail's chain hash.
+- **`verify`, `export` and `anchor` no longer hold the chain in memory.** New
+  `verify.EntryReader`, `verify.Walker.BindAnchor`, `verify.MaxEntryLineBytes`.
+  One million entries: verify 1.7 GB to 10 MB, export 3.0 GB to 11 MB, commit
+  4.0 GB to 0.7 GB. *(Breaking: a JSONL entries line over 1 MiB is refused.)*
+- **A result that is not bound says nothing was proven.** Every outcome of an
+  anchor bind carried the wording of a successful one, so `proof verify`
+  printed "the chain in front of you is the one this anchor committed to"
+  under "ANCHOR DOES NOT DESCRIBE THIS CHAIN".
+- **keygen file handling.** Keys are written to a new temp file (`O_EXCL`,
+  `O_NOFOLLOW`), synced and renamed. `--force` over a 0644 file leaves the
+  private key 0600; a symlink at a key path is never written through.
+- **The 1Password read-back checks the stored keys.** `--op-vault` (keygen and
+  `sink init`) fetches both attached key files by item id and fingerprints
+  them; it compared the fingerprint text field it had just written. Tested
+  against a fake vault, not a real one.
+- **keyfile accepts one PEM block and nothing else.** *(Breaking for such
+  files.)* Bytes before the block, PEM headers (including `Proc-Type:
+  4,ENCRYPTED`) and PKCS#8 attributes are refused. The platform keygen labels
+  keep their `Name` header. The ML-KEM secret `z` is compared in constant time.
+- **`bundle.VerifyDir`: one file, one path.** *(Breaking for such manifests.)*
+  A path not in clean form, or not the file's name on disk, is `unsafe_path`; a
+  path listed twice is the new `duplicate_path`.
+- **The linker refuses what nothing else can carry.** *(Breaking.)* An entry id
+  that is not valid UTF-8, and a timestamp whose UTC year is outside 0000 to
+  9999. The unchecked chain-hash functions no longer panic on a year of 11 or
+  more digits.
 - **A Merkle tree size above 2^62 no longer loops forever.** The split
   computation doubled past the integer range, so `merkle.VerifyInclusion` and
   `VerifyConsistency` never returned for such a size. The MCP
@@ -164,6 +265,55 @@ Fixes from an external review of `6a77fa3` (2026-10-10).
   missing entry, chain or database is exit 3 and creates nothing; each printed
   "forgot the nonce" and exited 0, and a mistyped `--db` created an empty
   database and nonce file. `proof disclose` creates nothing either.
+
+### Conformance vectors
+
+- **Every vector file but one is now written by a Python script from the
+  spec.** New `scripts/spec-vectors.py` writes `chain_vectors.json`,
+  `v3_golden_capture_request.json`, `merkle_golden.json`,
+  `commitment_vectors.json` and `anchor_chain_hash_vectors.json`. Two of these
+  were written by Go tests under `UPDATE_GOLDEN=1`; those write paths are
+  removed. Before it became their writer the script reproduced three of the
+  files byte for byte and every value in the other two.
+  `anchor_v4_canonical_vectors.json` is still written by no script.
+- **`chain_vectors.json` changed.** *(Vector change: re-vendor.)* Two of its
+  three cases carried 64-character content hashes, which the format refuses
+  and which passed only because the Go test called the unchecked function.
+- **`commitment_vectors.json` changed.** *(Vector change: re-vendor.)* The
+  three wrong-length-nonce reject cases stored a commitment unrelated to their
+  nonce, so an implementation with no length check also passed. They now store
+  what the formula gives for that nonce; only a refusal passes.
+- `scripts/sync-vectors.sh` falls back to `sha256sum` where `shasum` is absent.
+
+### Release and supply chain
+
+- **Images carry third-party licence notices.**
+  `scripts/third-party-licenses.sh` writes
+  `licenses/proof/THIRD_PARTY_LICENSES` and
+  `licenses/proof-mcp/THIRD_PARTY_LICENSES` from the modules each binary
+  links; the image build fails if a binary links a module its file does not
+  name.
+- **`proof-mcp` reports the version it was built as.** It was the constant
+  "0.3.1".
+- **`golang.org/x/crypto` v0.30.0 → v0.48.0**, with `x/sys` v0.41.0 and
+  `x/text` v0.34.0: the last releases that declare `go 1.24.0`. v0.30.0 was
+  below the fixes for two advisories in `x/crypto/ssh`, which nothing here
+  imports.
+- **`deps_test.go` checks test-only imports and the root package.**
+- `scripts/release-check.sh` also regenerates the `spec-vectors.py` files,
+  checks the licence files are current, and runs the crypto packages on
+  linux/amd64 under emulation (reported SKIPPED where that cannot run).
+
+### Documentation and examples
+
+- **`docs/anchor-model.md` §3 described another verifier.** It is rewritten for
+  this one: the bind is computed first, the signature is checked last.
+- README: a five-line demo at the top, an input example for `proof commit`, and
+  a demo chain under `testdata/demo/` that the quickstart verifies.
+- Internal ticket ids and private-repository paths removed from `docs/`.
+- Each integration example's README says its demo broker runs without TLS or
+  authentication and is not a deployment recipe. The opencode example's model
+  name is `ornith-1.5:9b`.
 
 ### Added
 

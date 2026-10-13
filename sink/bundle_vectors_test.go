@@ -22,7 +22,7 @@ import (
 // with a different implementation (circl, through proof's encoders): the
 // keys, every signature a case relies on being valid, and every one it
 // relies on being invalid. They do NOT judge the expected results: that is
-// the verifiers' job (_72d–_72f).
+// the verifiers' job.
 
 type bundleVectorFile struct {
 	Keys map[string]struct {

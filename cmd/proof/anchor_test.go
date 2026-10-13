@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -333,7 +334,8 @@ func TestAnchorVerb_RequiresItsArguments(t *testing.T) {
 	}
 }
 
-// TestAnchorVerb_NeverPrintsThePrivateKey is the _38 rule, applied here.
+// TestAnchorVerb_NeverPrintsThePrivateKey: the rule `proof keygen` follows,
+// applied here.
 func TestAnchorVerb_NeverPrintsThePrivateKey(t *testing.T) {
 	f := newAnchorFixture(t, 3)
 	keyPEM, err := os.ReadFile(f.key)
@@ -471,5 +473,92 @@ func TestAnchorVerb_ZeroizesTheSeedAfterLoading(t *testing.T) {
 	// And the signer still works, so the scrub did not break the copy it made.
 	if signer.KeyID() == "" {
 		t.Error("the signer lost its identity")
+	}
+}
+
+// TestAnchorVerb_AMistypedDatabaseIsAnErrorAndCreatesNothing: anchor only
+// reads the chain. A --db that named nothing used to be created.
+func TestAnchorVerb_AMistypedDatabaseIsAnErrorAndCreatesNothing(t *testing.T) {
+	f := newAnchorFixture(t, 3)
+	missing := filepath.Join(f.dir, "chian.db")
+	out := filepath.Join(f.dir, "anchor.json")
+
+	code, stdout, stderr := runAnchor(t, "--db", missing, "--chain", f.chainID,
+		"--subject", "acct-7f3a", "--key", f.key, "--out", out)
+	if code != exitIOError {
+		t.Errorf("exit %d, want %d: %s", code, exitIOError, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("printed: %q", stdout)
+	}
+	for _, p := range []string{missing, out} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%s was created", filepath.Base(p))
+		}
+	}
+}
+
+// TestAnchorVerb_DoesNotChangeTheDatabase: the file's bytes are the same after
+// an anchor is made, and a read-only database can be anchored.
+func TestAnchorVerb_DoesNotChangeTheDatabase(t *testing.T) {
+	f := newAnchorFixture(t, 3)
+	before, err := os.ReadFile(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(f.db, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runAnchor(t, "--db", f.db, "--chain", f.chainID,
+		"--subject", "acct-7f3a", "--key", f.key); code != exitOK {
+		t.Fatalf("anchor of a read-only database: exit %d: %s", code, stderr)
+	}
+	after, err := os.ReadFile(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("anchor changed the database file")
+	}
+}
+
+// TestAnchorVerb_OutIsNotOverwrittenWithoutForce: an anchor already at --out
+// may be the only copy of one that was handed to someone. It was truncated
+// without a word.
+func TestAnchorVerb_OutIsNotOverwrittenWithoutForce(t *testing.T) {
+	f := newAnchorFixture(t, 3)
+	out := filepath.Join(f.dir, "anchor.json")
+	args := []string{"--db", f.db, "--chain", f.chainID, "--subject", "acct-7f3a", "--key", f.key, "--out", out}
+
+	if code, _, stderr := runAnchor(t, args...); code != exitOK {
+		t.Fatalf("first anchor: exit %d: %s", code, stderr)
+	}
+	first := readAnchorJSON(t, out)
+
+	code, stdout, stderr := runAnchor(t, args...)
+	if code != exitUsage || !strings.Contains(stderr, "--force") {
+		t.Fatalf("exit %d, want %d and a mention of --force: %s", code, exitUsage, stderr)
+	}
+	if strings.Contains(stdout, "anchored") {
+		t.Errorf("a refused run reported an anchor:\n%s", stdout)
+	}
+	if kept := readAnchorJSON(t, out); kept.AnchorID != first.AnchorID {
+		t.Fatal("the refused run replaced the anchor")
+	}
+
+	if code, _, stderr := runAnchor(t, append(args, "--force")...); code != exitOK {
+		t.Fatalf("--force: exit %d: %s", code, stderr)
+	}
+	if forced := readAnchorJSON(t, out); forced.AnchorID == first.AnchorID {
+		t.Error("--force did not replace the anchor")
+	}
+	entries, err := os.ReadDir(f.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("%s was left behind", e.Name())
+		}
 	}
 }

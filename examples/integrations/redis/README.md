@@ -44,6 +44,16 @@ That happens exactly when the stream was deleted and has come back, and entry
 ids can then repeat. Without the token, a new entry with an old id would be
 taken as already committed, and silently dropped.
 
+## The demo server is not a deployment recipe
+
+`run.sh` starts one Valkey (or Redis) server in a container with its default
+configuration: no TLS, no password, no ACLs, and the port published on every
+interface of the host (`-p 6379`). Anyone who can reach that port can read,
+write and delete the stream. That is acceptable for a demo that runs for a
+minute and deletes the container, and for nothing else. A real deployment needs
+TLS, authentication, and ACLs that let only the producers write the stream;
+none of that is shown here.
+
 ## Run it
 
 ```sh

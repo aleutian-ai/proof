@@ -66,6 +66,16 @@ earlier one that failed. Nothing at all is committed when:
   error: the consumer stops and names the fix); or
 - the broker sent no topic id.
 
+## The demo broker is not a deployment recipe
+
+`run.sh` starts one Kafka broker in a container with a plaintext listener: no
+TLS, no authentication, no ACLs, and the port published on every interface of
+the host (`-p 9092`). Anyone who can reach that port can read and write the
+topic. That is acceptable for a demo that runs for a minute and deletes the
+container, and for nothing else. A real deployment needs TLS and client
+authentication on the broker, and authorization that lets only the producers
+write the topic; none of that is shown here.
+
 ## Run it
 
 ```sh

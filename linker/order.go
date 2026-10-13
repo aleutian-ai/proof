@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/aleutian-ai/proof/chainformat"
 )
@@ -23,6 +24,9 @@ import (
 //   - A duplicate EntryID makes the sort comparator a partial order: two entries
 //     sharing an id and an IngestedAt have no defined relative position, so the
 //     assigned sequence numbers depend on the sort implementation.
+//
+// It also refuses what the rest of the system cannot carry: an entry id that is
+// not valid UTF-8, and a timestamp whose UTC year is outside 0000 to 9999.
 //
 // Checked BEFORE sorting, so the reported entry is identifiable by its position
 // in the caller's input rather than in a reordered slice.
@@ -50,6 +54,17 @@ func validateBatchOrdering(inputs []Input) (string, error) {
 	for i := range inputs {
 		if inputs[i].EntryID == "" {
 			return "", fmt.Errorf("entry at index %d has an empty entry id", i)
+		}
+		// Nothing downstream can carry these two. An export writes the entry id
+		// as JSON, which has no form for bytes that are not UTF-8: they come out
+		// as U+FFFD, so the exported chain names a different entry. The chain
+		// hash writes a four-digit year, and a timestamp outside 0000 to 9999
+		// has none.
+		if !utf8.ValidString(inputs[i].EntryID) {
+			return "", fmt.Errorf("entry at index %d has an entry id that is not valid UTF-8", i)
+		}
+		if err := chainformat.ValidateTimestamp(inputs[i].Timestamp); err != nil {
+			return inputs[i].EntryID, fmt.Errorf("entry %q: %w", inputs[i].EntryID, err)
 		}
 		if inputs[i].IngestedAt.IsZero() {
 			return inputs[i].EntryID, fmt.Errorf(

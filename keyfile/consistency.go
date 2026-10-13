@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/mlkem"
 	"crypto/sha3"
+	"crypto/subtle"
 	"fmt"
 )
 
@@ -87,7 +88,9 @@ func CheckConsistency(alg Algorithm, seed, expanded []byte) error {
 	hek := expanded[dkPKELen+ekLen : dkPKELen+ekLen+32]
 	z := expanded[len(expanded)-32:]
 
-	if !bytes.Equal(z, seed[32:]) {
+	// z is secret: compared in constant time, so how long the check takes says
+	// nothing about how much of it matched. ek and H(ek) below are public.
+	if subtle.ConstantTimeCompare(z, seed[32:]) != 1 {
 		return fmt.Errorf("%w: %s implicit rejection secret z differs from the seed", ErrInconsistentKey, info.name)
 	}
 	if got := sha3.Sum256(ek); !bytes.Equal(got[:], hek) {

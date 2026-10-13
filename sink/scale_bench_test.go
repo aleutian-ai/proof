@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// TestScale measures Verify and ChainSubjects on a large sink (ticket _74). It
+// TestScale measures Verify and ChainSubjects on a large sink. It
 // is skipped unless SINK_SCALE (the number of subjects, one chain each) is set:
 //
 //	SINK_SCALE=100000 SINK_SCALE_DIR=/tmp/sink-100k go test ./sink -run TestScale -v -timeout 0
@@ -94,7 +94,7 @@ func TestScale(t *testing.T) {
 		len(rep.Chains), took.Round(time.Millisecond), mib(peak), mib(alloc),
 		float64(took.Microseconds())/float64(max(1, len(rep.Chains))), rep.OK())
 
-	// _74b: VerifyEach, reports discarded (streamed), while a writer commits
+	// VerifyEach, reports discarded (streamed), while a writer commits
 	// every 100 ms with a SHORT lock timeout. Its waits are what a consumer
 	// sees: about one page, not the whole run.
 	var waits []time.Duration

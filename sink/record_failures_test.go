@@ -19,7 +19,9 @@ import (
 	"github.com/aleutian-ai/proof/linker"
 )
 
-// _75c review fixes.
+// Record signing when something fails or misbehaves: an append whose outcome
+// is unknown, a signer that fails, is cancelled or reuses its buffer, and a
+// signatures file that cannot be written.
 
 // landedThenCancelled appends for real, then cancels the call's context and
 // reports an error: the append landed, and the read-back that would prove it
@@ -38,7 +40,7 @@ func (a landedThenCancelled) Append(ctx context.Context, chain string, in []link
 	return res, errors.New("injected: error after the commit")
 }
 
-// #1: an erasure whose outcome cannot be checked keeps its record AND its
+// An erasure whose outcome cannot be checked keeps its record AND its
 // signature (the entry may have landed), stays pending, and a resume leaves a
 // fully signed chain.
 func TestEraseChain_UnknownOutcomeKeepsTheSignature(t *testing.T) {
@@ -127,7 +129,7 @@ func corruptTailHash(t *testing.T, s *Sink, chain string) {
 	}
 }
 
-// #2: a pending chain whose tail hash cannot be hashed from fails alone; the
+// A pending chain whose tail hash cannot be hashed from fails alone; the
 // subject's erasure goes on.
 func TestErase_UnhashableTailFailsAlone(t *testing.T) {
 	ctx := context.Background()
@@ -166,7 +168,7 @@ func endsErased(t *testing.T, s *Sink, chain string) bool {
 	return ok
 }
 
-// #3: erasing a subject with chains in two classes, plus a pending chain of
+// Erasing a subject with chains in two classes, plus a pending chain of
 // another subject: every chain's erasure carries ITS OWN signature.
 func TestErase_SignaturesGoToTheirChains(t *testing.T) {
 	ctx := context.Background()
@@ -194,7 +196,7 @@ func TestErase_SignaturesGoToTheirChains(t *testing.T) {
 	}
 }
 
-// #4 (G1): erase errors name no chain; the ids are in the result.
+// Erase errors name no chain; the ids are in the result.
 func TestErase_ErrorsNameNoChain(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(t.TempDir())
@@ -222,7 +224,7 @@ func TestErase_ErrorsNameNoChain(t *testing.T) {
 	}
 }
 
-// #5: an erasure refused at its append whose cleanup fails says so.
+// An erasure refused at its append whose cleanup fails says so.
 func TestEraseChain_UndoFailureIsReported(t *testing.T) {
 	ctx := context.Background()
 	rs := testRecordSigner(t, 7)
@@ -272,7 +274,7 @@ func (r *reusingSigner) SignRecord(ctx context.Context, env []byte) ([]byte, err
 	return r.buf, nil
 }
 
-// #6: a signer that reuses its buffer cannot change what is stored after it
+// A signer that reuses its buffer cannot change what is stored after it
 // was verified.
 func TestCommit_SignerBufferReuse(t *testing.T) {
 	real := testRecordSigner(t, 7)
@@ -286,7 +288,7 @@ func TestCommit_SignerBufferReuse(t *testing.T) {
 	}
 }
 
-// #18: a typed-nil signer is refused at Open.
+// A typed-nil signer is refused at Open.
 func TestWithRecordSigner_TypedNil(t *testing.T) {
 	if _, err := Open(t.TempDir(), WithRecordSigner((*MLDSA65RecordSigner)(nil))); err == nil {
 		t.Fatal("a nil *MLDSA65RecordSigner was accepted")
@@ -312,7 +314,7 @@ func (c *cancellingSigner) SignRecord(ctx context.Context, env []byte) ([]byte, 
 	return nil, ctx.Err()
 }
 
-// #19: a commit cancelled DURING signing leaves nothing.
+// A commit cancelled DURING signing leaves nothing.
 func TestCommit_CancelledDuringSigning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -327,7 +329,7 @@ func TestCommit_CancelledDuringSigning(t *testing.T) {
 	sinkUntouched(t, s)
 }
 
-// #19: a presign failure keeps earlier pending chains pending, and changes no
+// A presign failure keeps earlier pending chains pending, and changes no
 // byte of the signatures file.
 func TestErase_PresignFailureKeepsPendingAndSignatures(t *testing.T) {
 	ctx := context.Background()
@@ -352,7 +354,7 @@ func TestErase_PresignFailureKeepsPendingAndSignatures(t *testing.T) {
 	}
 }
 
-// G2: a failed rewrite of the signatures file is reported, but erased chains
+// A failed rewrite of the signatures file is reported, but erased chains
 // are not kept pending for it (the file holds no erased values).
 func TestErase_SignaturesRewriteFailureDoesNotKeepPending(t *testing.T) {
 	ctx := context.Background()

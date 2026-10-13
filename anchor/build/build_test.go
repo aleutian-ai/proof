@@ -71,7 +71,7 @@ func ringFor(t *testing.T, s *anchor.MLDSA65Signer, keyID string) *anchor.KeyRin
 	return ring
 }
 
-// TestAnchor_BuildSignVerify_Genesis is the round trip the ticket asks for, for
+// TestAnchor_BuildSignVerify_Genesis is the build, sign, verify round trip for
 // the first anchor in a chain.
 func TestAnchor_BuildSignVerify_Genesis(t *testing.T) {
 	entries := chainOf(t, 5)
@@ -109,8 +109,7 @@ func TestAnchor_BuildSignVerify_Genesis(t *testing.T) {
 }
 
 // TestAnchor_BuildSignVerify_Chained is the same round trip for an anchor that
-// follows another — which is every anchor but the first, and which nothing in
-// this module could verify until `_51`.
+// follows another — which is every anchor but the first.
 func TestAnchor_BuildSignVerify_Chained(t *testing.T) {
 	signer := testSigner(t)
 

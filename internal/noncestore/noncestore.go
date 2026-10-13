@@ -35,6 +35,9 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/aleutian-ai/proof/internal/fault"
+	"github.com/aleutian-ai/proof/internal/safebolt"
 )
 
 var bucket = []byte("nonces")
@@ -46,17 +49,33 @@ var ErrNotFound = errors.New("noncestore: no nonce stored for that entry")
 // there is none at the path.
 var ErrNoFile = errors.New("noncestore: there is no nonce file at that path")
 
+// ErrCorrupt means the nonce file is not a well-formed database: truncated,
+// overwritten, or not a nonce file. Every function and method here returns it
+// (wrapped) instead of panicking on such a file; a Store that returned it is
+// finished, and its Close abandons the file instead of closing it (the file
+// lock is released; the memory map stays until the process exits).
+var ErrCorrupt = fault.ErrCorrupt
+
+// checked remembers the files Open has already checked in this process.
+var checked safebolt.Checker
+
 // Store is an open nonce file. Not safe for use by more than one process at a
 // time: bbolt's file lock enforces that.
-type Store struct{ db *bolt.DB }
+type Store struct{ db *safebolt.DB }
 
 // PathFor names the nonce file that belongs to an evidence database.
 func PathFor(dbPath string) string { return dbPath + ".nonces" }
 
 // Open opens (creating if needed) a nonce file, waiting up to lockTimeout for
-// another process to release it.
+// another process to release it. The first time a process opens an existing
+// file it is read through once, read-only, and refused with ErrCorrupt if it
+// is damaged, before anything is written.
 func Open(path string, lockTimeout time.Duration) (*Store, error) {
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout})
+	opts := &bolt.Options{Timeout: lockTimeout}
+	if err := checked.Once(path, opts); err != nil {
+		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
+	}
+	db, err := safebolt.Open(path, 0o600, opts)
 	if err != nil {
 		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
 	}
@@ -74,7 +93,7 @@ func Open(path string, lockTimeout time.Duration) (*Store, error) {
 // lock. Nothing is created or changed. A file without the nonce bucket is
 // refused rather than read.
 func OpenReadOnly(path string, lockTimeout time.Duration) (*Store, error) {
-	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
+	db, err := safebolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
 	if err != nil {
 		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
 	}
@@ -90,7 +109,8 @@ func OpenReadOnly(path string, lockTimeout time.Duration) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
-// Close releases the file.
+// Close releases the file. A Store that returned ErrCorrupt is abandoned, not
+// closed (see ErrCorrupt), and Close then returns an error wrapping it.
 func (s *Store) Close() error { return s.db.Close() }
 
 func key(chainID, entryID string) []byte {
@@ -287,7 +307,8 @@ const compactSuffix = ".compact-"
 //
 // # Outputs
 //
-//   - error: nil, or why the file was not rewritten (the original is intact)
+//   - error: nil, or why the file was not rewritten (the original is as it
+//     was); ErrCorrupt (wrapped) when the file is damaged
 //
 // # Example
 //
@@ -325,18 +346,19 @@ func Compact(path string, lockTimeout time.Duration) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	src, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
+	src, err := safebolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
 	if err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	dst, err := bolt.Open(tmp, 0o600, &bolt.Options{Timeout: lockTimeout})
+	dst, err := safebolt.Open(tmp, 0o600, &bolt.Options{Timeout: lockTimeout})
 	if err != nil {
 		src.Close()
 		_ = os.Remove(tmp)
 		return err
 	}
-	err = bolt.Compact(dst, src, 0)
+	// A damaged original fails the copy (ErrCorrupt); it is left as it was.
+	err = safebolt.Compact(dst, src)
 	src.Close()
 	if cerr := dst.Close(); err == nil {
 		err = cerr
@@ -351,6 +373,8 @@ func Compact(path string, lockTimeout time.Duration) error {
 		_ = os.Remove(tmp)
 		return err
 	}
+	// The fresh copy was written from a file that read cleanly, key by key.
+	checked.Mark(path)
 	return syncPath(dir)
 }
 

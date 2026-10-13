@@ -230,7 +230,7 @@ podman rmi -f proof:check proof-mcp:check >/dev/null 2>&1 || true
 HEAD_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 # The image is built from the WORKING TREE but labelled with HEAD. With
 # uncommitted changes those differ. A warning, not a failure: this is a developer
-# check. The release gate (dist_06) is where it must refuse.
+# check. The release gate is where it must refuse.
 if [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]]; then
     echo "   ${YELLOW}WARN${NC} uncommitted changes: the image is built from them but labelled ${HEAD_COMMIT:0:12}"
 fi
@@ -308,6 +308,14 @@ else
         ok "the image ships its licence"
     else
         bad "the image does not contain /LICENSE"
+    fi
+    # The binary links BSD-3-Clause and MIT code, whose notices must travel too.
+    # The file in the image must be the committed one, byte for byte.
+    if podman cp proofcheck-lic:/THIRD_PARTY_LICENSES "$WORK/THIRD_PARTY_LICENSES" >/dev/null 2>&1 \
+       && cmp -s "$WORK/THIRD_PARTY_LICENSES" "$REPO_ROOT/licenses/proof/THIRD_PARTY_LICENSES"; then
+        ok "the image ships the third-party licences its binary links"
+    else
+        bad "the image's /THIRD_PARTY_LICENSES is missing or is not licenses/proof/THIRD_PARTY_LICENSES"
     fi
     podman rm -f proofcheck-lic >/dev/null 2>&1 || true
 
@@ -513,8 +521,11 @@ proof sink erase --subject u-81 --record-key rec/ml-dsa-65-private.pem >/dev/nul
 out=$(proof sink verify --key cp/ml-dsa-65-public.pem --record-trust rec/ml-dsa-65-public.pem)
 echo "$out" | grep -q "all 2 chains verify"
 echo "$out" | grep -q "signed · subject erased$" || { echo "$out" >&2; exit 1; }
-# One key for both jobs: warned, not refused.
-proof sink checkpoint --key rec/ml-dsa-65-private.pem 2> cp.err >/dev/null
+# One key for both jobs: warned, not refused. --record-trust, because the chain
+# ends with an erasure no checkpoint covers yet: a checkpoint signs over one
+# only when its record signature verifies (or the same run made it).
+proof sink checkpoint --key rec/ml-dsa-65-private.pem \
+    --record-trust rec/ml-dsa-65-public.pem 2> cp.err >/dev/null
 grep -q "also signs this sink" cp.err || { echo "NO WARNING FOR A SHARED KEY" >&2; exit 1; }
 ' >"$WORK/log7" 2>&1; then
     ok "every record signed; a writer without the record key is refused (exit 2)"

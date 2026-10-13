@@ -16,12 +16,14 @@ import (
 	"github.com/aleutian-ai/proof/linker"
 )
 
-// _74a review fixes (R1–R3, 1.3–1.5, 2.3, 2.4, 4.3).
+// What a failed Commit leaves behind and what its error says: nothing new is
+// kept, the error names the failing records and never a chain id, and an
+// append that landed is a success.
 
 // anyChainID matches a chain id anywhere in a string.
 var anyChainID = regexp.MustCompile(`[a-z0-9][a-z0-9_-]{0,30}\.[0-9a-f]{32}`)
 
-// R2: one pair's stored state is broken (its reverse index row disagrees).
+// One pair's stored state is broken (its reverse index row disagrees).
 // Nothing is committed, and the error is a *PairError naming exactly that
 // pair's records, so a consumer can set those aside and retry the rest.
 func TestCommit_PairErrorNamesTheFailingRecords(t *testing.T) {
@@ -56,7 +58,7 @@ func TestCommit_PairErrorNamesTheFailingRecords(t *testing.T) {
 	}
 }
 
-// R3: a returned error leaves nothing new: the new pairs' index rows and
+// A returned error leaves nothing new: the new pairs' index rows and
 // source positions are removed too, not just content and nonces. Existing
 // pairs keep their rows.
 func TestCommit_FailedCallRemovesNewPairsRows(t *testing.T) {
@@ -108,7 +110,7 @@ func TestCommit_FailedCallRemovesNewPairsRows(t *testing.T) {
 	}
 }
 
-// 1.3: the append reports an error although its transaction committed. The
+// The append reports an error although its transaction committed. The
 // entries exist, so their content and nonces must NOT be deleted: the call is
 // a success.
 type landedThenFailed struct{ real *linker.Linker }
@@ -136,7 +138,7 @@ func TestCommitPairs_AppendThatLandedKeepsContent(t *testing.T) {
 	}
 }
 
-// 1.5: a chain named twice in the plans is refused before anything is written.
+// A chain named twice in the plans is refused before anything is written.
 func TestCommitPairs_DuplicateChainRefusedBeforeWriting(t *testing.T) {
 	fx := newFixture(t)
 	plans := []pairPlan{{chain: fx.chain, recs: sourced("u-1", 1, 1)}, {chain: fx.chain, recs: sourced("u-2", 1, 5)}}
@@ -149,7 +151,7 @@ func TestCommitPairs_DuplicateChainRefusedBeforeWriting(t *testing.T) {
 	}
 }
 
-// 2.3: Commit's errors never carry a chain id (next to the caller's records it
+// Commit's errors never carry a chain id (next to the caller's records it
 // would be a row of the secret index). errors.Is still reaches the cause.
 func TestCommit_ErrorsNameNoChain(t *testing.T) {
 	ctx := context.Background()
@@ -172,7 +174,7 @@ func TestCommit_ErrorsNameNoChain(t *testing.T) {
 	}
 }
 
-// 2.4: when the cleanup itself fails, the error says so.
+// When the cleanup itself fails, the error says so.
 func TestCommitPairs_CleanupFailureIsReported(t *testing.T) {
 	fx := newFixture(t)
 	rs := &recordingSecrets{secretsStore: fx.sec, failDelete: true}
@@ -183,7 +185,7 @@ func TestCommitPairs_CleanupFailureIsReported(t *testing.T) {
 	}
 }
 
-// 4.3: a failure on a chain that already has entries removes only this call's
+// A failure on a chain that already has entries removes only this call's
 // files and nonces; the earlier entries' content and nonces survive.
 func TestCommitPairs_FailureKeepsEarlierContent(t *testing.T) {
 	fx := newFixture(t)
@@ -208,7 +210,7 @@ func TestCommitPairs_FailureKeepsEarlierContent(t *testing.T) {
 	}
 }
 
-// R3, directly: forgetFresh removes the new chains' source positions, then
+// Directly: forgetFresh removes the new chains' source positions, then
 // their index rows. (The Commit-level test fails before positions are written;
 // this pins the positions half.)
 func TestForgetFreshRemovesPositionsThenRows(t *testing.T) {

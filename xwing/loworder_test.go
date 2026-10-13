@@ -40,8 +40,8 @@ var lowOrderPoints = [][32]byte{
 // implementation that rejects these inputs is NOT X-Wing — it would refuse
 // ciphertexts a conforming peer can legitimately produce.
 //
-// This test exists to guard a migration from x/crypto/curve25519 to crypto/ecdh
-// (aleutianchain_02); crypto/ecdh returns an error on the all-zero result, so
+// This test exists to guard a migration from x/crypto/curve25519 to crypto/ecdh;
+// crypto/ecdh returns an error on the all-zero result, so
 // the zero-substitution must be carried across deliberately.
 func TestEncapsulateLowOrderX25519PointDoesNotFail(t *testing.T) {
 	_, priv, err := GenerateKeyPair()

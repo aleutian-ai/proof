@@ -16,6 +16,9 @@ fixtures
 scripts
 CHANGELOG.md
 README.md
+# The README's demo chain, at the repository root only. Package testdata/
+# directories are not matched by this pattern and stay in the context.
+/testdata
 
 # Binaries built at the repo root. The images build their own.
 /proof
@@ -24,3 +27,6 @@ README.md
 # LICENSE is deliberately NOT excluded: it is copied into the final images,
 # because an image is a distribution and Apache-2.0 §4(a) asks that recipients
 # get the licence text, not merely a label naming it.
+#
+# licenses/ is not excluded either: each image copies the THIRD_PARTY_LICENSES
+# file for its binary, and the build stage checks the binary against it.

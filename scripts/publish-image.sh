@@ -100,6 +100,7 @@ podman build --platform "$PLATFORMS" --manifest "proof:$VERSION" \
     --label "org.opencontainers.image.revision=$COMMIT" \
     --label "org.opencontainers.image.version=$VERSION" .
 podman build --platform "$PLATFORMS" --manifest "proof-mcp:$VERSION" --target proof-mcp \
+    --build-arg "VERSION=$VERSION" \
     --label "org.opencontainers.image.revision=$COMMIT" \
     --label "org.opencontainers.image.version=$VERSION" .
 

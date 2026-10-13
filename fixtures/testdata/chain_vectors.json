@@ -5,25 +5,25 @@
     "run_id": "run_550e8400-e29b-41d4-a716-446655440000",
     "sequence_num": 0,
     "timestamp": "2026-01-20T12:00:00.000000Z",
-    "content_hash": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-    "expected_hash": "e6e26e4cb95916bafcee9e328bf70e04ba43a8b4cfa028aae2d8b418b9407cab973cdc97424e233e988fdbb58f33ec7b6a5d4cabd404bc13d3fe59495a0a8413"
+    "content_hash": "db0d635cf47ffcd100dda84032ab1d0f1a124ccd087de7232275b8368f91efcc879086ce159ef9e9f56e1b5313d8e4b76334fe082360171f837adac997be25fe",
+    "expected_hash": "eeff996e65fd813fd4df9d73eb691fa93ef19ff94396267655ae69d6fdf9030a6f3fe9799999dc078a9600f73544085e097c6b7aa59dd1a65e2db5644d1f118f"
   },
   {
     "name": "subsequent_entry",
-    "previous_hash": "e6e26e4cb95916bafcee9e328bf70e04ba43a8b4cfa028aae2d8b418b9407cab973cdc97424e233e988fdbb58f33ec7b6a5d4cabd404bc13d3fe59495a0a8413",
+    "previous_hash": "eeff996e65fd813fd4df9d73eb691fa93ef19ff94396267655ae69d6fdf9030a6f3fe9799999dc078a9600f73544085e097c6b7aa59dd1a65e2db5644d1f118f",
     "run_id": "run_550e8400-e29b-41d4-a716-446655440000",
     "sequence_num": 1,
     "timestamp": "2026-01-20T12:00:01.123456Z",
-    "content_hash": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
-    "expected_hash": "362780d0fbbe1ccd57c1705ffb6d2c9caeaf144a9b50e089ded06161347e5c12f0d49f00e1af79b0f5d1d50fc249d4560cbc31968664b05a4a2141d30f3ed99c"
+    "content_hash": "9e70b027ad80f996c3bdc60787244fd258a2b30e08138cc9ce8ae922f6d37923bb9d4faaaa7b3642a4415b8c4bea371fe438f5558f95ef4316c5129a54182fae",
+    "expected_hash": "78027fa4b013f8c4b1753e0c316ff1f858f71a93b52a80543d80a9b01a12478c02e0de2bb52525071fc7801a7bb56d5d4823a5ea5177db866a683d6c9b5a45ba"
   },
   {
     "name": "tombstone_content_hash",
-    "previous_hash": "362780d0fbbe1ccd57c1705ffb6d2c9caeaf144a9b50e089ded06161347e5c12f0d49f00e1af79b0f5d1d50fc249d4560cbc31968664b05a4a2141d30f3ed99c",
+    "previous_hash": "78027fa4b013f8c4b1753e0c316ff1f858f71a93b52a80543d80a9b01a12478c02e0de2bb52525071fc7801a7bb56d5d4823a5ea5177db866a683d6c9b5a45ba",
     "run_id": "run_550e8400-e29b-41d4-a716-446655440000",
     "sequence_num": 2,
     "timestamp": "2026-01-20T12:00:02.000000Z",
     "content_hash": "TOMBSTONE:c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
-    "expected_hash": "effff14c81ec514fa33adad0c51934ea9d3c1b35f6ef3a9e5e97cb634acbaec986e181a3e66619f96bde02d522d51fdecddbdf3b9e23f76b3cf807b75e62626c"
+    "expected_hash": "d2fa2904e02787a39ab83034d2baf9626d6ed0355ae57443d5865f843763f0edd8988b6b3edc03333eaada7b11d1868fc98d2dafeff6a4f4bb6acf4a2d466795"
   }
 ]

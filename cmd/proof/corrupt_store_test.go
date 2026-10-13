@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // overwritePages replaces everything after a bbolt file's two meta pages, so
@@ -128,5 +129,47 @@ func TestVersion(t *testing.T) {
 	defer func() { version = old }()
 	if got := versionString(); !strings.HasPrefix(got, "proof v9.9.9") {
 		t.Fatalf("versionString() = %q", got)
+	}
+}
+
+// TestCorruptStore_PlainWritingVerbs: the plain store's verbs that write exit
+// 3 on a damaged database, with an error that says so. They once panicked
+// (exit 2), and were left to: recovering where the command ends hung on the
+// writer lock the failed transaction held. The store now reports the damage
+// itself, before the first write or from the call that meets it.
+func TestCorruptStore_PlainWritingVerbs(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stdin string
+		args  func(db string) []string
+	}{
+		"commit": {commitLines(t, 2, 500), func(db string) []string { return []string{"commit", "--db", db, "--chain", "c"} }},
+		"forget": {"", func(db string) []string { return []string{"forget", "--db", db, "--chain", "c", "--entry", "ent_000"} }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			db := newDB(t, "chain")
+			var code int
+			var errOut string
+			withStdin(t, commitLines(t, 300, 0), func() { code, _, errOut = runMain(t, "commit", "--db", db, "--chain", "c") })
+			if code != exitOK {
+				t.Fatalf("setup commit: exit %d: %s", code, errOut)
+			}
+			overwritePages(t, db)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				withStdin(t, tc.stdin, func() { code, _, errOut = runMain(t, tc.args(db)...) })
+			}()
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the command did not return")
+			}
+			if code != exitIOError {
+				t.Fatalf("exit %d, want %d\nstderr: %.600s", code, exitIOError, errOut)
+			}
+			if !strings.Contains(errOut, "damaged") {
+				t.Errorf("stderr does not say the file is damaged:\n%.600s", errOut)
+			}
+		})
 	}
 }

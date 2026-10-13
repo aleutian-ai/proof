@@ -56,6 +56,10 @@ import (
 //  8. Record signatures, with WithRecordTrust: every entry's, rebuilt from the
 //     stored entry (Report.RecordSignatures says whether they were checked;
 //     orphan rows are counted as a note).
+//  9. Source positions: every row of the sources file points at an entry that
+//     is on its chain with that id at that sequence, and no entry has two
+//     (rows written into the file to make new records read as duplicates).
+//     Counted per chain; a source is never shown.
 //
 // The report never names a subject, nor prints an id read from the folder
 // that is not of the sink's own shape. ChainSubjects is the separate,
@@ -69,7 +73,9 @@ import (
 //
 //   - ctx: honoured between chains
 //   - keys: the public keys checkpoints may be signed with
-//   - opts: WithRecordTrust, to check record signatures
+//   - opts: WithRecordTrust, to check record signatures;
+//     WithCheckpointHeads, to notice a cut or restarted checkpoint series;
+//     RequireCheckpoints, to fail a chain no checkpoint covers
 //
 // # Outputs
 //
@@ -92,7 +98,7 @@ import (
 //
 //   - Opens every file read-only, but parses them with bbolt, which may panic
 //     on a crafted file: verify a folder from someone else as an exported
-//     bundle (ticket _72), not the files.
+//     bundle (docs/bundle-format.md), not the files.
 //   - Reads a page at a time (VerifyEach): not one snapshot of the folder.
 //     Memory holds every report (VerifyEach streams them instead).
 //   - Front truncation of a chain without record signatures is caught only
@@ -101,8 +107,8 @@ import (
 // # Assumptions
 //
 //   - keys and any record trust source are safe for concurrent use.
-func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...VerifyOption) (_ Report, err error) {
-	defer fault.Recover(&err)()
+func (s *Sink) Verify(ctx context.Context, keys anchor.KeySource, opts ...VerifyOption) (Report, error) {
+	// VerifyEach is the guarded region; nothing here touches a file.
 	var rep Report
 	at := map[string]int{} // chain → its report's index, to merge a sweep row into it
 	sum, err := s.VerifyEach(ctx, keys, func(cr ChainReport) error {
@@ -160,10 +166,12 @@ func (s Summary) OK() bool { return s.Failed == 0 }
 // cross-chain sweep (index rows, checkpoint folders, secrets and signature
 // rows for chains the evidence file does not hold; rows keyed off the layout)
 // runs, also in pages, each candidate checked against the evidence file at
-// that moment. Its rows come after the chains'. A sweep finding about a chain
-// already reported (an index row that disagrees with it) comes as a second
-// row for that chain (at most one): Verify merges them, and Summary counts it
-// as the same chain.
+// that moment; it ends with the sources file (every position points at an
+// entry that is there, and no entry has two). Its rows come after the chains'.
+// A sweep finding about a chain already reported (an index row that disagrees
+// with it; source positions that do) comes as a further row for that chain (at
+// most one of each kind): Verify merges them, and Summary counts them as the
+// same chain.
 //
 // The result is NOT one snapshot of the folder: each chain is reported as it
 // was when its page read it. A chain committed during the run is reported if
@@ -176,7 +184,7 @@ func (s Summary) OK() bool { return s.Failed == 0 }
 //   - keys: the public keys checkpoints may be signed with
 //   - fn: called for each report, with no file held; an error stops the run
 //     and is returned
-//   - opts: WithRecordTrust
+//   - opts: WithRecordTrust, WithCheckpointHeads, RequireCheckpoints
 //
 // # Outputs
 //
@@ -201,7 +209,7 @@ func (s Summary) OK() bool { return s.Failed == 0 }
 // # Limitations
 //
 //   - One chain is read under one lock hold: a very large chain still holds
-//     the lock for its own duration (incremental verification is ticket _74d).
+//     the lock for its own duration (there is no incremental verification).
 //   - Memory is one page plus the largest chain's stored rows, plus the
 //     sweep's reports for chains the evidence file does not hold.
 //
@@ -225,9 +233,23 @@ func (s *Sink) VerifyEach(ctx context.Context, keys anchor.KeySource, fn func(Ch
 			return sum, cfg.err
 		}
 	}
+	if cfg.heads != nil {
+		if err := s.headsOutsideFolder(cfg.heads); err != nil {
+			return sum, err
+		}
+		cfg.heads = callerHeads{cfg.heads}
+	}
+	// The caller's own code, from here on called through wrappers: a panic in
+	// it is the caller's, not a damaged file (see callbacks.go).
+	keys = callerKeys{keys}
+	report := fn
+	fn = func(cr ChainReport) (err error) {
+		fault.Callback(func() { err = report(cr) })
+		return err
+	}
 	var rc *recordChecker
 	if cfg.recordTrust != nil {
-		rc = &recordChecker{src: cfg.recordTrust, keys: map[string][]byte{}}
+		rc = &recordChecker{src: callerKeys{cfg.recordTrust}, keys: map[string][]byte{}}
 	}
 
 	// A sweep row about a chain already reported (an index row that disagrees
@@ -291,7 +313,12 @@ func (s *Sink) VerifyEach(ctx context.Context, keys anchor.KeySource, fn func(Ch
 					Problems: []string{"the evidence file holds a chain id this sink never writes; it was not read"}}})
 				continue
 			}
-			cr, err := s.verifyChain(ctx, p.st, p.sec, p.sig, rc, p.f, chain, keys, p.ix.state(chain))
+			row, err := p.ix.state(chain)
+			if err != nil {
+				return false, err
+			}
+			cr, err := s.verifyChain(ctx, p.st, p.sec, p.sig, rc, p.f, chain, keys, row,
+				chainChecks{heads: cfg.heads, requireCheckpoint: cfg.requireCheckpoint})
 			if err != nil {
 				return false, err
 			}
@@ -311,6 +338,9 @@ func (s *Sink) VerifyEach(ctx context.Context, keys anchor.KeySource, fn func(Ch
 	}, nil); err != nil {
 		return sum, err
 	}
+	// Before the rows are listed: a finding about a chain the evidence file does
+	// not hold goes into that chain's row.
+	srcRows := sw.sourceRows()
 	names := make([]string, 0, len(sw.rows))
 	for n := range sw.rows {
 		names = append(names, n)
@@ -323,6 +353,10 @@ func (s *Sink) VerifyEach(ctx context.Context, keys anchor.KeySource, fn func(Ch
 		pending = append(pending, out{cr: cr})
 	}
 	for _, cr := range sw.again {
+		pending = append(pending, out{cr: cr, again: true})
+	}
+	for _, cr := range srcRows {
+		// A further row for a chain the walk already reported.
 		pending = append(pending, out{cr: cr, again: true})
 	}
 	return sum, flush()
@@ -341,6 +375,19 @@ type sweep struct {
 	// row that disagrees with one), at most one per chain.
 	again     []ChainReport
 	againSeen map[string]bool
+
+	// The sources file (stage 8). src holds the findings per chain, in the
+	// order found. srcChain, srcInStore and srcEntries are the chain whose rows
+	// are being read: its rows are together, so the entry ids seen are kept for
+	// one chain at a time.
+	srcAfter      []byte
+	src           map[string]*sourceFinding
+	srcOrder      []string
+	srcChain      string
+	srcInStore    bool
+	srcEntries    map[string]int
+	srcMalformed  int
+	invalidSource int
 
 	revAfter       string
 	fwdAfter       []byte
@@ -397,7 +444,7 @@ func inStore(ctx context.Context, p *pageFiles, chain string) (bool, error) {
 // step does one page of the sweep and reports whether it is done.
 func (w *sweep) step(ctx context.Context, p *pageFiles, deadline time.Time) (bool, error) {
 	progressed := false // at least one unit per page, whatever the budget
-	for ; w.stage < 8; w.stage++ {
+	for ; w.stage < 9; w.stage++ {
 		for {
 			if progressed && time.Now().After(deadline) {
 				return false, nil
@@ -420,7 +467,10 @@ func (w *sweep) step(ctx context.Context, p *pageFiles, deadline time.Time) (boo
 func (w *sweep) stageStep(ctx context.Context, p *pageFiles) (bool, error) {
 	switch w.stage {
 	case 0: // index rows with no chain in the evidence file
-		rows := p.ix.reverseAfter(w.revAfter, pageMaxKeys)
+		rows, err := p.ix.reverseAfter(w.revAfter, pageMaxKeys)
+		if err != nil {
+			return false, err
+		}
 		for _, r := range rows {
 			w.revAfter = r.key
 			if !ValidChainID(r.key) {
@@ -448,7 +498,10 @@ func (w *sweep) stageStep(ctx context.Context, p *pageFiles) (bool, error) {
 		return len(rows) < pageMaxKeys, nil
 
 	case 1: // forward rows that disagree with the index (their keys name subjects: never shown)
-		bad, next, done := p.ix.badForwardAfter(w.fwdAfter, pageMaxKeys)
+		bad, next, done, err := p.ix.badForwardAfter(w.fwdAfter, pageMaxKeys)
+		if err != nil {
+			return false, err
+		}
 		if next != nil {
 			w.fwdAfter = next
 		}
@@ -669,8 +722,145 @@ func (w *sweep) stageStep(ctx context.Context, p *pageFiles) (bool, error) {
 				"but the evidence file has no entries for it: the chain was REMOVED")
 		}
 		return len(names) < pageMaxKeys, nil
+
+	case 8: // source positions: each points at an entry, and no entry has two
+		if p.src == nil {
+			return true, nil
+		}
+		rows, next, done, err := p.src.rowsAfter(w.srcAfter, pageMaxKeys)
+		if err != nil {
+			return false, fmt.Errorf("sink: read the sources file: %w", err)
+		}
+		if next != nil {
+			w.srcAfter = next
+		}
+		for _, r := range rows {
+			if r.malformed {
+				w.srcMalformed++ // never shown: a key holds a source, and could hold anything
+				continue
+			}
+			if r.chain != w.srcChain || w.srcEntries == nil {
+				in, err := inStore(ctx, p, r.chain)
+				if err != nil {
+					return false, err
+				}
+				w.srcChain, w.srcInStore, w.srcEntries = r.chain, in, map[string]int{}
+			}
+			f := w.sourceFinding(r.chain)
+			if !w.srcInStore {
+				f.noChain++
+				continue
+			}
+			// The same check Commit makes before it calls a record a duplicate.
+			at, err := p.st.Range(ctx, r.chain, r.pos.seq, r.pos.seq, 1)
+			if err != nil {
+				return false, fmt.Errorf("sink: read chain %s: %w", r.chain, err)
+			}
+			if len(at) != 1 || at[0].EntryID != r.pos.entryID {
+				f.dangling++
+				continue
+			}
+			w.srcEntries[r.pos.entryID]++
+			if w.srcEntries[r.pos.entryID] == 2 {
+				f.shared++
+				if f.firstShared == "" {
+					f.firstShared = r.pos.entryID
+				}
+			}
+		}
+		if done && w.srcMalformed > 0 {
+			w.invalidSource++
+			w.extra = append(w.extra, ChainReport{Chain: fmt.Sprintf("<invalid sources row #%d>", w.invalidSource),
+				Anomaly: "removed", Problems: []string{fmt.Sprintf("the sources file holds %d rows this sink "+
+					"never writes (a key that is not a chain and a source, or a value that is not an entry "+
+					"id and a sequence); remove them by hand", w.srcMalformed)}})
+			w.srcMalformed = 0
+		}
+		return done, nil
 	}
 	return true, nil
+}
+
+// sourceFinding is what the sweep found in one chain's source positions.
+type sourceFinding struct {
+	noChain     int    // rows of a chain with no entries at all
+	dangling    int    // rows pointing at no entry of a chain that has entries
+	shared      int    // entries more than one row points at
+	firstShared string // the first such entry's id (a valid one)
+}
+
+// sourceFinding returns the finding of a chain, creating it. A chain with
+// nothing found keeps a zero finding, which sourceRows skips.
+func (w *sweep) sourceFinding(chain string) *sourceFinding {
+	if f, ok := w.src[chain]; ok {
+		return f
+	}
+	if w.src == nil {
+		w.src = map[string]*sourceFinding{}
+	}
+	f := &sourceFinding{}
+	w.src[chain] = f
+	w.srcOrder = append(w.srcOrder, chain)
+	return f
+}
+
+// sourceRows turns the source findings into reports: one further row per
+// chain with a finding. A source is never shown; rows are counted.
+func (w *sweep) sourceRows() []ChainReport {
+	var out []ChainReport
+	for _, chain := range w.srcOrder {
+		f := w.src[chain]
+		if f.noChain == 0 && f.dangling == 0 && f.shared == 0 {
+			continue
+		}
+		if f.noChain > 0 {
+			// A chain the evidence file does not hold: its row, as for content.
+			cr := w.rowFor(chain)
+			if cr.Index != IndexOnly && cr.Index != IndexPending {
+				cr.Anomaly = "removed"
+			}
+			cr.Problems = append(cr.Problems, fmt.Sprintf("the sources file holds %s for this chain, but the "+
+				"evidence file has no entries for it: the chain was removed, or a first commit stopped "+
+				"before its append; %s", plural(f.noChain, "source position", "source positions"),
+				sourceRemedy(cr.Index)))
+			continue
+		}
+		cr := ChainReport{Chain: chain, Class: classOf(chain)}
+		if f.dangling > 0 {
+			cr.Problems = append(cr.Problems, fmt.Sprintf("%s no entry of this chain (a commit that did not "+
+				"finish, or rows written into the sources file); `proof sink repair` removes them",
+				plural(f.dangling, "source position matches", "source positions match")))
+		}
+		if f.shared > 0 {
+			cr.Problems = append(cr.Problems, fmt.Sprintf("%s more than one source position (first: %s), "+
+				"which the sink never writes: rows were added to the sources file. A record carrying one of "+
+				"those sources is refused, or, if its content is the entry's, taken as a duplicate",
+				plural(f.shared, "entry has", "entries have"), f.firstShared))
+		}
+		out = append(out, cr)
+	}
+	return out
+}
+
+// sourceRemedy says how to remove the source positions of a chain with no
+// entries, by its index state.
+func sourceRemedy(index IndexState) string {
+	switch index {
+	case IndexLive, IndexOnly:
+		return "`proof sink repair`, or erasing its subject, removes them"
+	case IndexPending:
+		return "`proof sink erase --resume` removes them"
+	default:
+		return "nothing in the sink will remove them (no index row): check, then remove by hand"
+	}
+}
+
+// plural is "1 thing" or "n things".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }
 
 // Index problems, worded once.
@@ -710,11 +900,25 @@ func classOf(chain string) string {
 // the first counts it and finds its last erasure; the second walks it, binding
 // each checkpoint as the walk reaches its end, and checks each entry's content.
 func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secretsStore, sig *signaturesStore,
-	rc *recordChecker, f *folder, chain string, keys anchor.KeySource, row IndexState) (ChainReport, error) {
+	rc *recordChecker, f *folder, chain string, keys anchor.KeySource, row IndexState,
+	x chainChecks) (ChainReport, error) {
 	cr := ChainReport{Chain: chain, Class: classOf(chain)}
 	anchors, problem, err := f.readAnchors(chain)
 	if err != nil {
 		return cr, err
+	}
+	// The series against its recorded head, kept outside the folder: a series
+	// that is shorter, or differs at the head's number, was cut or restarted.
+	if x.heads != nil && problem == "" {
+		count, hash, ok, err := x.heads.Head(ctx, chain)
+		if err != nil {
+			return cr, fmt.Errorf("sink: read the checkpoint heads: %w", err)
+		}
+		if ok {
+			if hp := headProblem(anchors, count, hash); hp != "" {
+				cr.Problems = append(cr.Problems, hp)
+			}
+		}
 	}
 
 	// Pass 1: the length, where the last GENUINE erasure is (its hash is that of
@@ -811,7 +1015,7 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 	// entry's chain hash, and a sink chain starts at sequence 0 with none. A
 	// record signature covers the stored previous_hash, so without this check
 	// a signed record could be spliced in, or the front cut off, with the
-	// keyless chain hashes recomputed (_75d review). The first break only.
+	// keyless chain hashes recomputed. The first break only.
 	prevChainHash, linkProblem, formatProblem := "", "", ""
 	err = forEachEntry(ctx, st, chain, func(e store.Entry) {
 		if linkProblem == "" {
@@ -866,6 +1070,10 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		cr.Checkpoints, covered = series.Verified(), series.Covered()
 	}
 	cr.Unanchored = total - int(covered)
+	if x.requireCheckpoint && cr.Checkpoints == 0 {
+		cr.Problems = append(cr.Problems, "no verified checkpoint covers this chain, and one was required: "+
+			"it was never checkpointed, or its checkpoints were removed")
+	}
 	if cr.Index == IndexErasedUnanchored && series != nil && len(series.Problems()) == 0 && int(covered) == total {
 		cr.Index = IndexErased
 	}
@@ -916,8 +1124,101 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 type VerifyOption func(*verifyConfig)
 
 type verifyConfig struct {
-	recordTrust anchor.KeySource
-	err         error
+	recordTrust       anchor.KeySource
+	heads             CheckpointHeads
+	requireCheckpoint bool
+	err               error
+}
+
+// chainChecks are the optional checks verifyChain makes on one chain.
+type chainChecks struct {
+	// heads, when set, is where each chain's series head is recorded.
+	heads CheckpointHeads
+	// requireCheckpoint makes a chain no verified checkpoint covers a problem.
+	requireCheckpoint bool
+}
+
+// WithCheckpointHeads makes Verify compare every chain's checkpoint series
+// with the head recorded for it in h.
+//
+// # Description
+//
+// A folder cannot prove none of its checkpoints were deleted. With heads kept
+// where the folder's writer cannot rewrite them (TrackHeads on Checkpoint), a
+// series with fewer checkpoints than its head, or with another anchor chain
+// hash at the head's number, is reported as a problem: "the checkpoint series
+// was cut or restarted". A chain with no recorded head is not affected, and a
+// series longer than its head is not a problem (the head is recorded after the
+// checkpoint is written).
+//
+// # Inputs
+//
+//   - h: where heads are kept; nil makes Verify fail. A FileHeads file inside
+//     the sink folder is refused.
+//
+// # Outputs
+//
+//   - VerifyOption: to pass to Verify or VerifyEach
+//
+// # Example
+//
+//	heads := sink.FileHeads("/var/lib/proof-heads/sink-data.heads.json")
+//	rep, err := s.Verify(ctx, keys, sink.WithCheckpointHeads(heads))
+//
+// # Limitations
+//
+//   - Asked per chain the evidence file holds: a chain removed whole, entries
+//     and checkpoints both, is not noticed through it.
+//   - Verify never writes h.
+//
+// # Assumptions
+//
+//   - h is safe for concurrent use.
+func WithCheckpointHeads(h CheckpointHeads) VerifyOption {
+	return func(c *verifyConfig) {
+		if h == nil {
+			c.err = errors.New("sink: WithCheckpointHeads needs a CheckpointHeads")
+			return
+		}
+		if v := reflect.ValueOf(h); v.Kind() == reflect.Pointer && v.IsNil() {
+			c.err = errors.New("sink: WithCheckpointHeads needs a CheckpointHeads (got a nil pointer)")
+			return
+		}
+		c.heads = h
+	}
+}
+
+// RequireCheckpoints makes a chain that no verified checkpoint covers a
+// failure.
+//
+// # Description
+//
+// By default entries after the last checkpoint, and chains never checkpointed,
+// are reported (Unanchored) and are not problems: that is the normal state
+// between checkpoint runs. It also means a folder whose anchors/ was deleted
+// still verifies. With this option every chain must have at least one
+// checkpoint that verified under the keys given.
+//
+// # Outputs
+//
+//   - VerifyOption: to pass to Verify or VerifyEach
+//
+// # Example
+//
+//	rep, err := s.Verify(ctx, keys, sink.RequireCheckpoints())
+//
+// # Limitations
+//
+//   - One verified checkpoint is enough: entries after it are still only
+//     counted as unanchored. It does not notice a series cut back to its first
+//     checkpoint; WithCheckpointHeads does.
+//   - A chain committed since the last checkpoint run fails until the next.
+//
+// # Assumptions
+//
+//   - None.
+func RequireCheckpoints() VerifyOption {
+	return func(c *verifyConfig) { c.requireCheckpoint = true }
 }
 
 // WithRecordTrust makes Verify check every entry's record signature against

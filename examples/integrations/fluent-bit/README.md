@@ -54,6 +54,15 @@ This says nothing about the rest of the shipper pipeline: Fluent Bit can still
 drop data through its own configuration, a full buffer, or a file rotated away
 before it was read.
 
+## The demo is not a deployment recipe
+
+There is no broker here, but the same warning applies to the one network hop:
+Fluent Bit sends OTLP to `otel-sink` over plain HTTP, and `otel-sink` accepts
+it without TLS and without authentication. Anyone who can reach that port can
+put records on a chain. That is acceptable for a demo on one machine, and for
+nothing else. A real deployment needs `otel-sink` reachable only by the
+shipper; none of that is shown here.
+
 ## Run it
 
 ```sh

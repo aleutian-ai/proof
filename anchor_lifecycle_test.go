@@ -142,7 +142,7 @@ func anchorOver(t *testing.T, entries []anchoredEntry, previousAnchorHash string
 //
 // This used to be a local reimplementation, which meant the repository's most
 // important integration tests validated a verifier that was not part of the
-// library. aleutianchain_08 exported the real one; this adapter exists only to
+// library. The real one is exported now; this adapter exists only to
 // convert the test's entry shape.
 func bindAnchor(t *testing.T, a anchor.Anchor, entries []anchoredEntry) error {
 	t.Helper()
@@ -294,9 +294,9 @@ func TestAnchor_ChainOfAnchorsLinks(t *testing.T) {
 	}
 }
 
-// TestAnchor_CanonicalBytesAreSignable is the handoff to _08.
+// TestAnchor_CanonicalBytesAreSignable is the handoff to signing.
 //
-// Signing happens in aleutianchain_08; what _07 must guarantee is that the bytes
+// Signing is a separate step; what canonicalization must guarantee is that the bytes
 // exist, are stable, exclude the signature, and carry every field a verifier
 // needs to reconstruct the binding.
 func TestAnchor_CanonicalBytesAreSignable(t *testing.T) {

@@ -20,17 +20,62 @@ and 1Password and commits the result. See [What proof is not](#what-proof-is-not
    (yours)     (yours)   └──────────── proof ──────────┘   (yours)
 ```
 
-```go
-import "github.com/aleutian-ai/proof/chainformat"
+## Try it
 
-hash, err := chainformat.ComputeChainHashV3(previousHash, globalSeq, ts, contentHash)
+Commit five entries, export the chain, verify it, change one timestamp, verify
+again. Run this from a clone of this repository, with the CLI built from that
+clone on your `PATH` (`go install ./cmd/proof`):
+
+```console
+$ proof init --db demo.db && proof commit --db demo.db --chain demo < testdata/demo/input.jsonl
+$ proof export --db demo.db --chain demo --out entries.json
+$ proof verify entries.json
+$ sed 's/T09:00:02/T09:00:03/' entries.json > tampered.json
+$ proof verify tampered.json
 ```
 
-v3 is the current format and the one to build against. v2 exists, is still
-verified, and is never rewritten — it bound the *batch* an entry was written in,
-so a chain depended on the API calls that produced it rather than on its own
-contents. v3 binds the entry's position in the chain instead. See
-[D15](docs/decisions.md).
+What the first, third and fifth lines print:
+
+```console
+$ proof init --db demo.db && proof commit --db demo.db --chain demo < testdata/demo/input.jsonl
+created demo.db
+{
+  "committed": 5,
+  "first_seq": 0,
+  "last_seq": 4,
+  "head_hash": "08a3d94e3b3f351483642273ab1e4a0318bf9e95c49a5cd0a21b16737f9bc8988996f9fe66cdfe1bd944840fbee3763541483cf176598ea58fe02bb177aa2c7b"
+}
+
+$ proof verify entries.json
+INTACT — 5 entries verified
+
+  Proven:     nothing was edited under you.
+  NOT proven: that this is the whole chain. Entries could have been
+              removed from the front and the rest re-linked; detecting
+              that needs an anchor, which was not checked here.
+
+$ proof verify tampered.json
+BROKEN — first break at entry 2
+
+  [2] hash_mismatch        ent_002
+       expected 19a80aef54b57ad64b0cec0532ac72b7…
+       actual   61863b5ef3be12a0c185ae1555701f9b…
+  [3] hash_mismatch        ent_003
+       expected fcde110bf30fe281042f969fd06691b8…
+       actual   9dda32f8d174fc701ebbab239febb666…
+  [4] hash_mismatch        ent_004
+       expected f9840a1a41752eb581d54c4a4a9ca496…
+       actual   08a3d94e3b3f351483642273ab1e4a03…
+
+  Note: one altered entry breaks every entry after it, so the
+  count above is the blast radius. Entry 2 is the place to look.
+```
+
+The first verify exits `0` and the second exits `1`. `INTACT` is the weakest of
+three claims this tool makes; the next section says what it does not cover.
+[`testdata/demo/`](testdata/demo) also holds the exported chain, a signed anchor
+over it, the public key that verifies the anchor, and a tampered copy, so the
+[Quickstart](#quickstart) below needs no database.
 
 ---
 
@@ -72,19 +117,71 @@ attack. Read them before relying on a verdict.
    writer cannot rewrite them. Anchors are signed with an empty ML-DSA context
    string, so a signing key must not be used for anything else.
 5. **The sink cannot tell an erasure it made from one written into its
-   folder.** An erasure record carries no key. Someone with write access to the
-   folder can append one at the end of a chain and remove the chain's index
-   row; it verifies as `erased-unanchored`, and the next checkpoint covers it.
-   With `anchors/<chain>/` deleted, the next checkpoint starts a new series and
-   verification passes. Rows written into `.sources` make a later `commit`
-   report new records as duplicates and drop them. Record signatures
-   (`--record-key`, verified with `--record-trust`) close the first of these.
+   folder, except by who checkpoints it.** An erasure record carries no key.
+   Someone with write access to the folder can append one at the end of a chain
+   and remove the chain's index row; it verifies as `erased-unanchored`, as a
+   real erasure does before its checkpoint. Three things that followed from
+   that are now closed, and each has a remainder that is not:
+   - *A routine checkpoint no longer covers it.* `proof sink checkpoint` signs
+     over an erasure only when the same run made it on that chain
+     (`proof sink erase --key`, `erase --resume --key`), its record signature
+     verifies (`checkpoint --record-trust`, on a sink that signs), or the
+     operator names the chain and vouches for it
+     (`checkpoint --confirm-erased-chain <chain id>`, for an erasure that
+     missed its own run's checkpoint). An erase run does not vouch for an
+     erasure entry it found already on a chain the index still bound to a
+     subject. A forged erasure stays `erased (not yet checkpointed)`.
+     **Not closed:** the events it covered are still gone and are not
+     restored, and `checkpoint` reports that chain on every run until someone
+     vouches for it, which the sink cannot check: an operator who vouches for
+     an erasure they did not make signs the forgery. And an erase run
+     completes whatever the index marks as an interrupted erasure: someone who
+     can write the index can mark a chain pending, and the next erase run then
+     erases it and checkpoints it as its own.
+   - *A deleted checkpoint series is noticed, if its head is kept elsewhere.*
+     With `--heads FILE` on `checkpoint` and `verify` (a file outside the sink
+     folder), a series that is shorter than it was, or was started again, is a
+     failure and is not extended. **Not closed:** without `--heads` nothing
+     changed: the next checkpoint starts a new series and verification passes
+     (`verify --require-checkpoint` only catches a chain left with no
+     checkpoint at all). Someone who can also rewrite the heads file is not
+     stopped (see 6), and a chain removed whole, with its checkpoints, is not
+     noticed through it.
+   - *Rows written into `.sources` no longer make new records vanish.* A record
+     is a duplicate only if the entry its source points at holds the same
+     content; otherwise `commit` refuses it (`ErrSourceConflict`) and nothing
+     is acknowledged. `verify` reports a source position that points at no
+     entry, and an entry with more than one. **Not closed:** someone who knows
+     a future record's exact bytes can still make it read as a duplicate, by
+     also rewriting the stored content, or by pointing its source at an entry
+     that already holds those bytes (events that repeat byte for byte).
+
+   `proof sink repair` deletes rows that match no entry, which is what a commit
+   that crashed leaves, and also what removing entries leaves. It leaves a
+   chain alone when a checkpoint, a recorded head (`--heads`) or, for a chain
+   with no entries, a record signature says the chain held more. **Not
+   closed:** on a chain no checkpoint covers, entries removed from the end
+   leave nothing that says so, and repair then deletes their content.
 6. **An operator who controls the evidence store and every signing key the
    verifier trusts can rewrite history and produce a newly valid one.** Only
    earlier checkpoints kept or witnessed outside the operator's reach make that
    rewrite detectable.
-7. **Commands that write crash on a damaged store file** (a Go panic, exit
-   status 2). Commands that only read report it as an error.
+7. **A damaged store file is an error, not a crash; a crafted one is not
+   covered.** No command panics or hangs on a file that is cut short or whose
+   pages were overwritten: `sink verify` exits 1 and everything else exits 3.
+   Every open first checks the sizes and counts in the file's meta pages and
+   freelist header against the file's length (a freelist claiming more entries
+   than the file could hold once made the process run out of memory), commands
+   that write read each file through before writing to it (`--skip-check` on
+   the sink verbs skips that), and every call into the storage layer is
+   guarded. In a long-lived process, a file that fails inside the storage layer
+   is abandoned rather than closed: its lock is released, but its memory map
+   stays until the process exits. **Not covered:** a file deliberately crafted
+   beyond that. Pages that point back at each other are followed without end,
+   and a count or offset inside a data page is believed as written; either can
+   hang the process or end it. These files are a store's own, not an
+   interchange format: verify someone else's evidence as an exported bundle,
+   never by opening their files.
 
 A next format version is drafted to close 1 to 3 and tighten 4. It is not
 implemented. Details: [verification-model.md](docs/verification-model.md),
@@ -130,14 +227,44 @@ See [docs/verification-model.md](docs/verification-model.md) and
 
 ```console
 $ go install github.com/aleutian-ai/proof/cmd/proof@latest
+```
 
-$ proof verify entries.json
+`@latest` is the last tagged release, which is older than this README. The
+outputs shown here are from a build of this tree: `go install ./cmd/proof` in a
+clone.
+
+`testdata/demo/entries.json` is a five-entry chain that ships with the
+repository (`scripts/make-demo.sh` wrote it):
+
+```console
+$ proof verify testdata/demo/entries.json
 INTACT — 5 entries verified
 
   Proven:     nothing was edited under you.
   NOT proven: that this is the whole chain. Entries could have been
               removed from the front and the rest re-linked; detecting
               that needs an anchor, which was not checked here.
+```
+
+`testdata/demo/entries-tampered.json` is the same file with one entry's
+timestamp changed by a second:
+
+```console
+$ proof verify testdata/demo/entries-tampered.json
+BROKEN — first break at entry 2
+
+  [2] hash_mismatch        ent_002
+       expected 19a80aef54b57ad64b0cec0532ac72b7…
+       actual   61863b5ef3be12a0c185ae1555701f9b…
+  [3] hash_mismatch        ent_003
+       expected fcde110bf30fe281042f969fd06691b8…
+       actual   9dda32f8d174fc701ebbab239febb666…
+  [4] hash_mismatch        ent_004
+       expected f9840a1a41752eb581d54c4a4a9ca496…
+       actual   08a3d94e3b3f351483642273ab1e4a03…
+
+  Note: one altered entry breaks every entry after it, so the
+  count above is the blast radius. Entry 2 is the place to look.
 ```
 
 Exit codes are distinct on purpose: `0` ok · `1` chain broken · `2` usage ·
@@ -156,7 +283,10 @@ $ podman run --rm --network=none -v "$PWD:/data:ro" \
 A container is the lowest-trust way to run someone else's verifier, which is
 why it is a first-class path here and not an afterthought. The image is 3.5 MB:
 a static binary on `scratch`, with no shell, no package manager and no libc, so
-there is nothing in it to audit but the binary. `--network=none` is not a
+there is nothing in it to audit but the binary. Beside the binary are two text
+files: `/LICENSE`, and `/THIRD_PARTY_LICENSES`, the licences of the third-party
+modules that binary links (`scripts/third-party-licenses.sh` generates it, and
+the image build refuses a binary that links a module the file does not name). `--network=none` is not a
 precaution you are taking against this tool — verification is arithmetic over a
 file you already have — it is a way to *check* the claim rather than believe it.
 
@@ -227,6 +357,36 @@ $ proof anchor --db chain.db --chain demo --subject acct-7f3a \
 $ proof verify e.jsonl --anchor a.json --key ml-dsa-65-public.pem
 ```
 
+`export` and `anchor` only read the database and never create one, and neither
+overwrites an existing `--out` file unless you add `--force`. `commit` refuses
+an `entry_id` the chain already holds, so running the loop a second time stops
+at `commit`.
+
+`commit` reads one JSON object per line. This is the first line of
+`testdata/demo/input.jsonl`:
+
+```console
+$ head -1 testdata/demo/input.jsonl
+{"entry_id":"ent_000","entry_type":"event","timestamp":"2026-10-13T09:00:00.000000Z","ingested_at":"2026-10-13T09:00:00.250000Z","content_hash":"23611b9176b397ee93edc22431170b500e97ebfac950ee90dcf5fd60a4d43da2c8cac0eaf345ddb6e65b6dbcc15175255a4110dcb385ab99a51348a8ed6f6d44"}
+```
+
+| Field | What it is |
+|---|---|
+| `entry_id` | your name for the entry; one id names one entry in a chain |
+| `entry_type` | your label for the kind of entry; it is stored, and it is in no hash |
+| `timestamp` | when the event happened, RFC 3339; it is hashed |
+| `ingested_at` | when you received it, RFC 3339; it orders the batch and is not stored |
+| `content_hash` | the SHA-512 of the evidence, as 128 lowercase hex characters. `proof` never sees the evidence |
+
+`entry_id`, `timestamp`, `ingested_at` and `content_hash` are required, and a
+line that lacks one or has it in another form is refused by line number, with
+nothing committed. The message names the field and never repeats its value:
+
+```console
+$ echo '{"entry_id":"ent_x","entry_type":"event","timestamp":"yesterday","ingested_at":"2026-10-13T09:00:00Z","content_hash":"abc"}' | proof commit --db demo.db --chain demo
+proof commit: line 1: timestamp is not an RFC 3339 time, for example 2026-01-20T12:00:01.123456Z
+```
+
 `commit` **mints** positions and hashes; its input carries none. Supplying
 `chain_hash`, `global_seq`, `run_id` or `sequence_num` is an error rather than
 ignored — silently recomputing a field someone supplied is how they end up
@@ -243,19 +403,24 @@ from a predecessor rather than from nothing.
 
 ### Checking an anchor
 
+The demo chain ships with an anchor over its five entries and the public key
+that verifies it:
+
 ```console
-$ proof verify entries.json --anchor anchor.json --key ml-dsa-65-public.pem
+$ proof verify testdata/demo/entries.json --anchor testdata/demo/anchor.json --key testdata/demo/anchor-public.pem
+INTACT, ANCHORED — 5 entries
 
-INTACT — 4 entries verified
-
-  Proven:     nothing was edited under you.
-  NOT proven: that this is the whole chain — not from linkage alone.
-              See the anchor result below, which is what closes it.
-
-ANCHOR BOUND — 4 entries covered
+ANCHOR BOUND — 5 entries covered
   signature verified (provided)
   establishes: the holder of a key you supplied attests to this chain
+
+  Proven:     the chain matches this anchor, and the holder of a key you supplied attests to this chain
+  NOT proven: that this is the whole chain beyond the anchored range, or that the anchor reached you by a path its subject could not rewrite
 ```
+
+That key came from the same directory as the chain and the anchor, which is the
+case "NOT proven" describes: it shows the three files agree, and nothing about
+who made them.
 
 This is the truncation case made concrete. Drop entries from the front, re-link
 what remains, and `proof verify` alone reports **INTACT** — correctly, because
@@ -301,17 +466,32 @@ Three things are deliberate:
 
 `--op-vault <vault>` additionally stores the pair in 1Password through the `op`
 CLI, passing the files by reference so the secret never appears in the process
-list, then reads the fingerprint back to confirm what actually landed. If that
-fails, the command says so and leaves you the valid files on disk.
+list, then reads both stored key files back and checks that each is the key it
+generated. If that fails, the command says so and leaves you the valid files on
+disk.
 
-As a library:
+### As a library
 
 ```console
 $ go get github.com/aleutian-ai/proof
 ```
 
-As an MCP server, so an agent can check a chain during a conversation — and,
-if you allow it, commit evidence of its own actions as it works:
+```go
+import "github.com/aleutian-ai/proof/chainformat"
+
+hash, err := chainformat.ComputeChainHashV3(previousHash, globalSeq, ts, contentHash)
+```
+
+v3 is the current format and the one to build against. v2 exists, is still
+verified, and is never rewritten — it bound the *batch* an entry was written in,
+so a chain depended on the API calls that produced it rather than on its own
+contents. v3 binds the entry's position in the chain instead. See
+[D15](docs/decisions.md).
+
+### As an MCP server
+
+An agent can check a chain during a conversation — and, if you allow it, commit
+evidence of its own actions as it works:
 
 ```console
 $ go install github.com/aleutian-ai/proof/cmd/proof-mcp@latest
@@ -511,13 +691,17 @@ another implementation produced them.
 > and the two input forms only the SDKs read (the hosted platform's
 > `{"entries": [...]}` wrapper and camelCase member names).
 >
-> Several vector files were first written by an implementation and not by a
-> script from the spec (`merkle_golden.json`, `v3_golden_capture_request.json`,
-> `anchor_chain_hash_vectors.json`, `chain_vectors.json`,
-> `commitment_vectors.json`); their values have been reproduced independently,
-> but the claim above about expected outputs holds strictly only for the files
-> `scripts/independent-vectors.py`, `scripts/verdict-vectors.py` and
-> `scripts/bundle-vectors.py` write.
+> Who writes each vector file: `scripts/independent-vectors.py`,
+> `scripts/spec-vectors.py`, `scripts/verdict-vectors.py` and
+> `scripts/bundle-vectors.py`, each computing its values in Python from the
+> spec. No Go test writes one. Five files (`merkle_golden.json`,
+> `v3_golden_capture_request.json`, `anchor_chain_hash_vectors.json`,
+> `chain_vectors.json`, `commitment_vectors.json`) were first written by an
+> implementation or by hand; `spec-vectors.py` reproduced the first three byte
+> for byte and every value in the other two before it became their writer, and
+> the last two were then changed on purpose (see
+> [format-spec §10](docs/format-spec.md)). One file,
+> `anchor_v4_canonical_vectors.json`, is still written by no script.
 
 ## Dependencies
 
@@ -529,7 +713,10 @@ $ go list -deps ./xwing ./keywrap | grep -v '^github.com/aleutian-ai/proof'
 ```
 
 That is checkable, and it is checked: [`deps_test.go`](deps_test.go) fails the
-build if any package gains an import outside its allowlist.
+build if any package gains an import outside its allowlist. A package's test
+files are held to the same list plus a second, explicit one, so the table below
+is about what a consumer compiles, and a test cannot bring in a new module
+unnoticed.
 
 | Package | External dependencies |
 |---|---|

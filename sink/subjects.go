@@ -14,6 +14,8 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/aleutian-ai/proof/internal/safebolt"
+
 	"github.com/aleutian-ai/proof/internal/fault"
 )
 
@@ -27,7 +29,7 @@ import (
 // Forward and reverse rows are written, and removed, in ONE transaction, so the
 // index never disagrees with itself. A new pair's rows are written BEFORE its
 // chain gets its first entry, so a chain never exists without its row
-// (docs/AleutianChain/subject_index_design.md, "Crash consistency").
+// (docs/sink-format.md §4.2).
 
 var (
 	forwardBucket = []byte("forward")
@@ -35,14 +37,14 @@ var (
 )
 
 // subjectsStore is the open subject index.
-type subjectsStore struct{ db *bolt.DB }
+type subjectsStore struct{ db *safebolt.DB }
 
 func openSubjects(path string, lockTimeout time.Duration) (*subjectsStore, error) {
 	if err := regularOrAbsent(path); err != nil {
 		return nil, fmt.Errorf("sink: %w", err)
 	}
 	isNew := created(path)
-	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, false))
+	db, err := safebolt.Open(path, 0o600, boltOptions(lockTimeout, false))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
@@ -323,7 +325,7 @@ func openSubjectsReadOnly(path string, lockTimeout time.Duration) (*subjectsStor
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, true))
+	db, err := safebolt.Open(path, 0o600, boltOptions(lockTimeout, true))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
@@ -358,29 +360,42 @@ func rowState(tx *bolt.Tx, chain, v []byte) IndexState {
 }
 
 // indexSnapshot is one read transaction on the subject index: a consistent view
-// for a whole Verify run. A nil snapshot is an absent index: no rows.
-type indexSnapshot struct{ tx *bolt.Tx }
+// for a whole Verify run. A nil snapshot is an absent index: no rows. Every read
+// through it is guarded like the store's own methods: a damaged index is an
+// error (ErrCorrupt), never a row that reads as absent.
+type indexSnapshot struct {
+	db *safebolt.DB
+	tx *bolt.Tx
+}
 
 func (s *subjectsStore) snapshot() (*indexSnapshot, error) {
-	tx, err := s.db.Begin(false)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("sink: read the subject index: %w", err)
 	}
-	return &indexSnapshot{tx: tx}, nil
+	return &indexSnapshot{db: s.db, tx: tx}, nil
 }
 
 func (x *indexSnapshot) close() {
 	if x != nil {
-		_ = x.tx.Rollback()
+		x.db.Rollback(x.tx)
 	}
 }
 
 // state is a chain's row state (rowState).
-func (x *indexSnapshot) state(chain string) IndexState {
+func (x *indexSnapshot) state(chain string) (IndexState, error) {
 	if x == nil {
-		return ""
+		return "", nil
 	}
-	return rowState(x.tx, []byte(chain), x.tx.Bucket(reverseBucket).Get([]byte(chain)))
+	var st IndexState
+	err := x.db.Do(func() error {
+		st = rowState(x.tx, []byte(chain), x.tx.Bucket(reverseBucket).Get([]byte(chain)))
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("sink: read the subject index: %w", err)
+	}
+	return st, nil
 }
 
 // liveChains lists every chain with a live row.
@@ -511,25 +526,31 @@ type indexRow struct {
 
 // reverseAfter returns up to limit reverse rows whose key sorts after `after`
 // ("" from the first): the reverse rows a page at a time.
-func (x *indexSnapshot) reverseAfter(after string, limit int) []indexRow {
+func (x *indexSnapshot) reverseAfter(after string, limit int) ([]indexRow, error) {
 	if x == nil {
-		return nil
-	}
-	c := x.tx.Bucket(reverseBucket).Cursor()
-	var k, v []byte
-	if after == "" {
-		k, v = c.First()
-	} else {
-		k, v = c.Seek([]byte(after))
-		if k != nil && string(k) == after {
-			k, v = c.Next()
-		}
+		return nil, nil
 	}
 	var out []indexRow
-	for ; k != nil && len(out) < limit; k, v = c.Next() {
-		out = append(out, indexRow{key: string(k), state: rowState(x.tx, k, v)})
+	err := x.db.Do(func() error {
+		c := x.tx.Bucket(reverseBucket).Cursor()
+		var k, v []byte
+		if after == "" {
+			k, v = c.First()
+		} else {
+			k, v = c.Seek([]byte(after))
+			if k != nil && string(k) == after {
+				k, v = c.Next()
+			}
+		}
+		for ; k != nil && len(out) < limit; k, v = c.Next() {
+			out = append(out, indexRow{key: string(k), state: rowState(x.tx, k, v)})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sink: read the subject index: %w", err)
 	}
-	return out
+	return out, nil
 }
 
 // badForwardAfter examines up to limit forward rows after the key `after`
@@ -537,28 +558,35 @@ func (x *indexSnapshot) reverseAfter(after string, limit int) []indexRow {
 // bindingOK, the last key examined (the next call's `after`; it names a
 // subject, so it is a cursor only, never shown), and whether the bucket is
 // done.
-func (x *indexSnapshot) badForwardAfter(after []byte, limit int) (bad []string, next []byte, done bool) {
+func (x *indexSnapshot) badForwardAfter(after []byte, limit int) (bad []string, next []byte, done bool, err error) {
 	if x == nil {
-		return nil, nil, true
+		return nil, nil, true, nil
 	}
-	c := x.tx.Bucket(forwardBucket).Cursor()
-	var k, v []byte
-	if after == nil {
-		k, v = c.First()
-	} else {
-		k, v = c.Seek(after)
-		if k != nil && bytes.Equal(k, after) {
-			k, v = c.Next()
+	err = x.db.Do(func() error {
+		c := x.tx.Bucket(forwardBucket).Cursor()
+		var k, v []byte
+		if after == nil {
+			k, v = c.First()
+		} else {
+			k, v = c.Seek(after)
+			if k != nil && bytes.Equal(k, after) {
+				k, v = c.Next()
+			}
 		}
-	}
-	n := 0
-	for ; k != nil && n < limit; k, v = c.Next() {
-		n++
-		next = bytes.Clone(k)
-		i := bytes.IndexByte(k, 0)
-		if i < 0 || !bindingOK(x.tx, string(k[:i]), string(k[i+1:]), v) {
-			bad = append(bad, string(v))
+		n := 0
+		for ; k != nil && n < limit; k, v = c.Next() {
+			n++
+			next = bytes.Clone(k)
+			i := bytes.IndexByte(k, 0)
+			if i < 0 || !bindingOK(x.tx, string(k[:i]), string(k[i+1:]), v) {
+				bad = append(bad, string(v))
+			}
 		}
+		done = k == nil
+		return nil
+	})
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("sink: read the subject index: %w", err)
 	}
-	return bad, next, k == nil
+	return bad, next, done, nil
 }

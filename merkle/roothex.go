@@ -9,14 +9,14 @@ import (
 )
 
 // RootHex computes the RFC-9162 Merkle tree root over hex-encoded leaf content hashes and
-// returns it as lowercase hex (chainlinker_modernization_02f / ADR 003 D3).
+// returns it as lowercase hex.
 //
 // # Description
 //
 // The single reproducible root computation shared by the anchor generator (sign side, for
-// the D6 re-derive-before-sign check), the proof endpoints, and the SDK verifiers. Each
+// the re-derive-before-sign check), the proof endpoints, and the SDK verifiers. Each
 // input is the entry's content_hash column (128-char hex); this decodes each to its 64
-// RAW bytes before leaf-hashing — the hex-decode discipline the ADR pins to keep Go/
+// RAW bytes before leaf-hashing — the hex-decode discipline that keeps Go/
 // Python/JS byte-identical (hashing the ASCII hex instead of the raw bytes is the likeliest
 // cross-language divergence).
 //

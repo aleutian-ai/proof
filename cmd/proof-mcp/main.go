@@ -104,7 +104,7 @@ func run() error {
 	}
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "aleutianchain",
-		Version: "0.3.1",
+		Version: serverVersion(),
 	}, nil)
 
 	if err := registerTools(server, cfg); err != nil {

@@ -17,7 +17,7 @@ import (
 	"github.com/aleutian-ai/proof/store"
 )
 
-// _75d: Verify checks record signatures.
+// Verify checks record signatures.
 
 // recordRing is a record trust source holding the given signers' keys.
 func recordRing(t *testing.T, signers ...*MLDSA65RecordSigner) *anchor.KeyRing {
@@ -155,7 +155,7 @@ func TestVerifyRecords_Failures(t *testing.T) {
 		"entry type relabelled": {func(t *testing.T, s *Sink, chain string, ids []string) {
 			editEntry(t, s, chain, 1, func(e *store.Entry) { e.EntryType = EntryTypeErasure })
 		}, func(cr ChainReport) int { return cr.BadSignatures }, "BAD"},
-		// The envelope is rebuilt from the STORED previous_hash (_75b F1): an
+		// The envelope is rebuilt from the STORED previous_hash: an
 		// edited one fails that entry's signature, even though a verifier taking
 		// the previous entry's hash instead would accept it.
 		"stored previous_hash edited": {func(t *testing.T, s *Sink, chain string, ids []string) {

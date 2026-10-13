@@ -187,7 +187,7 @@ func TestSeedLeakDetector_ActuallyDetects(t *testing.T) {
 	}
 }
 
-// TestSigner_KeyIDMatchesKeyfile is the _38 ↔ _35a seam: an operator must never
+// TestSigner_KeyIDMatchesKeyfile is the keygen ↔ signer seam: an operator must never
 // have to copy a key id by hand from `proof keygen` output into a config.
 func TestSigner_KeyIDMatchesKeyfile(t *testing.T) {
 	s := newTestSigner(t)
@@ -618,7 +618,7 @@ func TestSigner_SignatureDoesNotTransferBetweenAnchors(t *testing.T) {
 	}
 }
 
-// TestSigner_FromAProofKeygenKeyFile is the _38 ↔ _35a seam end to end: a key
+// TestSigner_FromAProofKeygenKeyFile is the keygen ↔ signer seam end to end: a key
 // minted by `proof keygen`, written in the standard PKCS#8 form, loaded back and
 // used to sign. If this breaks, the CLI and the library disagree about what a
 // key file is.

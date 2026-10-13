@@ -4,6 +4,8 @@
 package main
 
 import (
+	ctx "context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -12,26 +14,36 @@ import (
 	"strings"
 
 	"github.com/aleutian-ai/proof/keyfile"
+	"github.com/aleutian-ai/proof/sink"
 )
 
 // cmdSinkInit makes a sink's record and checkpoint keys, the recommended way:
-// two ML-DSA-65 keys, one per role (docs/AleutianChain/sink_init_design.md).
+// two ML-DSA-65 keys, one per role.
 //
 // # Description
 //
 // The record key is online in the writer (every commit and erase signs with
 // it); the checkpoint key is used only to checkpoint and can be kept elsewhere,
 // so a leaked record key cannot also unpin what checkpoints pinned. Keys are
-// written beside the sink folder, never inside it (the folder is what gets
-// shared). With --op-vault the checkpoint key goes to 1Password and its private
-// file is removed. It reuses keygen's generation, self-test and 1Password
-// storage, and never touches the sink folder: the first commit creates it.
+// written beside the sink folder, never inside it: the folder holds the secret
+// files, and parts of it are handed to others. With --op-vault the checkpoint
+// key goes to 1Password and its private file is removed. It reuses keygen's
+// generation, self-test and 1Password storage.
+//
+// It also puts the sink into signing mode (sink.RequireRecordSigning), creating
+// the folder if needed: a sink signs from its first commit or never, so without
+// this a first commit that forgot --record-key would make the sink unsigned for
+// good. With the mode set, that commit is refused instead. This is done BEFORE
+// any key is generated: a sink that already holds unsigned records is refused
+// with nothing written.
 //
 // # Outputs
 //
 //   - int: exitOK; exitUsage for a refusal (keys inside the sink folder, keys
-//     already there); exitIOError when generation or 1Password fails (files
-//     already written are kept)
+//     already there, a sink that already holds unsigned records); exitBusy
+//     when another process holds the folder; exitIOError when generation or
+//     1Password fails (files already written are kept, and the sink stays in
+//     signing mode)
 func cmdSinkInit(args []string, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("sink init", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -61,7 +73,7 @@ func cmdSinkInit(args []string, stdout, stderr *os.File) int {
 		return exitIOError
 	} else if inside {
 		fmt.Fprintln(stderr, "proof sink init: --keys-dir is the sink folder or inside it; keys must stay "+
-			"out of the folder you share")
+			"out of the sink folder (parts of it are handed to others, and it is what gets backed up)")
 		return exitUsage
 	}
 	if *oneKey && *opVault != "" {
@@ -100,6 +112,26 @@ func cmdSinkInit(args []string, stdout, stderr *os.File) int {
 				"first (a second would make reading it ambiguous)\n", *opVault, title)
 			return exitUsage
 		}
+	}
+	// The sink signs from here on: set before any key exists, so a sink that
+	// cannot sign (it already holds unsigned records) is refused with nothing
+	// generated, and a first commit that forgets --record-key is refused too.
+	s, err := sink.Open(*dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "proof sink init: %v\n", err)
+		return exitIOError
+	}
+	switch err := s.RequireRecordSigning(ctx.Background()); {
+	case errors.Is(err, sink.ErrSinkNotSigning):
+		fmt.Fprintf(stderr, "proof sink init: %s already holds unsigned records, and a sink signs from its "+
+			"first commit or never. Start a new sink (another --dir) to sign its records\n", *dir)
+		return exitUsage
+	case errors.Is(err, sink.ErrBusy):
+		fmt.Fprintf(stderr, "proof sink init: %v\n", err)
+		return exitBusy
+	case err != nil:
+		fmt.Fprintf(stderr, "proof sink init: %v\n", err)
+		return exitIOError
 	}
 	if fi, err := os.Stat(*keysDir); err == nil && fi.Mode().Perm()&0o077 != 0 {
 		fmt.Fprintf(stderr, "warning: %s is accessible to others (mode %04o); 0700 is advised for a "+
@@ -183,16 +215,19 @@ func printNext(out *os.File, dir, recPriv, recPub, cpKey, cpPub, opVault string)
 	if opVault == "" {
 		cpKey = q(cpKey)
 	}
+	fmt.Fprintf(out, "\n%s now signs its records: a commit or erase without --record-key is refused.\n", q(dir))
 	fmt.Fprintf(out, "\nnext:\n")
 	fmt.Fprintf(out, "  proof sink commit     --dir %s … --record-key %s\n", q(dir), q(recPriv))
 	fmt.Fprintf(out, "  proof sink erase      --dir %s … --record-key %s\n", q(dir), q(recPriv))
-	fmt.Fprintf(out, "  proof sink checkpoint --dir %s --key %s\n", q(dir), cpKey)
+	fmt.Fprintf(out, "  proof sink checkpoint --dir %s --key %s --record-trust %s\n", q(dir), cpKey, q(recPub))
 	fmt.Fprintf(out, "  proof sink verify     --dir %s --key %s --record-trust %s\n", q(dir), q(cpPub), q(recPub))
 	if opVault != "" {
 		fmt.Fprintln(out, "(the checkpoint command reads the key from 1Password, with no copy on disk; "+
 			"<( ) needs bash or zsh)")
 	}
-	fmt.Fprintln(out, "Keep the keys out of version control, and out of the sink folder (which you share).")
+	fmt.Fprintln(out, "Keep the keys out of version control, and out of the sink folder. The folder is not "+
+		"something to hand over whole: evidence.db.secrets, .sources and .subjects in it are secret. Only "+
+		"evidence.db, evidence.db.signatures and anchors/ are meant to be given to others.")
 }
 
 // within reports whether path is dir itself or inside it. Both are made

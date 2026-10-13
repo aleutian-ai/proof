@@ -12,24 +12,22 @@ import (
 	"github.com/aleutian-ai/proof/fixtures"
 )
 
-// Cross-implementation golden vectors for chain linkage.
+// Cross-implementation vectors for chain linkage, format v2.
 //
-// # Why these vectors and not freshly generated ones
+// # Who writes them
 //
-// A fixture baked from this module would prove only that the encoder is
-// deterministic — it would agree with itself by construction and catch nothing.
-// These vectors come from the JavaScript verifier and were independently
-// confirmed against the Go producer, so reproducing them is evidence of
-// agreement between implementations that were written separately.
+// scripts/spec-vectors.py computes every expected hash in Python from
+// docs/format-spec.md §2.3. Nothing in this module writes the file, so
+// reproducing it is agreement between two implementations written separately,
+// not an encoder agreeing with itself.
 //
-// # A caution about the other copies
+// # Every valid case goes through the checked function
 //
-// `chain_vectors.json` exists in three places upstream. Only the JavaScript copy
-// is real: the Go and Python SDK copies hold fabricated 64-char placeholders
-// (SHA-256 length for a SHA-512 chain) that mismatch the implementation on every
-// vector, and neither SDK reads its own copy. If these vectors are ever
-// refreshed, take them from a source that has been checked against a running
-// implementation — not from whichever file is nearest.
+// The content hashes are 128 hex characters, or a well-formed tombstone value,
+// as §2.3 requires. Two of the three cases used to carry 64-hex content hashes,
+// which [chainformat.ComputeChainHash] refuses; the test passed only because it
+// called the unchecked function. A vector the checked API refuses is not a
+// vector of the format.
 //
 // Deliberately an external test package: everything below goes through the
 // public API, so a vector that needs an unexported helper is a signal the
@@ -62,8 +60,9 @@ func loadChainVectors(t *testing.T) []chainVector {
 // vector byte-for-byte.
 //
 // This is the load-bearing test of the package: a failure means this
-// implementation and the JavaScript verifier no longer agree on what a chain
-// hash is, and chains produced by one would be reported broken by the other.
+// implementation and the spec's reference computation no longer agree on what
+// a chain hash is, and chains produced by one would be reported broken by
+// another implementation held to the same file.
 func TestChainVectors_Reproduce(t *testing.T) {
 	t.Parallel()
 
@@ -76,8 +75,11 @@ func TestChainVectors_Reproduce(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse timestamp %q: %v", v.Timestamp, err)
 			}
-			got := chainformat.ComputeChainHashUnchecked(
+			got, err := chainformat.ComputeChainHash(
 				v.PreviousHash, v.RunID, v.SequenceNum, ts, v.ContentHash)
+			if err != nil {
+				t.Fatalf("the checked function refused a valid vector: %v", err)
+			}
 
 			if got != v.ExpectedHash {
 				t.Errorf("chain hash diverges from the cross-language contract:\n"+

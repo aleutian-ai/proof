@@ -37,8 +37,9 @@
 // # Idempotency
 //
 // A Record may carry a Source: its position upstream, including the source's
-// incarnation. A record whose Source is already committed on its chain is
-// skipped, across calls and across crashes. That is what lets a consumer
+// incarnation. A record whose Source is already committed on its chain, with
+// the same content, is skipped, across calls and across crashes (with other
+// content it is refused: ErrSourceConflict). That is what lets a consumer
 // acknowledge upstream only after committing, without committing a redelivery
 // twice. Erasing a subject deletes its chains' sources, and a later event for
 // the subject goes to a new chain, so a redelivery after an erasure is
@@ -71,9 +72,12 @@
 //   - One process at a time: the files are locked while in use. Calls on one
 //     Sink queue.
 //   - Checkpoints prove what they cover only if they are kept where the writer
-//     cannot rewrite them. A folder cannot prove none were deleted, and an
-//     erasure made after the last checkpoint is only as trustworthy as the
-//     folder until a checkpoint covers it.
+//     cannot rewrite them. A folder cannot prove none were deleted (unless
+//     their heads are kept outside it: CheckpointHeads), and an erasure made
+//     after the last checkpoint is only as trustworthy as the folder until a
+//     checkpoint covers it. Checkpoint signs over such an erasure only when
+//     the caller confirms it made it (ConfirmErasures) or its record signature
+//     verifies.
 //   - The bolt store only.
 package sink
 
@@ -84,6 +88,8 @@ import (
 	"reflect"
 	"sync"
 	"time"
+
+	"github.com/aleutian-ai/proof/internal/safebolt"
 )
 
 const (
@@ -222,6 +228,43 @@ func WithRecordSigningConcurrency(n int) Option {
 	}
 }
 
+// WithoutIntegrityCheck skips the check a Sink makes before it first opens
+// each of the folder's files for writing.
+//
+// # Description
+//
+// The first time Commit, an erase call, Repair or RequireRecordSigning runs on
+// a Sink, each existing file of the folder is read through once, read-only,
+// and the call is refused with ErrCorrupt if one is damaged: a clean refusal
+// before anything is written. Once per file per Sink, not per call. It takes
+// time linear in the files: about 0.1 s per GiB when they are in the page
+// cache, and as long as the disk takes when they are not.
+//
+// Skipping it is safe. A damaged file is then reported by the first read or
+// write that meets the damage, also as ErrCorrupt, but possibly part-way
+// through the call.
+//
+// # Outputs
+//
+//   - Option: to pass to Open
+//
+// # Example
+//
+//	s, err := sink.Open("sink-data", sink.WithoutIntegrityCheck())
+//
+// # Limitations
+//
+//   - Without the check a call can fail after it has written to other files:
+//     what it leaves is what a crash at that point leaves.
+//
+// # Assumptions
+//
+//   - A process that opens a new Sink per call (a command-line tool) prefers
+//     not to read every file each time.
+func WithoutIntegrityCheck() Option {
+	return func(k *Sink) { k.noCheck = true }
+}
+
 // Record is one event to commit.
 type Record struct {
 	// Class is the kind of evidence: payments, auth, events. It is in the clear
@@ -240,10 +283,11 @@ type Record struct {
 	// again. It is stored permanently, so it is a position, NEVER content or
 	// anything identifying a person. At most MaxSourceBytes.
 	//
-	// A Source must NEVER be reused for a different record: a reused one is
-	// taken as already committed, and the new record is dropped. Include
-	// whatever makes a position unique for good. For a stream that can be
-	// deleted and recreated, that means its incarnation, not just its sequence.
+	// A Source must NEVER be reused for a different record: a record whose
+	// Source is already committed with other content is refused
+	// (ErrSourceConflict), every time it is delivered. Include whatever makes a
+	// position unique for good. For a stream that can be deleted and
+	// recreated, that means its incarnation, not just its sequence.
 	Source string
 }
 
@@ -261,8 +305,8 @@ type Outcome struct {
 	// Only then is it safe to acknowledge upstream.
 	Committed bool `json:"committed"`
 	// Duplicate is true when the record's Source was already committed on its
-	// chain, or repeated earlier in the same call: it was skipped, not appended
-	// again. A reused Source is taken as the same record (see Record.Source).
+	// chain with this same content, or repeated earlier in the same call: it
+	// was skipped, not appended again.
 	Duplicate bool `json:"duplicate,omitempty"`
 }
 
@@ -272,8 +316,9 @@ type Checkpointed struct {
 	File    string `json:"file,omitempty"`    // empty when Problem is set
 	Entries int64  `json:"entries,omitempty"` // entries the checkpoint covers
 	// Problem, when set, is why this chain was NOT checkpointed: a broken chain,
-	// a malformed or unverifiable series, an id this sink never writes. The
-	// chain id is reported raw; quote it before printing.
+	// a malformed or unverifiable series, an erasure nothing confirms, a series
+	// behind its recorded head, an id this sink never writes. The chain id is
+	// reported raw; quote it before printing.
 	Problem string `json:"problem,omitempty"`
 }
 
@@ -401,8 +446,22 @@ type EraseResult struct {
 	// chain's previous erasure (their content and nonces deleted).
 	Events int `json:"events"`
 	// ErasureEntryID is the entry that records the erasure on the chain. Empty
-	// when the chain had no entries (see Leftovers).
+	// when the chain had no entries (see Leftovers). Pass the result to
+	// ConfirmErasures to checkpoint the erasure in the same process. It
+	// identifies the chain: never log it beside the subject.
 	ErasureEntryID string `json:"erasure_entry_id,omitempty"`
+	// Relinked is true when an erase call (any of the three) found the chain
+	// already ending with an erasure entry while the index still bound a
+	// subject to it: an index restored from before an erasure, or an erasure
+	// record written into the evidence file by something else. The subject was
+	// forgotten and the content deleted, but this sink did not make that
+	// erasure entry in this call or in one it knows was interrupted.
+	// ConfirmErasures ignores such a result; vouch for it only if you know
+	// where the erasure came from (ConfirmErasedChains).
+	Relinked bool `json:"relinked,omitempty"`
+	// adopted: the chain already ended with a genuine erasure entry when it was
+	// erased; that entry was kept, and none appended.
+	adopted bool
 	// Leftovers counts what was removed for a chain with NO entries: content
 	// and nonce rows, and source positions, left by a first commit that stopped
 	// before its append. No erasure entry is written: there is no chain to hold it.
@@ -445,6 +504,10 @@ type Sink struct {
 	// recordSigner signs every entry written, when set (WithRecordSigner).
 	recordSigner    RecordSigner
 	signConcurrency int
+	// checked remembers the files this Sink has read through before writing
+	// (see WithoutIntegrityCheck); noCheck turns that off.
+	checked safebolt.Checker
+	noCheck bool
 	// optErr is the first invalid option, returned by Open.
 	optErr error
 }

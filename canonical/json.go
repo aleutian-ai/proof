@@ -14,8 +14,8 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// MaxDepth caps recursion depth inside writeSorted. Per E1 crypto
-// review finding H2: an unbounded recursion blows the goroutine stack
+// MaxDepth caps recursion depth inside writeSorted.
+// An unbounded recursion blows the goroutine stack
 // on adversarial-depth input. Manifest nesting is typically 4–5
 // levels deep; 64 is comfortable headroom that still cuts off any
 // stack-blow vector.
@@ -25,8 +25,8 @@ const MaxDepth = 64
 var ErrMaxDepthExceeded = errors.New("canonical: input nesting exceeds MaxDepth")
 
 // ErrFloatNotAllowed is returned when a float value reaches
-// writeSorted. The manifest schema deliberately avoids floats per
-// Phase 0 spec §1.3 — float canonicalization is under-specified
+// writeSorted. The manifest schema deliberately avoids floats:
+// float canonicalization is under-specified
 // across Go / Python / JS (Go emits "1" for 1.0, Python emits
 // "1.0"). Rather than relying on producer-side discipline, we fail
 // loudly here so a future field can't silently break cross-language
@@ -34,7 +34,7 @@ var ErrMaxDepthExceeded = errors.New("canonical: input nesting exceeds MaxDepth"
 var ErrFloatNotAllowed = errors.New("canonical: float values are not supported (use string or int64)")
 
 // ErrNotNFC is returned when a string value is not in Unicode Normalization
-// Form C. Per the 4-agent review (H7): different host filesystems / input
+// Form C. Different host filesystems / input
 // methods can deliver the same logical text in NFC or NFD form, producing
 // divergent canonical bytes — a silent verification failure. Like
 // ErrFloatNotAllowed this is a fail-closed discipline: the encoder refuses
@@ -43,7 +43,7 @@ var ErrFloatNotAllowed = errors.New("canonical: float values are not supported (
 var ErrNotNFC = errors.New("canonical: string is not in Unicode NFC form")
 
 // ErrLoneSurrogate is returned when a string contains an unpaired UTF-16
-// surrogate (U+D800–U+DFFF). Per the 4-agent review (C2): Go, Python, and
+// surrogate (U+D800–U+DFFF). Go, Python, and
 // JS encoders produce three different outputs for the same lone-surrogate
 // input — fail-closed before that divergence reaches the signature path.
 var ErrLoneSurrogate = errors.New("canonical: string contains unpaired UTF-16 surrogate")

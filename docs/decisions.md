@@ -62,6 +62,13 @@ and load-bearing for `canonical`'s arbitrary-JSON path.
 
 **Decided:** pin `bbolt` to v1.4.3 and `x/sys` to v0.30.0.
 
+**Updated 2026-10-13:** `x/sys` is now v0.41.0, with `x/crypto` at v0.48.0 and
+`x/text` at v0.34.0. Those are the last releases of each that declare
+`go 1.24.0` (`x/crypto` v0.49.0 and `x/sys` v0.42.0 declare 1.25.0), so the
+floor is unchanged. The move was for `x/crypto`: v0.30.0 is below the fixes for
+two advisories in its `ssh` package. This module imports no `ssh` package, but
+a scanner that reads `go.mod` reports the module version, not the imports.
+
 **Why:** `bbolt@latest` (v1.5.0) requires Go 1.25.0, and `go mod tidy` **silently
 rewrites the module's `go` directive** to match. That raises the toolchain floor
 for every consumer — including one who imports only `xwing` and will never touch
@@ -162,7 +169,7 @@ anyone else.
 
 Sealing also keeps additions non-breaking: callers only hold the interface.
 
-**Not just design tidiness** — `aleutianchain_16` requires the published SDK to
+**Not just design tidiness** — the published Go verification SDK is planned to
 delegate to this package while keeping `CanonicalBytesV3(entry ChainEntryV3)` as
 its API. Without the interface here, the SDK keeps its own dispatch, keeps its
 own encoder, and the deduplication never happens.
@@ -319,8 +326,8 @@ whole premise of an offline verifier is that the person running it does not have
 to take the operator's word for anything, and a hardcoded root set quietly
 reintroduces exactly that.
 
-Aleutian's keys already ship in `sdk/verification-go`, which is already Apache-2.0
-and already the right home for them.
+Aleutian's keys already ship in Aleutian's Go verification SDK, which is already
+Apache-2.0 and already the right home for them.
 
 **Consequence:** verifying an Aleutian anchor takes one extra step — build a
 `KeyRing` from keys you obtained deliberately. `Example_verifyingWithYourOwnKeys`
@@ -360,14 +367,14 @@ change after adoption would be a migration for everyone.
 chains. v3 is a separate domain-separated format, chosen at write time, never a
 reinterpretation of existing bytes.
 
-**Not decided here:** algorithm identifiers in anchors and wrapped keys (see
-`aleutianchain_32b`/`_33b`) and C2SP checkpoint compatibility. Both were
-deliberately deferred rather than bundled in.
+**Not decided here:** algorithm identifiers in anchors and wrapped keys, and
+C2SP checkpoint compatibility. Both were deliberately deferred rather than
+bundled in.
 
 **Naming:** the `aleutian.` prefix stays. A domain separator has to be globally
 unique, and a rename buys nothing while costing a second format version.
 
-**Implemented 2026-09-23** (`aleutianchain_40`). Shape of the change:
+**Implemented 2026-09-23.** Shape of the change:
 
 - `chainformat.ComputeChainHashV3` sits BESIDE the v2 function; the v2
   preimage is a stored-data contract and was not edited.

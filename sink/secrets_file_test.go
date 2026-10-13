@@ -17,9 +17,11 @@ import (
 	"github.com/aleutian-ai/proof/linker"
 )
 
-// _74c review fixes.
+// Content and nonces are rows in the secrets file; checkpoints are files.
+// These tests cover symlinked checkpoint folders, an erasure or a commit that
+// fails part-way, and rows in the secrets file the sink's verbs never write.
 
-// #1: checkpoints are still files. A chain's anchors folder that is a symlink,
+// Checkpoints are files. A chain's anchors folder that is a symlink,
 // to outside the sink or to another chain's folder, is refused: never written
 // through, and reported by Verify. So is anchors/ itself as a symlink.
 func TestAnchorsSymlinkedFolders(t *testing.T) {
@@ -96,7 +98,7 @@ func listAll(t *testing.T, dir string) []string {
 	return out
 }
 
-// #2 (E1): an erasure whose file rewrite failed leaves its chains PENDING, so
+// An erasure whose file rewrite failed leaves its chains PENDING, so
 // Verify reports them and says to resume; the resume completes the rewrite.
 func TestErase_CompactionFailureLeavesChainsPending(t *testing.T) {
 	ctx := context.Background()
@@ -118,7 +120,7 @@ func TestErase_CompactionFailureLeavesChainsPending(t *testing.T) {
 	}
 }
 
-// #3: a failed Commit whose cleanup ALSO failed keeps the new pairs' index rows,
+// A failed Commit whose cleanup ALSO failed keeps the new pairs' index rows,
 // so erasing the subject still reaches the content left behind.
 func TestCommit_CleanupFailureKeepsRowsErasable(t *testing.T) {
 	ctx := context.Background()
@@ -167,7 +169,7 @@ func contentRows(t *testing.T, s *Sink, chain string) []string {
 	return ids
 }
 
-// #4: the erasure's append reports an error although it committed. The record
+// The erasure's append reports an error although it committed. The record
 // row is kept (not deleted), so the chain verifies.
 type appendLandedThenFailed struct{ real *linker.Linker }
 
@@ -202,7 +204,7 @@ func TestEraseChain_AppendThatLandedKeepsTheRecord(t *testing.T) {
 	}
 }
 
-// #4, repair: a genuine erasure whose record row is missing gets it back on the
+// A genuine erasure whose record row is missing gets it back on the
 // next erasure of the chain (it is public and fixed).
 func TestEraseChain_RestoresAMissingRecord(t *testing.T) {
 	ctx := context.Background()
@@ -241,7 +243,7 @@ func markPending(t *testing.T, s *Sink, chain string) {
 	}
 }
 
-// #8: a row keyed off the sink's layout (no entry id) is reported, by count;
+// A row keyed off the sink's layout (no entry id) is reported, by count;
 // a bare-chain key is also removed by erasure; a nonce-only orphan on a live
 // chain is reported; a nonce beside an erasure record is flagged.
 func TestVerify_RowsOffTheKeyLayout(t *testing.T) {
@@ -297,7 +299,7 @@ func TestVerify_NonceBesideAnErasureRecord(t *testing.T) {
 	}
 }
 
-// #9: a row under an entry id this sink never assigns is counted, never shown.
+// A row under an entry id this sink never assigns is counted, never shown.
 func TestVerify_InvalidEntryIDsAreNotPrinted(t *testing.T) {
 	s, chains := multi(t)
 	chain := chains["payments/u-2"]
@@ -315,7 +317,7 @@ func TestVerify_InvalidEntryIDsAreNotPrinted(t *testing.T) {
 	}
 }
 
-// #10: a nonce of the wrong length opens nothing (and is not copied whole).
+// A nonce of the wrong length opens nothing (and is not copied whole).
 func TestVerify_WrongLengthNonce(t *testing.T) {
 	s, chains := multi(t)
 	chain := chains["payments/u-2"]
@@ -328,7 +330,7 @@ func TestVerify_WrongLengthNonce(t *testing.T) {
 	}
 }
 
-// #12: leftover compaction copies are removed even when the file is gone.
+// Leftover compaction copies are removed even when the file is gone.
 func TestCompactFile_LeftoversWithoutTheFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret")
@@ -344,7 +346,7 @@ func TestCompactFile_LeftoversWithoutTheFile(t *testing.T) {
 	}
 }
 
-// #13: a secrets file without its buckets is refused, not read.
+// A secrets file without its buckets is refused, not read.
 func TestVerify_RefusesASecretsFileWithoutBuckets(t *testing.T) {
 	s, _, ring := setup(t)
 	if err := os.Remove(s.secretsPath()); err != nil {
@@ -360,7 +362,7 @@ func TestVerify_RefusesASecretsFileWithoutBuckets(t *testing.T) {
 	}
 }
 
-// #13: a symlinked secrets file is refused by every verb, not only Commit.
+// A symlinked secrets file is refused by every verb, not only Commit.
 func TestSymlinkedSecretsFileIsRefusedEverywhere(t *testing.T) {
 	ctx := context.Background()
 	verbs := map[string]func(s *Sink) error{
@@ -389,7 +391,7 @@ func TestSymlinkedSecretsFileIsRefusedEverywhere(t *testing.T) {
 	}
 }
 
-// #15: every chain with secrets rows is found, not only the first in key order.
+// Every chain with secrets rows is found, not only the first in key order.
 // Rows for two chains the evidence file does not hold (sorting after the real
 // ones) are both reported as removed.
 func TestVerify_FindsEveryChainWithRows(t *testing.T) {
@@ -408,7 +410,7 @@ func TestVerify_FindsEveryChainWithRows(t *testing.T) {
 	}
 }
 
-// #10, at the store: a wrong-length nonce comes back empty (present, but opens
+// At the store: a wrong-length nonce comes back empty (present, but opens
 // nothing), and oversized content is flagged, not copied.
 func TestSecretsGet_SizeChecks(t *testing.T) {
 	s, chains := multi(t)

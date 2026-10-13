@@ -65,7 +65,7 @@ func export(t *testing.T, s *Sink, sel ExportSelection) ([]byte, ExportSummary, 
 
 // decodeStrict decodes with unknown members refused. It is NOT a full
 // bundle-format §3 check (encoding/json folds case and keeps duplicate keys);
-// the conformance vectors (_72c) and the verifiers hold that line.
+// the conformance vectors and the verifiers hold that line.
 func decodeStrict(t *testing.T, raw []byte) bundleDoc {
 	t.Helper()
 	dec := json.NewDecoder(bytes.NewReader(raw))

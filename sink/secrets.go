@@ -12,6 +12,8 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/aleutian-ai/proof/internal/safebolt"
 )
 
 // The secrets file (evidence.db.secrets, SECRET) holds the two halves of what
@@ -39,7 +41,7 @@ type secret struct {
 }
 
 // secretsStore is the open secrets file.
-type secretsStore struct{ db *bolt.DB }
+type secretsStore struct{ db *safebolt.DB }
 
 // openSecrets opens (creating if needed) the secrets file for writing.
 func openSecrets(path string, lockTimeout time.Duration) (*secretsStore, error) {
@@ -47,7 +49,7 @@ func openSecrets(path string, lockTimeout time.Duration) (*secretsStore, error) 
 		return nil, fmt.Errorf("sink: %w", err)
 	}
 	isNew := created(path)
-	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, false))
+	db, err := safebolt.Open(path, 0o600, boltOptions(lockTimeout, false))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
@@ -80,7 +82,7 @@ func openSecretsReadOnly(path string, lockTimeout time.Duration) (*secretsStore,
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, true))
+	db, err := safebolt.Open(path, 0o600, boltOptions(lockTimeout, true))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
@@ -257,6 +259,58 @@ func (s *secretsStore) eraseChain(chain string, keep map[string][]byte) (int, er
 		return nil
 	})
 	return n, err
+}
+
+// unmatched counts, and with remove deletes (in ONE transaction), the content
+// and nonce rows of a chain whose entry id isEntry does not know: rows no entry
+// of the chain accounts for. A row keyed by the bare chain id is left to
+// erasure.
+func (s *secretsStore) unmatched(chain string, isEntry func(id string) bool, remove bool) (content, nonces int, err error) {
+	scan := func(tx *bolt.Tx) error {
+		content, nonces = 0, 0
+		for _, name := range [][]byte{contentBucket, noncesBucket} {
+			n, err := unmatchedIn(tx.Bucket(name), chain, isEntry, remove)
+			if err != nil {
+				return err
+			}
+			if bytes.Equal(name, contentBucket) {
+				content = n
+			} else {
+				nonces = n
+			}
+		}
+		return nil
+	}
+	if remove {
+		err = s.db.Update(scan)
+	} else {
+		err = s.db.View(scan)
+	}
+	return content, nonces, err
+}
+
+// unmatchedIn counts, and with remove deletes, the rows of one bucket keyed
+// chain ‖ 0x00 ‖ id whose id isEntry does not know.
+func unmatchedIn(b *bolt.Bucket, chain string, isEntry func(id string) bool, remove bool) (int, error) {
+	prefix := rowKey(chain, "")
+	var doomed [][]byte
+	n := 0
+	c := b.Cursor()
+	for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+		if isEntry(string(k[len(prefix):])) {
+			continue
+		}
+		n++
+		if remove {
+			doomed = append(doomed, bytes.Clone(k))
+		}
+	}
+	for _, k := range doomed {
+		if err := b.Delete(k); err != nil {
+			return 0, fmt.Errorf("sink: delete a leftover row: %w", err)
+		}
+	}
+	return n, nil
 }
 
 // keyCursor is a position in a scan over one or more buckets.

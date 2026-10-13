@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-// TestErase is the ticket's erasure criterion: the erased chain still verifies,
+// TestErase is the erasure criterion: the erased chain still verifies,
 // its events cannot be opened, and the other chains are unaffected.
 func TestErase(t *testing.T) {
 	ctx := context.Background()
@@ -61,7 +61,9 @@ func TestErase(t *testing.T) {
 	if fresh == old {
 		t.Fatal("a returning subject was committed to its erased chain")
 	}
-	if _, err := s.Checkpoint(ctx, signer, nil); err != nil {
+	// Confirmed with the result the erase call returned: Checkpoint does not sign
+	// over an erasure it cannot tell the sink made.
+	if _, err := s.Checkpoint(ctx, signer, nil, ConfirmErasures(res)); err != nil {
 		t.Fatal(err)
 	}
 	r = mustVerify(t, s, ring)
@@ -125,7 +127,7 @@ func TestErase_RemovesLeftovers(t *testing.T) {
 	mustVerify(t, s, ring)
 }
 
-// TestErase_LeftoversOfAnInterruptedFirstCommit (review 2.2): a first commit
+// TestErase_LeftoversOfAnInterruptedFirstCommit: a first commit
 // that stopped before its append leaves content, a nonce and a source position,
 // but no entries. Erase removes all three, writes no erasure entry, and Verify
 // no longer reports a removed chain.

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// _75d: record signing through the CLI.
+// Record signing through the CLI.
 func TestSink_RecordSigning(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sink")
 	cpPriv, cpPub := sinkKeys(t)
@@ -65,7 +65,14 @@ func TestSink_RecordSigning(t *testing.T) {
 	}
 
 	// R7: a separate checkpoint key is not warned about, on this signing sink.
-	code, _, errs = sinkRun(t, "", "checkpoint", "--dir", dir, "--key", cpPriv)
+	// The chain ends with an erasure no checkpoint covers: checkpoint alone does
+	// not sign over it, and with the record public key (the erasure entry is
+	// signed) it does.
+	if code, out, _ := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", cpPriv); code != exitBroken ||
+		!strings.Contains(out, "NOT checkpointed") || !strings.Contains(out, "--record-trust") {
+		t.Fatalf("checkpoint over an unconfirmed erasure: exit %d\n%s", code, out)
+	}
+	code, _, errs = sinkRun(t, "", "checkpoint", "--dir", dir, "--key", cpPriv, "--record-trust", recPub)
 	if code != exitOK || strings.Contains(errs, "also signs") {
 		t.Fatalf("checkpoint with a separate key: exit %d\n%s", code, errs)
 	}

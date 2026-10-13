@@ -10,13 +10,13 @@ import (
 	"strings"
 )
 
-// Frontier is the compact RFC 9162 Merkle frontier (chainlinker_modernization_02e): the
+// Frontier is the compact RFC 9162 Merkle frontier: the
 // O(log n) perfect-subtree roots on a tree's right edge. It lets the root be maintained
 // incrementally (Append is amortized O(1)) instead of recomputing from all leaves, and it
 // serializes compactly for persistence alongside chain_states.
 //
 // The frontier is NOT independently trusted: the anchor generator re-derives the root from
-// audit_entries before signing (ADR 003 D6), and the frontier is fully recoverable from
+// audit_entries before signing, and the frontier is fully recoverable from
 // audit_entries by FrontierFromLeaves. It is an accelerator, never the source of truth.
 //
 // Not safe for concurrent use; callers serialize appends per tenant (single-writer).
@@ -81,12 +81,12 @@ func (f *Frontier) Root() []byte {
 
 // FrontierFromLeaves deterministically rebuilds a frontier from ordered leaf DATA
 // (raw content_hash bytes in global_seq order) — the crash-recovery / from-audit_entries
-// path (ADR 003 D5). Each datum is leaf-hashed then appended.
+// path. Each datum is leaf-hashed then appended.
 //
 // # Assumptions
 //
 //   - leaves are the INHERITED content_hash values (unchanged by GDPR erasure), read in
-//     global_seq order; the resulting root is therefore erasure-stable (ADR 003 D3).
+//     global_seq order; the resulting root is therefore erasure-stable.
 func FrontierFromLeaves(leaves [][]byte) *Frontier {
 	f := NewFrontier()
 	for _, d := range leaves {

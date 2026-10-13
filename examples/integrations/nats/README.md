@@ -21,6 +21,16 @@ Checkpoint, verify and erase are `proof sink`'s, run on the same folder. Every
 message is committed under one class, `-class` (default `events`), checked at
 startup.
 
+## The demo broker is not a deployment recipe
+
+`run.sh` starts one NATS server in a container with JetStream on and nothing
+else configured: no TLS, no authentication, no accounts, and the port published
+on every interface of the host (`-p 4222`). Anyone who can reach that port can
+publish to the stream and read it. That is acceptable for a demo that runs for
+a minute and deletes the container, and for nothing else. A real deployment
+needs TLS, client authentication, and permissions that let only the producers
+publish to the evidence subjects; none of that is shown here.
+
 ## Run it
 
 ```sh

@@ -105,15 +105,19 @@ Fixtures are embedded so a change becomes a version bump visible in a consumer's
 directly.
 
 **Never regenerate a cross-language fixture from this module's own code.** That
-is circular — it proves only that the encoder is deterministic. Take vectors from
-an independently written implementation and confirm them against a second one.
+is circular — it proves only that the encoder is deterministic. Compute the
+expected values in a Python script under `scripts/`, from `docs/format-spec.md`
+and with the standard library only, and have the script write both the file and
+its `fixtures/MANIFEST.json` entry (`scripts/spec-vectors.py` is the pattern).
+No Go test writes a vector file; `scripts/release-check.sh` reruns every script
+and fails if a file changes.
 
 As of 2026-09-26 this is enforced rather than merely advised:
 `fixtures/MANIFEST.json` pins every vector's SHA-256, and the Python and JS
 suites check their vendored copies against it. Verify any copy with:
 
 ```console
-$ ./scripts/sync-vectors.sh --check ../AleutianEnterprise/sdk/testdata
+$ ./scripts/sync-vectors.sh --check <path-to-an-sdk>/testdata
 ```
 
 ### Change something that affects hashed bytes
@@ -154,6 +158,10 @@ go get <dep> && cat go.mod          # did the `go` line move?
       and JS suites to fail until they are synced — that failure is the contract
       working, not an obstacle (see `docs/decisions.md` D18)
 - [ ] `docs/format-spec.md` matches the code if hashed bytes changed
+- [ ] A dependency was added, removed or bumped: rerun
+      `./scripts/third-party-licenses.sh` and commit `licenses/`
+- [ ] `./scripts/release-check.sh <sdk>/testdata` passes (it runs the lines
+      above, on this machine and on Linux)
 - [ ] `README.md` status table matches what is actually built
 - [ ] No overclaiming: tamper-*evident* not tamper-proof; *inside* the FIPS
       module boundary is not FIPS *certified*

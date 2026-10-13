@@ -32,8 +32,7 @@ import (
 // encoder's line width while still refusing a file that is obviously not a key.
 //
 // The previous bound was anchor.PublicKeySize+1 — correct for RAW bytes, and the
-// reason this server could not read a single key `proof keygen` produced
-// (aleutianchain_54).
+// reason this server could not read a single key `proof keygen` produced.
 const maxPublicKeyPEMBytes = 4 << 10
 
 // trustedKey is a public key the human bound to a trust level at launch.
@@ -119,7 +118,7 @@ func parseTrustedKey(arg string) (trustedKey, error) {
 //
 // Parsing goes through keyfile.ParsePublicKey — the SAME function the CLI's
 // `proof verify --key` uses, so the two surfaces agree with `proof keygen` about
-// what a key file is (aleutianchain_54).
+// what a key file is.
 //
 // The parser's own error is NOT passed on. It can quote the file's PEM label or
 // a decoded byte, and this error is returned to a model.

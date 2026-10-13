@@ -64,7 +64,17 @@ import json
 print('\n'.join(sorted(json.load(open('$MANIFEST'))['vectors'])))
 ")
 
-digest_of() { shasum -a 256 "$1" | awk '{print $1}'; }
+# shasum is Perl and is missing from minimal images (Alpine, distroless build
+# stages, the golang image's slim variants); sha256sum is coreutils or busybox
+# and is missing from a stock macOS. Use whichever is here.
+if command -v shasum >/dev/null 2>&1; then
+    digest_of() { shasum -a 256 "$1" | awk '{print $1}'; }
+elif command -v sha256sum >/dev/null 2>&1; then
+    digest_of() { sha256sum "$1" | awk '{print $1}'; }
+else
+    echo "${RED}neither shasum nor sha256sum is installed${NC}" >&2
+    exit 1
+fi
 expected_digest() {
     python3 -c "
 import json,sys

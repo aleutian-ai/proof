@@ -85,38 +85,95 @@ sentinel.
 
 ## 3. What verification actually does
 
-Reading the verifier rather than describing it from the struct, the head bind is
-four ordered checks. Order matters and is deliberate.
+This section describes the verifier in this repository: `verify.BindAnchor` and
+`verify.VerifyAnchor` (`verify/anchor.go`), and `anchor.VerifySignature`
+(`anchor/verify.go`). The hosted platform has its own verifier, which checks in
+a different order; nothing below describes it.
+
+The bind is computed first. The signature is checked last.
 
 ```
-   ┌─ 1 ─────────────────────────────────────────────────────────────┐
-   │ SIGNATURE                                                        │
-   │ ML-DSA-65 over the canonical JSON. Fail closed.                  │
-   │ Without this first, a planted anchor whose chain_hash matches a   │
-   │ forged head would pass the bind despite never being signed.       │
-   └──────────────────────────────────────────────────────────────────┘
-   ┌─ 2 ─────────────────────────────────────────────────────────────┐
-   │ VERSION INVARIANT                                                │
-   │ Version is INSIDE the signed bytes, so a V≥5 anchor with an empty │
-   │ root_hash is malformed — a valid signature over invalid content — │
-   │ not a benign older anchor.                                       │
-   └──────────────────────────────────────────────────────────────────┘
-   ┌─ 3 ─────────────────────────────────────────────────────────────┐
-   │ BOUNDS                                                           │
-   │ endSeq within [minSeq, maxSeq]. A planted EntryCount is a bounded │
-   │ break rather than an unexplained map miss.                        │
-   └──────────────────────────────────────────────────────────────────┘
-   ┌─ 4 ─────────────────────────────────────────────────────────────┐
-   │ HEAD BIND  ← this is the one that closes truncation               │
-   │ Recompute the entry chain to endSeq; recompute the anchor chain    │
-   │ hash from the signed range + that head; compare.                  │
-   └──────────────────────────────────────────────────────────────────┘
+   REFUSED AS ERRORS, before anything is compared. No outcome is reported.
+     · no entries to bind to
+     · the previous anchor hash supplied is not a SHA-512 digest
+     · the anchor breaks its version's invariants (format-spec §9.3, §9.8)
+     · the walk began from a predecessor hash, so it saw a segment, and an
+       anchor's entry_count is counted from the chain's first entry
+
+   ┌─ 1 ─ THE CHAIN ──────────────────────────────────────────────────┐
+   │ Walk every entry with the same walker `verify.Chain` uses.        │
+   │ A break                                   → chain_broken          │
+   │ (An entry of an unknown format, or a v3 entry carrying v2 fields, │
+   │ is an error instead: this build cannot recompute it, which is not │
+   │ evidence of tampering.)                                           │
+   └───────────────────────────────────────────────────────────────────┘
+   ┌─ 2 ─ THE RANGE ──────────────────────────────────────────────────┐
+   │ first entry id ≠ range.start_entry_id     → range_start_mismatch  │
+   │ last entry id  ≠ range.end_entry_id       → range_end_mismatch    │
+   │ number of entries ≠ entry_count           → height_mismatch       │
+   └───────────────────────────────────────────────────────────────────┘
+   ┌─ 3 ─ THE PREDECESSOR ────────────────────────────────────────────┐
+   │ The seed hash goes with the seed id and with no other. If the     │
+   │ hash supplied and the anchor's previous_anchor_id disagree about  │
+   │ whether this is the first anchor      → predecessor_mismatch      │
+   └───────────────────────────────────────────────────────────────────┘
+   ┌─ 4 ─ THE HEAD ───────────────────────────────────────────────────┐
+   │ Recompute the anchor chain hash (format-spec §9.4) from the       │
+   │ previous anchor hash, the subject, the first and last entry ids   │
+   │ and the last entry's chain hash; compare it with the anchor's     │
+   │ chain_hash.                               → head_mismatch         │
+   │ All four passed                           → bound                 │
+   └───────────────────────────────────────────────────────────────────┘
+   ┌─ 5 ─ THE SIGNATURE (VerifyAnchor only) ──────────────────────────┐
+   │ Version invariants again, then the key named by signing_key_id,   │
+   │ then the signature decoded (strict base64, exact length), then    │
+   │ ML-DSA-65 over the canonical bytes.                               │
+   │ Any failure                               → signature_invalid     │
+   └───────────────────────────────────────────────────────────────────┘
 ```
 
-Truncation surfaces at step 3/4 with a message that names it directly:
+The first check that fails decides the outcome; later ones are not run, with
+one exception. **The signature is checked whatever the bind found**, because "a
+genuine anchor that describes a different chain" and "a forged anchor" are
+different situations and a caller needs to tell them apart.
 
-> `anchor committed range end not found in chain (entries truncated below the
-> anchored head)`
+### What a signature failure returns
+
+`VerifyAnchor` returns the signature error **and** a result whose outcome is
+`signature_invalid`. In that result `bound` is false and `proven` says nothing
+was proven, even when steps 1 to 4 all passed: an anchor nobody signed describes
+nothing. `detail` keeps what the bind found, in words: either "the chain does
+match what it describes", or "the chain did not match it either" with the bind's
+own outcome. An unknown key id, an unsupported version and a malformed signature
+all report `signature_invalid`; the error says which.
+
+### Why checking the signature last is safe
+
+A signature-first verifier refuses a planted anchor before it compares anything.
+This one compares first, so the two results have to be kept apart:
+
+- `BindAnchor` checks no signature and says so. A `bound` result from it carries
+  `not_proven`: "that the anchor is genuine — no signature was checked, so an
+  adversary able to rewrite the chain could also have minted this anchor". It is
+  the keyless claim of §4, and never more.
+- `VerifyAnchor` never returns `bound: true` unless the signature verified. The
+  bind's result is replaced, not annotated, when the signature fails.
+
+So a planted anchor whose `chain_hash` matches a forged head binds under
+`BindAnchor`, which is what a keyless bind means, and is `signature_invalid`
+under `VerifyAnchor`.
+
+### Where truncation shows
+
+Entries removed from the front, with the rest re-linked, verify as a chain. The
+anchor still names the original first entry, so step 2 reports
+`range_start_mismatch`, with the detail "the anchor's committed first entry is
+not this chain's first entry; entries were removed from the front". Entries
+removed from the end give `range_end_mismatch`.
+
+A bind is over exactly the entries given. A chain that has grown since the
+anchor was signed also gives `range_end_mismatch`: pass the prefix the anchor
+covers (`entries[:entry_count]`), not the whole current chain.
 
 So the claim "anchors close truncation" is true, and this is where. But it comes
 with a boundary that is easy to lose.
@@ -190,8 +247,8 @@ customer.
 > is reserved and will not be reused. The rest of this section describes the
 > **hosted platform's** version landscape (`storage.MerkleAnchorVersion`,
 > `ProofBuilder.requireMerkleAnchor`, `minAnchorVersion`), which is a separate
-> type system and still carries v5. If `_15` ever makes the platform re-export
-> `proof/anchor`, `internal/chainlinker/merkle_proof.go` is what breaks.
+> type system and still carries v5. If the platform is ever changed to re-export
+> `proof/anchor`, its Merkle proof builder is what breaks.
 
 V4 is interesting design: before signing, the generator *verifies* the range it
 is about to attest to, and `verified_through` records how far that verification
@@ -459,8 +516,9 @@ alone, and it is worth saying plainly that it is the weakest row.
    revocation, supersession downgrades, two-pass evaluation and
    tombstone-indeterminate states — all tied to Aleutian's trust store. Porting
    that would ship a verifier that needs a trust store to mean anything, which
-   defeats a keyless tool. Take: canonicalize → verify signature → bind head.
-2. **`_07` must carry the delimiter guard from the start.** Porting the unguarded
+   defeats a keyless tool. Take three things: canonicalize, bind the head,
+   verify the signature (§3 gives the order this verifier runs them in).
+2. **The anchor chain hash must carry the delimiter guard from the start.** Porting the unguarded
    primitive and hardening later inverts the order in the one mode where it
    matters.
 3. **V3 and V4 only.** Define V5's canonical form and pin, by test, that it is

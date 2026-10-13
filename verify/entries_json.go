@@ -4,11 +4,14 @@
 package verify
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"unicode"
 )
 
 // entryMembers are the members of an exported entry, by their exact names.
@@ -62,7 +65,8 @@ var requiredEntryMembers = []string{"entry_id", "timestamp", "content_hash", "ch
 //
 // # Limitations
 //
-//   - Holds the whole input and every entry in memory.
+//   - Holds the whole input and every entry in memory. [EntryReader] reads the
+//     same input one entry at a time.
 //   - Member values are decoded by encoding/json: invalid UTF-8 in a string is
 //     repaired, not refused.
 //
@@ -147,4 +151,269 @@ func decodeEntry(doc []byte) (Entry, error) {
 		return Entry{}, errors.New("a member has the wrong JSON type")
 	}
 	return e, nil
+}
+
+// MaxEntryLineBytes is the longest JSONL line an [EntryReader] reads. An entry
+// is a few hundred bytes; the cap is what keeps one endless line from being
+// read into memory whole.
+const MaxEntryLineBytes = 1 << 20
+
+// errNotAnArray is what any fault in a JSON array's own syntax reports.
+var errNotAnArray = errors.New("the input is not a valid JSON array of entries")
+
+// EntryReader reads exported entries one at a time: [DecodeEntries], streamed.
+//
+// # Description
+//
+// DecodeEntries holds the input and every entry in memory. An EntryReader
+// holds one entry, so a caller can walk a chain of any length by feeding each
+// entry to a [Walker] as it is read. It accepts the same two shapes, sniffed
+// the same way (a JSON array of entry objects, or one entry object per line),
+// and applies the same rules to each entry: the required members, no member
+// twice, no member in another case. Input that is not entries is an error
+// from Next, never an entry.
+//
+// # Thread Safety
+//
+// Not safe for concurrent use.
+type EntryReader struct {
+	br      *bufio.Reader
+	started bool
+	array   bool
+	dec     *json.Decoder // array input only
+	line    int           // JSONL: lines read, counted from the first that is not blank
+	entries int           // entries returned so far
+	buf     []byte        // JSONL: the current line, reused
+	err     error         // sticky: what Next returned last, once it is not nil
+}
+
+// NewEntryReader returns a reader of the exported entries in r.
+//
+// # Description
+//
+// Nothing is read until the first call to Next.
+//
+// # Inputs
+//
+//   - r: a JSON array of entry objects, or JSONL
+//
+// # Outputs
+//
+//   - *EntryReader: call Next until it returns io.EOF
+//
+// # Example
+//
+//	rd := verify.NewEntryReader(file)
+//	w := verify.NewWalker(verify.Options{})
+//	for {
+//	    e, err := rd.Next()
+//	    if err == io.EOF {
+//	        break
+//	    }
+//	    if err != nil {
+//	        return err // not a chain: there is no verdict to report
+//	    }
+//	    w.Add(e)
+//	}
+//	res := w.Result()
+//
+// # Limitations
+//
+//   - A fault is found when it is reached, so entries before it have already
+//     been returned. A caller must discard what it built from them: an error
+//     from Next means the input is not entries, whatever came first.
+//   - A JSONL line longer than [MaxEntryLineBytes] is an error. One element of
+//     a JSON array is held whole, whatever its size.
+//   - Where an array is faulty in two ways, the error may name a different one
+//     than DecodeEntries does: this reader reports the first it reaches.
+//
+// # Assumptions
+//
+//   - r is not read by anyone else while the EntryReader is in use.
+func NewEntryReader(r io.Reader) *EntryReader {
+	return &EntryReader{br: bufio.NewReaderSize(r, 64<<10)}
+}
+
+// Next returns the next entry.
+//
+// # Description
+//
+// Reads one array element or one line that is not blank, and checks it as
+// DecodeEntries checks each entry.
+//
+// # Inputs
+//
+//   - none
+//
+// # Outputs
+//
+//   - Entry: the entry, when err is nil
+//   - error: io.EOF after the last entry of an input that held at least one;
+//     otherwise why the input is not entries, or the read error. It names
+//     positions and member names and never quotes a value. Once Next returns
+//     an error it returns the same one on every later call.
+//
+// # Example
+//
+//	e, err := rd.Next()
+//	if err == io.EOF {
+//	    // every entry has been read
+//	}
+//
+// # Limitations
+//
+//   - As [NewEntryReader]'s.
+//
+// # Assumptions
+//
+//   - None.
+func (d *EntryReader) Next() (Entry, error) {
+	if d.err != nil {
+		return Entry{}, d.err
+	}
+	e, err := d.next()
+	if err == io.EOF && d.entries == 0 {
+		err = errors.New("the input holds no entries")
+	}
+	if err != nil {
+		d.err = err
+		return Entry{}, err
+	}
+	d.entries++
+	return e, nil
+}
+
+// next is Next without the bookkeeping.
+func (d *EntryReader) next() (Entry, error) {
+	if !d.started {
+		if err := d.start(); err != nil {
+			return Entry{}, err
+		}
+	}
+	if d.array {
+		return d.nextElement()
+	}
+	return d.nextLine()
+}
+
+// start skips leading white space and sniffs the shape from the first byte
+// after it, as DecodeEntries does.
+func (d *EntryReader) start() error {
+	d.started = true
+	if err := skipSpace(d.br); err == io.EOF {
+		return errors.New("the input is empty")
+	} else if err != nil {
+		return fmt.Errorf("read the input: %w", err)
+	}
+	first, err := d.br.Peek(1)
+	if err != nil {
+		return fmt.Errorf("read the input: %w", err)
+	}
+	if first[0] != '[' {
+		return nil
+	}
+	d.array = true
+	d.dec = json.NewDecoder(d.br)
+	if _, err := d.dec.Token(); err != nil {
+		return arrayFault(err)
+	}
+	return nil
+}
+
+// nextElement reads one element of a JSON array, or finishes the array.
+func (d *EntryReader) nextElement() (Entry, error) {
+	if d.dec.More() {
+		var doc json.RawMessage
+		if err := d.dec.Decode(&doc); err != nil {
+			return Entry{}, arrayFault(err)
+		}
+		e, err := decodeEntry(doc)
+		if err != nil {
+			return Entry{}, fmt.Errorf("entry %d is not an entry: %w", d.entries, err)
+		}
+		return e, nil
+	}
+	if tok, err := d.dec.Token(); err != nil || tok != json.Delim(']') {
+		return Entry{}, arrayFault(err)
+	}
+	// Nothing but white space may follow the array.
+	rest := bufio.NewReader(io.MultiReader(d.dec.Buffered(), d.br))
+	if err := skipSpace(rest); err == nil {
+		return Entry{}, errNotAnArray
+	} else if err != io.EOF {
+		return Entry{}, fmt.Errorf("read the input: %w", err)
+	}
+	return Entry{}, io.EOF
+}
+
+// nextLine reads the next JSONL line that is not blank.
+func (d *EntryReader) nextLine() (Entry, error) {
+	for {
+		line, err := d.readLine()
+		if err == io.EOF && len(line) == 0 {
+			return Entry{}, io.EOF
+		}
+		if err != nil && err != io.EOF {
+			return Entry{}, err
+		}
+		d.line++
+		doc := bytes.TrimSpace(line)
+		if len(doc) == 0 {
+			continue
+		}
+		e, derr := decodeEntry(doc)
+		if derr != nil {
+			return Entry{}, fmt.Errorf("line %d is not an entry: %w", d.line, derr)
+		}
+		return e, nil
+	}
+}
+
+// readLine returns the next line without its newline, in a buffer the next
+// call reuses. It returns io.EOF with the last line when that line has no
+// newline, and with no bytes when nothing is left.
+func (d *EntryReader) readLine() ([]byte, error) {
+	d.buf = d.buf[:0]
+	for {
+		chunk, err := d.br.ReadSlice('\n')
+		d.buf = append(d.buf, chunk...)
+		if len(d.buf) > MaxEntryLineBytes+1 {
+			return nil, fmt.Errorf("line %d is longer than %d bytes", d.line+1, MaxEntryLineBytes)
+		}
+		switch err {
+		case nil:
+			return d.buf[:len(d.buf)-1], nil
+		case bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			return d.buf, io.EOF
+		default:
+			return nil, fmt.Errorf("read the input: %w", err)
+		}
+	}
+}
+
+// arrayFault is the error for an array that could not be read: the read error
+// when the reader failed, and otherwise that the input is not a valid array.
+func arrayFault(err error) error {
+	var syntax *json.SyntaxError
+	if err == nil || err == io.EOF || err == io.ErrUnexpectedEOF || errors.As(err, &syntax) {
+		return errNotAnArray
+	}
+	return fmt.Errorf("read the input: %w", err)
+}
+
+// skipSpace consumes white space, as bytes.TrimSpace defines it, and stops
+// before the first byte that is not. It returns io.EOF when the input ends
+// first.
+func skipSpace(br *bufio.Reader) error {
+	for {
+		r, _, err := br.ReadRune()
+		if err != nil {
+			return err
+		}
+		if !unicode.IsSpace(r) {
+			return br.UnreadRune()
+		}
+	}
 }

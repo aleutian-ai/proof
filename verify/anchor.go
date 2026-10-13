@@ -202,13 +202,19 @@ func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, e
 		EntriesCovered:  a.EntryCount,
 		Tombstones:      w.res.TombstonesFound,
 		EntriesNotBound: int64(w.res.LastTombstone + 1),
-		Proven:          "the chain in front of you is the one this anchor committed to",
-		NotProven: "that the anchor is genuine — no signature was checked, so an " +
-			"adversary able to rewrite the chain could also have minted this anchor",
+		// What a result that is NOT bound says. The wording for a bind is set
+		// only where the bind succeeds, at the end: every other outcome once
+		// carried "the chain in front of you is the one this anchor committed
+		// to" beside an outcome that said it was not.
+		Proven:    "nothing: this anchor does not describe the chain in front of you",
+		NotProven: "that the chain is the one this anchor committed to",
 	}
+	boundProven := "the chain in front of you is the one this anchor committed to"
+	boundNotProven := "that the anchor is genuine — no signature was checked, so an " +
+		"adversary able to rewrite the chain could also have minted this anchor"
 	if res.Tombstones > 0 {
-		res.Proven = boundAfterTombstone(res.EntriesNotBound, count)
-		res.NotProven = notBoundBeforeTombstone(res.EntriesNotBound) + "; or " + res.NotProven
+		boundProven = boundAfterTombstone(res.EntriesNotBound, count)
+		boundNotProven = notBoundBeforeTombstone(res.EntriesNotBound) + "; or " + boundNotProven
 	}
 	if brk := w.res.FirstBreak; brk >= 0 {
 		// An entry this build cannot recompute is not evidence of tampering, and
@@ -270,6 +276,7 @@ func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, e
 	}
 
 	res.Outcome, res.Bound = BindOK, true
+	res.Proven, res.NotProven = boundProven, boundNotProven
 	return res, nil
 }
 

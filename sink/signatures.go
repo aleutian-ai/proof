@@ -13,6 +13,8 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/aleutian-ai/proof/internal/safebolt"
+
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/keyfile"
 )
@@ -66,7 +68,7 @@ type signatureRow struct {
 }
 
 // signaturesStore is the open signatures file.
-type signaturesStore struct{ db *bolt.DB }
+type signaturesStore struct{ db *safebolt.DB }
 
 // openSignatures opens (creating if needed) the signatures file for writing.
 func openSignatures(path string, lockTimeout time.Duration) (*signaturesStore, error) {
@@ -74,7 +76,7 @@ func openSignatures(path string, lockTimeout time.Duration) (*signaturesStore, e
 		return nil, fmt.Errorf("sink: %w", err)
 	}
 	isNew := created(path)
-	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, false))
+	db, err := safebolt.Open(path, 0o600, boltOptions(lockTimeout, false))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
@@ -122,7 +124,7 @@ func openSignaturesReadOnly(path string, lockTimeout time.Duration) (*signatures
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	db, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, true))
+	db, err := safebolt.Open(path, 0o600, boltOptions(lockTimeout, true))
 	if err != nil {
 		return nil, busy(fmt.Errorf("sink: open %s: %w", path, err))
 	}
@@ -330,6 +332,30 @@ func (s *signaturesStore) deleteChain(chain string) (int, error) {
 		return nil
 	})
 	return n, err
+}
+
+// unmatched counts, and with remove deletes (in ONE transaction), the
+// signature rows of a chain whose entry id isEntry does not know: signatures
+// of no entry.
+func (s *signaturesStore) unmatched(chain string, isEntry func(id string) bool, remove bool) (int, error) {
+	n := 0
+	scan := func(tx *bolt.Tx) error {
+		var err error
+		n, err = unmatchedIn(tx.Bucket(signaturesBucket), chain, isEntry, remove)
+		return err
+	}
+	if remove {
+		return n, s.db.Update(scan)
+	}
+	return n, s.db.View(scan)
+}
+
+// setSigning records the sink's signing mode without storing a signature: for
+// a sink that is to sign from its first commit (RequireRecordSigning).
+func (s *signaturesStore) setSigning() error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(metaBucket).Put(metaRecordSigning, []byte(recordSigningAlgorithm))
+	})
 }
 
 // validRowCount counts a chain's signature rows under a valid entry id,

@@ -38,7 +38,7 @@ var errOutsideRoot = errors.New("that path is outside the directory this server 
 
 // Distinguishable read failures, for paths INSIDE the root. A caller needs to
 // know whether the path was wrong, the file was the wrong KIND, or it was too
-// big (aleutianchain_55).
+// big.
 var (
 	errNotRegular = errors.New("not a regular file")
 	errTooLarge   = errors.New("file is too large")

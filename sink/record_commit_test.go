@@ -20,7 +20,7 @@ import (
 	"github.com/aleutian-ai/proof/linker"
 )
 
-// _75c: record signing in Commit and erase.
+// Record signing in Commit and erase.
 
 // scriptedSigner wraps a real signer. Safe for concurrent use. Call failAt
 // (1-based, in call order) fails, or, with other set, is signed by another key

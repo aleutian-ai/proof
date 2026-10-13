@@ -217,7 +217,7 @@ func (p *PublicKey) Equal(x crypto.PublicKey) bool {
 // The only signer this module ships. ML-DSA-65 ONLY: [VerifySignature] is
 // hardcoded to ML-DSA-65 sizes and there is no algorithm identifier in the
 // anchor format yet, so a 44 or 87 signer would produce anchors this very
-// package reports as invalid. Those become reachable once `_32b` adds the
+// package reports as invalid. Those become reachable once the format carries an
 // identifier.
 //
 // # Example

@@ -26,10 +26,10 @@ import (
 // not by copying the producer's verifier or the SDK's. That makes it a test of
 // the documentation as much as of the code: if the rules a third party needs are
 // all written down, this works. If it needs something only findable by reading
-// another implementation, the docs are incomplete and aleutianchain_13 would
+// another implementation, the docs are incomplete and the real verifier would
 // inherit that gap.
 //
-// It is deliberately ~30 lines. The real verifier (aleutianchain_13) will add
+// It is deliberately ~30 lines. The real verifier will add
 // break classification, bounded reporting, and anchor binding; none of that
 // changes the linkage rule this exercises.
 
@@ -243,7 +243,7 @@ func TestLifecycle_SealLinkVerifyEraseVerify(t *testing.T) {
 	// ---- VERIFY, after erasure ----
 	if idx := walkChain(t, entries); idx != -1 {
 		t.Fatalf("a lawfully erased entry broke the chain at index %d — this is the "+
-			"sdk_verify_01 failure mode", idx)
+			"failure mode of docs/format-spec.md §5.3", idx)
 	}
 
 	// The erased entry's content can no longer be shown, by construction.
@@ -288,7 +288,7 @@ func TestLifecycle_TamperIsDetected(t *testing.T) {
 // If this test ever starts failing, the linkage rules changed and the package
 // documentation on consistency-versus-existence needs revisiting — someone may
 // have added a defence, which would be good news, but the docs would then be
-// wrong. Closing this gap for real requires an anchor (aleutianchain_07/_08).
+// wrong. Closing this gap for real requires an anchor (docs/anchor-model.md).
 func TestLifecycle_TruncationIsNOTDetected(t *testing.T) {
 	t.Parallel()
 

@@ -372,7 +372,7 @@ func truncateForError(s string, maxLen int) string {
 // OrphanTombstoneDomainPrefix domain-separates the orphan-tombstone content
 // hash preimage from every other hash in the system.
 //
-// code_audit_92 R6/R7. Orphan tombstones previously carried a 128-zero
+// Orphan tombstones previously carried a 128-zero
 // sentinel: a compile-time constant, identical in every tenant, that bound
 // nothing about the object it attested to. Because the chain hash preimage is
 // only (prev_hash, run_id, seq, timestamp, content_hash), and payload_path is

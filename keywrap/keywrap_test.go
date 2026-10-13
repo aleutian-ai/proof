@@ -298,7 +298,7 @@ func TestMarshalBinaryFieldValidation(t *testing.T) {
 }
 
 // TestPublicKeyMarshalRoundTrip verifies the pre-existing MarshalBinary /
-// xwing.UnmarshalPublicKey round-trip (pqc_01a verification).
+// xwing.UnmarshalPublicKey round-trip.
 func TestPublicKeyMarshalRoundTrip(t *testing.T) {
 	pub, _, err := xwing.GenerateKeyPair()
 	if err != nil {
@@ -497,7 +497,7 @@ func TestKeyIDRejectsInvalidPublicKey(t *testing.T) {
 // since the MAC key is publicly known, an adversary can modify any field,
 // recompute the MAC, and produce a valid blob that passes UnmarshalV3.
 // Active tamper protection is provided by ML-KEM implicit rejection and AES-GCM
-// authentication (pqc_01d), not by this MAC.
+// authentication, not by this MAC.
 func TestMACCannotPreventAdversarialModification(t *testing.T) {
 	blob := makeValidBlob(t)
 

@@ -186,8 +186,8 @@ func TestNoKeyMaterialTools(t *testing.T) {
 	forbidden := []string{
 		"keygen", "key_gen", "generate_key", "private_key", "seed",
 		"decrypt", "unwrap", "decapsulate", "unseal", "plaintext",
-		// SIGNING is a key operation too. Added 2026-09-24 with `proof anchor`
-		// (_35c): the anchor signer would have been named something like
+		// SIGNING is a key operation too. Added 2026-09-24 with `proof anchor`:
+		// the anchor signer would have been named something like
 		// "sign_anchor", which matched none of the terms above — this test would
 		// have passed while a private key crossed the MCP boundary. Only
 		// TestToolsAreTheExpectedSet would have caught it, which is why that
@@ -774,8 +774,7 @@ func anchoredFixture(t *testing.T, n int, truncateBy int) (entriesPath, anchorPa
 	//
 	// This used to write RAW bytes to "key.bin", which is why nothing caught that
 	// verify_anchor could not read a single key the tool itself produces: the test
-	// invented a format, then confirmed the server agreed with the invention
-	// (aleutianchain_54).
+	// invented a format, then confirmed the server agreed with the invention.
 	pemBytes, err := keyfile.MarshalPublicKey(keyfile.MLDSA65, pubBytes)
 	if err != nil {
 		t.Fatal(err)
@@ -1005,7 +1004,7 @@ func TestModuleIsInstallable(t *testing.T) {
 }
 
 // =============================================================================
-// Loader failure diagnosis — aleutianchain_54 and _55
+// Loader failure diagnosis
 // =============================================================================
 
 // TestFileRootRead_DistinguishesFailures pins that, INSIDE the root, each cause
@@ -1013,7 +1012,7 @@ func TestModuleIsInstallable(t *testing.T) {
 //
 // All four used to be reported as "cannot read the <X> file at that path". Three
 // of them are not about the path, so a caller with a correct path was told the
-// path was wrong. That is the bug _54 hid behind: a PEM key over a raw-bytes cap
+// path was wrong. That hid a real bug: a PEM key over a raw-bytes cap
 // looked like a missing file.
 func TestFileRootRead_DistinguishesFailures(t *testing.T) {
 	dir := t.TempDir()
@@ -1055,7 +1054,7 @@ func TestFileRootRead_DistinguishesFailures(t *testing.T) {
 		{
 			name: "over the limit", path: big, limit: 16,
 			wantErr: true, wantIs: errTooLarge,
-			// The sizes are the actionable part. This is the exact shape of _54.
+			// The sizes are the actionable part. A PEM key over a raw-bytes cap has this shape.
 			wantWords: []string{"64 bytes", "16 byte limit"},
 			notWords:  []string{"cannot read"},
 		},
@@ -1091,7 +1090,8 @@ func TestFileRootRead_DistinguishesFailures(t *testing.T) {
 	}
 }
 
-// TestLoadPublicKey_ReadsTheEncodingKeygenWrites is _54's core claim.
+// TestLoadPublicKey_ReadsTheEncodingKeygenWrites: the server reads the PEM
+// key file `proof keygen` writes.
 func TestLoadPublicKey_ReadsTheEncodingKeygenWrites(t *testing.T) {
 	dir := t.TempDir()
 	cfg := serverConfig{root: testRoot(t, dir)}
@@ -1110,7 +1110,7 @@ func TestLoadPublicKey_ReadsTheEncodingKeygenWrites(t *testing.T) {
 
 	// A PEM key is ~2.7 KB, well over the 1953-byte raw bound this used to use.
 	if len(pemBytes) <= anchor.PublicKeySize+1 {
-		t.Fatalf("this test cannot detect the _54 regression: the PEM is %d bytes, "+
+		t.Fatalf("this test cannot detect a return of the raw-bytes cap: the PEM is %d bytes, "+
 			"within the old raw cap of %d", len(pemBytes), anchor.PublicKeySize+1)
 	}
 

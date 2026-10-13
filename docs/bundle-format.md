@@ -1,12 +1,12 @@
 # Sink export bundle: `aleutian.proof.bundle.v1`
 
-**Status: NORMATIVE, revision 3.2** (`_72a`, accepted by the owner 2026-10-07).
+**Status: NORMATIVE, revision 3.2** (accepted by the owner 2026-10-07).
 Revision 2 applied a four-agent review (28 findings) and the owner's decisions
 U1–U3; revision 3 applied the re-review. Revision 3.1 (2026-10-08) states
-what the two independent verifiers (`_72d`, `_72e`) found unstated: §3
+what the two independent verifiers (the Python and JavaScript SDKs') found unstated: §3
 numbers in the bundle, §4.3 inner members, §6 key-file text, §7.1 step 4,
 §7.6 and §10. It changes no rule the vectors already pinned. Revision 3.2
-(2026-10-08, owner decision after the `_72d`/`_72e` reviews) adds the §5 value
+(2026-10-08, owner decision after reviews of those two verifiers) adds the §5 value
 limit at §9.1 position 3, renumbering the later positions, and states the
 key-file whitespace and size (§6) and §10's trust statement for an unreadable
 bundle. Implementations derive their behaviour
@@ -635,14 +635,14 @@ from this document, and **MUST** contain at least:
 The result compared is §9's structure: trust dimensions, verdicts, erasure
 states, counts, and problem codes with their counts and `first` indexes.
 
-**Note 1** (`_72c`, 2026-10-07). A `too-large` case cannot be a vector at the
+**Note 1** (2026-10-07, found while writing the vectors). A `too-large` case cannot be a vector at the
 §5 limits: the smallest is a 256 MiB file or a million entries. Each
 implementation MUST instead test `too-large` itself, at every §5 limit and at
 the precedence positions 1, 3 and 7 of §9.1 (1 and 6 before revision 3.2), typically by lowering its limits in a
 test. Revision 3 required one vector per unreadable reason; that requirement
 contradicted §5 and is changed here.
 
-**Note 2** (`_72c`, 2026-10-07). Two more requirements of revision 3 could not
+**Note 2** (2026-10-07, found while writing the vectors). Two more requirements of revision 3 could not
 be met as written, so they are reworded. Checkpoint text has no timestamp
 member, so impossible timestamps apply to entries only. A bundle's own
 structure reaches depth 6 at most (an entry's `record_signature`), so depth 8

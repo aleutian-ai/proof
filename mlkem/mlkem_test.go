@@ -216,7 +216,7 @@ func TestCrossParameterSetRejected(t *testing.T) {
 	}
 }
 
-// TestSharedSecretRedacts mirrors the xwing rules from _26.
+// TestSharedSecretRedacts mirrors the xwing rules.
 func TestSharedSecretRedacts(t *testing.T) {
 	var ss mlkem.SharedSecret
 	for i := range ss {

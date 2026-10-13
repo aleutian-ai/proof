@@ -101,7 +101,7 @@ func TestCanonicalV3toV4_StillSayCompanyID(t *testing.T) {
 	}
 }
 
-// TestV6_VerifiesAndV5StillDoesNot is the trap this ticket exists to close.
+// TestV6_VerifiesAndV5StillDoesNot pins a trap in the version guard.
 //
 // The version guard was written as `>= MerkleVersion` to exclude v5, which
 // silently excluded every version above it as well. A v6 anchor would have

@@ -44,8 +44,8 @@ var ErrHeadStateStale = errors.New("linker: entries written, but the saved head 
 // position" is enforced by the type rather than by a validation rule someone can
 // relax later. Adding any of those fields would undo that guarantee.
 type Input struct {
-	// EntryID uniquely identifies this entry. Required, and unique within the
-	// batch — duplicates make the batch's order undefined.
+	// EntryID uniquely identifies this entry. Required, valid UTF-8, and unique
+	// within the batch — duplicates make the batch's order undefined.
 	EntryID string
 
 	// EntryType classifies the entry. "tombstone" marks an erased entry; see
@@ -55,6 +55,7 @@ type Input struct {
 	// Timestamp is the event time. It is hash CONTENT and never an ordering
 	// input — see sortInputs. Stored and hashed at the precision given, so pass
 	// the original value rather than one reconstructed from milliseconds.
+	// Its UTC year must be 0000 to 9999: the chain hash writes four digits.
 	Timestamp time.Time
 
 	// ContentHash commits to the entry's content: 128 lowercase hex characters,
@@ -210,8 +211,9 @@ func New(s store.Store, opts ...Option) (*Linker, error) {
 //   - ctx: cancelled contexts abort before any write
 //   - chainID: the chain to append to. Must be non-empty.
 //   - inputs: the entries to link. Must be non-empty. Each must carry a unique
-//     EntryID, a non-zero IngestedAt, and a valid ContentHash. inputs is not
-//     mutated; the batch is sorted on a copy.
+//     EntryID that is valid UTF-8, a non-zero IngestedAt, a Timestamp whose UTC
+//     year is 0000 to 9999, and a valid ContentHash. inputs is not mutated; the
+//     batch is sorted on a copy.
 //
 // # Outputs
 //

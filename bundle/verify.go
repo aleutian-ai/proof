@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -54,8 +55,15 @@ const (
 	// exceeded the size cap.
 	ProblemUnreadable ProblemKind = "unreadable"
 
-	// ProblemUnsafePath: a manifest path tried to escape the bundle directory.
+	// ProblemUnsafePath: a manifest path tried to escape the bundle directory,
+	// or is not the one spelling a file's path has: it is not in clean form
+	// (a "." or ".." component, a doubled or trailing slash), or it is not the
+	// name the file has on disk.
 	ProblemUnsafePath ProblemKind = "unsafe_path"
+
+	// ProblemDuplicatePath: the manifest lists one path more than once. Each
+	// row would otherwise count as a file checked.
+	ProblemDuplicatePath ProblemKind = "duplicate_path"
 
 	// ProblemRootMismatch: the recomputed manifest_root differs from the claim.
 	ProblemRootMismatch ProblemKind = "root_mismatch"
@@ -93,6 +101,14 @@ type DirResult struct {
 // regular file within the size cap, stream it through SHA-512, and compare
 // against the claimed digest. Then check for files present but unlisted, and
 // recompute the manifest_root over the inventory.
+//
+// A file has one path in a manifest. A path must be in clean form: relative,
+// slash-separated, with no "." or ".." component and no doubled or trailing
+// slash, so "./a.txt", "x/../a.txt" and "a.txt/" are refused and only "a.txt"
+// names that file. It must also be the name the file has on disk, which is
+// what stops two spellings on a file system that ignores case. A path listed
+// twice is a problem, as it is for [ManifestRoot]. FilesChecked therefore
+// counts files, not rows.
 //
 // **This is the half that binds claims to bytes.** ManifestRoot alone hashes what
 // the manifest SAYS; this confirms what the bundle CONTAINS. A bundle that passes
@@ -163,8 +179,20 @@ func VerifyDir(dir string, files []FileEntry, claimedRoot string, maxFileBytes i
 			"whoever built this bundle could have made the files and the manifest agree",
 	}
 
+	onDisk, err := filesOnDisk(dir)
+	if err != nil {
+		return DirResult{}, err
+	}
+
 	listed := make(map[string]struct{}, len(files))
 	for _, f := range files {
+		if _, dup := listed[f.Path]; dup {
+			res.Problems = append(res.Problems, Problem{
+				Path: f.Path, Kind: ProblemDuplicatePath,
+				Detail: "the manifest lists this path more than once",
+			})
+			continue
+		}
 		listed[f.Path] = struct{}{}
 
 		rel, perr := safePath(dir, f.Path)
@@ -185,6 +213,16 @@ func VerifyDir(dir string, files []FileEntry, claimedRoot string, maxFileBytes i
 			})
 			continue
 		}
+		if _, ok := onDisk[f.Path]; !ok {
+			// The path opened a file, but no file in the bundle has that name:
+			// the file system matched it to another spelling (another case, or
+			// another Unicode form). The file's own name is the one to list.
+			res.Problems = append(res.Problems, Problem{
+				Path: f.Path, Kind: ProblemUnsafePath,
+				Detail: "path is not the name the file has on disk",
+			})
+			continue
+		}
 		res.FilesChecked++
 		if got != f.SHA512 {
 			// Report that it differs, never the digests themselves — a verifier
@@ -196,11 +234,7 @@ func VerifyDir(dir string, files []FileEntry, claimedRoot string, maxFileBytes i
 		}
 	}
 
-	extra, err := unlistedFiles(dir, listed)
-	if err != nil {
-		return DirResult{}, err
-	}
-	for _, p := range extra {
+	for _, p := range unlistedFiles(onDisk, listed) {
 		res.Problems = append(res.Problems, Problem{
 			Path: p, Kind: ProblemUnlistedFile,
 			Detail: "present in the bundle but not listed in the manifest",
@@ -241,6 +275,12 @@ func safePath(dir, relSlash string) (string, error) {
 	rel := filepath.FromSlash(relSlash)
 	if filepath.IsAbs(rel) {
 		return "", errors.New("path is absolute")
+	}
+	if path.Clean(relSlash) != relSlash {
+		// One file, one spelling. Without this, "a.txt", "./a.txt",
+		// "x/../a.txt" and "a.txt/" were four rows over one file.
+		return "", errors.New("path is not in clean form: it has a \".\" or \"..\" component, " +
+			"or a doubled or trailing slash")
 	}
 	joined := filepath.Join(dir, rel)
 	back, err := filepath.Rel(dir, joined)
@@ -306,30 +346,39 @@ func hashRegularFile(root *os.Root, rel string, cap int64) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// unlistedFiles returns bundle-relative paths present on disk but absent from
-// the manifest, sorted.
-func unlistedFiles(dir string, listed map[string]struct{}) ([]string, error) {
-	var found []string
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+// filesOnDisk returns the bundle-relative, slash-separated path of every
+// file under dir that is not a directory.
+func filesOnDisk(dir string) (map[string]struct{}, error) {
+	found := map[string]struct{}{}
+	err := filepath.WalkDir(dir, func(full string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		rel, rerr := filepath.Rel(dir, path)
+		rel, rerr := filepath.Rel(dir, full)
 		if rerr != nil {
 			return rerr
 		}
-		slash := filepath.ToSlash(rel)
-		if _, ok := listed[slash]; !ok {
-			found = append(found, slash)
-		}
+		found[filepath.ToSlash(rel)] = struct{}{}
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bundle: walk %s: %w", dir, err)
 	}
-	sort.Strings(found)
 	return found, nil
+}
+
+// unlistedFiles returns the paths present on disk but absent from the
+// manifest, sorted.
+func unlistedFiles(onDisk, listed map[string]struct{}) []string {
+	var found []string
+	for p := range onDisk {
+		if _, ok := listed[p]; !ok {
+			found = append(found, p)
+		}
+	}
+	sort.Strings(found)
+	return found
 }

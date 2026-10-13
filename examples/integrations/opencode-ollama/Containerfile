@@ -5,6 +5,9 @@ FROM docker.io/library/alpine:3.20
 RUN apk add --no-cache bash curl ca-certificates libstdc++ libgcc
 
 # opencode ships a musl build; the installer picks it.
+# NOT PINNED: this runs an unversioned installer as root, fetched at build time
+# and checked against nothing, on a base image pinned by tag and not by digest.
+# Fine for a throwaway local demo image; see the README before reusing it.
 RUN curl -fsSL https://opencode.ai/install | bash
 ENV PATH="/root/.opencode/bin:${PATH}"
 

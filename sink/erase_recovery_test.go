@@ -22,7 +22,7 @@ import (
 	"github.com/aleutian-ai/proof/store"
 )
 
-// The erasure recovery invariant (ticket _69b, "Erasure recovery invariant"),
+// The erasure recovery invariant (docs/sink-format.md §4.3),
 // exercised as one state machine: forget → partial erasure → compaction fails →
 // resume → resume.
 
@@ -576,7 +576,7 @@ func TestCompactFile_IgnoresPlantedTempLink(t *testing.T) {
 
 // Commit returns one outcome per record, in the order given, and never the
 // subject. When any pair fails, the call commits NOTHING (all-or-none on a
-// returned error, _74a): every outcome says not committed, and a consumer acks
+// returned error): every outcome says not committed, and a consumer acks
 // none of them.
 func TestCommit_OutcomesPerRecordOnPartialFailure(t *testing.T) {
 	ctx := context.Background()

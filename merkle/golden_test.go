@@ -8,17 +8,19 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"runtime"
+	"reflect"
 	"testing"
 
 	"github.com/aleutian-ai/proof/fixtures"
 )
 
-// chainlinker_modernization_02k — the cross-language golden fixture. internal/merkle is the
-// reference GENERATOR; the fixture at merkle/testdata/merkle_golden.json is consumed identically
-// by the Go/Python/JS SDK verifiers to prove byte-identity. Regenerate with UPDATE_GOLDEN=1.
+// The cross-language Merkle vectors, fixtures/testdata/merkle_golden.json.
+//
+// scripts/spec-vectors.py writes that file, computing every root and proof in
+// Python from RFC 9162 and docs/format-spec.md §7. This package only reads it:
+// it rebuilds the same tree with its own code and requires the two to agree.
+// There is no way to regenerate the file from here, because a vector written by
+// the code it checks shows only that the code agrees with itself.
 
 type merkleGoldenInclusion struct {
 	Index    int      `json:"index"`
@@ -53,18 +55,8 @@ func goldenLeafHex(i int) string {
 	return hex.EncodeToString(s[:])
 }
 
-// goldenPath locates the fixture ON DISK. Used ONLY by the UPDATE_GOLDEN=1
-// regeneration branch — verification reads the embedded copy instead, so that
-// what the tests check is exactly what ships to consumers.
-//
-// The single source of truth lives in fixtures/ (aleutianchain_20); this package
-// deliberately keeps no testdata/ directory of its own, because a second copy
-// inside the module that exists to remove duplication would defeat the point.
-func goldenPath() string {
-	_, thisFile, _, _ := runtime.Caller(0)
-	return filepath.Join(filepath.Dir(thisFile), "..", "fixtures", "testdata", "merkle_golden.json")
-}
-
+// buildGolden computes, with this package, everything the vector file states:
+// the same 13 leaves, the root, and the same inclusion and consistency proofs.
 func buildGolden(t *testing.T) merkleGolden {
 	t.Helper()
 	const N = 13
@@ -89,7 +81,7 @@ func buildGolden(t *testing.T) merkleGolden {
 			Index: idx, TreeSize: N, LeafHash: hex.EncodeToString(LeafHash(data[idx])), Path: toHex(proof),
 		})
 	}
-	// Boundary shapes for cross-language coverage (02k crypto review INFO): n=1 single,
+	// Boundary shapes for cross-language coverage: n=1 single,
 	// n=8 power-of-two, m=0 empty prefix, m==n identical — each pins those roots across
 	// Go/Python/JS via the consistency verify path.
 	for _, mn := range [][2]int{
@@ -119,35 +111,30 @@ func toHex(nodes [][]byte) []string {
 	return out
 }
 
-// TestMerkleGolden generates (UPDATE_GOLDEN=1) or verifies the shared fixture.
+// TestMerkleGolden checks this package against the shared vector file: what it
+// computes must equal what the file states, and the file's proofs must verify.
 func TestMerkleGolden(t *testing.T) {
 	g := buildGolden(t)
-
-	if os.Getenv("UPDATE_GOLDEN") == "1" {
-		raw, _ := json.MarshalIndent(g, "", "  ")
-		if err := os.WriteFile(goldenPath(), append(raw, '\n'), 0o644); err != nil {
-			t.Fatalf("write golden: %v", err)
-		}
-		t.Logf("wrote %s", goldenPath())
-		t.Log("NOTE: the embedded copy is baked at compile time — rebuild before " +
-			"the verification path (and any consumer) sees this change")
-		return
-	}
 
 	// Read the EMBEDDED bytes, not the file. Consumers receive these bytes through
 	// the module system, so verifying them is verifying what actually ships; a
 	// file-based read could pass against an on-disk copy that never reached a build.
 	raw := fixtures.MerkleGolden()
 	if len(raw) == 0 {
-		t.Fatal("embedded merkle golden is empty (run UPDATE_GOLDEN=1, then rebuild)")
+		t.Fatal("embedded merkle golden is empty")
 	}
 	var onDisk merkleGolden
 	if err := json.Unmarshal(raw, &onDisk); err != nil {
 		t.Fatalf("unmarshal golden: %v", err)
 	}
-	// The fixture must reproduce from the reference AND self-verify through the verifiers.
+	// This package must compute what the file states, AND the file's proofs
+	// must verify through the verifiers.
 	if onDisk.Root != g.Root {
-		t.Fatalf("golden root drift: disk=%s regen=%s", onDisk.Root, g.Root)
+		t.Fatalf("root differs from the vector file: file=%s computed=%s", onDisk.Root, g.Root)
+	}
+	if !reflect.DeepEqual(onDisk, g) {
+		t.Fatal("this package's leaves or proofs differ from the vector file; the file is " +
+			"written by scripts/spec-vectors.py and is not regenerated from Go")
 	}
 	for _, inc := range onDisk.Inclusion {
 		lh, _ := hex.DecodeString(inc.LeafHash)

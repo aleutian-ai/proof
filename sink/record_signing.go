@@ -153,8 +153,8 @@ loop:
 //
 // # Description
 //
-// For the warning a checkpoint writer prints when its key is also a record key
-// (docs/AleutianChain/record_signing_design.md R7). Separate keys are
+// For the warning a checkpoint writer prints when its key is also a record key.
+// Separate keys are
 // recommended, never enforced: the record key is online in the writer, the
 // checkpoint key can be kept elsewhere, and a leaked record key should not
 // also unpin what the checkpoints pinned. The library only reports the fact.

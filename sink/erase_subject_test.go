@@ -260,7 +260,7 @@ func cidIn(t *testing.T, s *Sink, class, subject string) string {
 
 // TestEraseSubject_RewritesTheIndex: erasure rewrites the subject index into a
 // fresh file. Whether bbolt happens to overwrite freed pages first depends on
-// page allocation (it did for the nonce file in _68's finding, and may not
+// page allocation (it did for the nonce file, and may not
 // here); the rewrite is what guarantees it, so the test checks the rewrite
 // happened: the index was compacted during the erasure.
 func TestEraseSubject_RewritesTheIndex(t *testing.T) {

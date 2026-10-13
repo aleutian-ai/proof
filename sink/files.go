@@ -14,8 +14,7 @@ import (
 	"strings"
 	"time"
 
-	bolt "go.etcd.io/bbolt"
-
+	"github.com/aleutian-ai/proof/internal/safebolt"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 
@@ -29,7 +28,10 @@ func (s *Sink) openStore(readOnly bool) (*boltstore.Store, error) {
 	if err := regularOrAbsent(s.DBPath()); err != nil {
 		return nil, fmt.Errorf("sink: %w", err)
 	}
-	opts := []boltstore.Option{boltstore.WithLockTimeout(s.lockTimeout), boltstore.WithNoFollow()}
+	// The Sink reads each file through itself, once (preflight), so the store
+	// does not do it again on every open.
+	opts := []boltstore.Option{boltstore.WithLockTimeout(s.lockTimeout), boltstore.WithNoFollow(),
+		boltstore.WithoutCheck()}
 	isNew := !readOnly && created(s.DBPath())
 	if readOnly {
 		if _, err := os.Lstat(s.DBPath()); errors.Is(err, os.ErrNotExist) {
@@ -62,6 +64,38 @@ func (s *Sink) openFiles() (*boltstore.Store, *secretsStore, error) {
 		return nil, nil, err
 	}
 	return st, sec, nil
+}
+
+// preflight reads each existing file of the folder through, read-only, before
+// this Sink first opens it for writing, and refuses a damaged one with
+// ErrCorrupt (WithoutIntegrityCheck turns it off). Each file is checked once
+// per Sink; one that fails is checked again next time. The evidence file
+// first, and one file at a time: a file's shared lock is held only while that
+// file is read.
+func (s *Sink) preflight() error {
+	if s.noCheck {
+		return nil
+	}
+	for _, p := range []string{s.DBPath(), s.secretsPath(), s.sourcesPath(), s.subjectsPath(), s.signaturesPath()} {
+		if err := regularOrAbsent(p); err != nil {
+			return fmt.Errorf("sink: %w", err)
+		}
+		if err := s.checked.Once(p, boltOptions(s.lockTimeout, true)); err != nil {
+			return busy(fmt.Errorf("sink: %s: %w", filepath.Base(p), err))
+		}
+	}
+	return nil
+}
+
+// compactChecked rewrites one file (s.compact) and, when that worked, counts
+// the fresh copy as read through: it was written from a file that read
+// cleanly, key by key.
+func (s *Sink) compactChecked(path string) error {
+	if err := s.compact(path, s.lockTimeout); err != nil {
+		return err
+	}
+	s.checked.Mark(path)
+	return nil
 }
 
 // toVerifyEntry is a stored entry in the form verify reads.
@@ -155,18 +189,19 @@ func compactFile(path string, lockTimeout time.Duration) error {
 		_ = os.Remove(tmp)
 		return err
 	}
-	src, err := bolt.Open(path, 0o600, boltOptions(lockTimeout, true))
+	src, err := safebolt.Open(path, 0o600, boltOptions(lockTimeout, true))
 	if err != nil {
 		_ = os.Remove(tmp)
 		return busy(err)
 	}
-	dst, err := bolt.Open(tmp, 0o600, boltOptions(lockTimeout, false))
+	dst, err := safebolt.Open(tmp, 0o600, boltOptions(lockTimeout, false))
 	if err != nil {
 		src.Close()
 		_ = os.Remove(tmp)
 		return err
 	}
-	err = bolt.Compact(dst, src, 0)
+	// A damaged original fails the copy (ErrCorrupt) and is left as it was.
+	err = safebolt.Compact(dst, src)
 	src.Close()
 	if cerr := dst.Close(); err == nil {
 		err = cerr

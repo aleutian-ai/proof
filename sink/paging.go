@@ -14,7 +14,7 @@ import (
 // Verify and Checkpoint read the folder a PAGE at a time: they open the files
 // (the evidence file under a shared lock), do a bounded amount of work, and
 // close them, so a writer waits at most about one page, never the whole run
-// (docs/AleutianChain/verify_paging_design.md). A chain is never split across
+// (docs/sink-format.md §6). A chain is never split across
 // pages: everything about one chain is read under one lock hold.
 
 // Page bounds. Variables only so tests can shrink them.
@@ -38,13 +38,14 @@ var (
 	betweenPages func()
 )
 
-// pageFiles are the files one page reads: all read-only. ix, sec and sig
+// pageFiles are the files one page reads: all read-only. ix, sec, src and sig
 // are nil when their file is absent; sigErr is set (and sig possibly nil)
 // when the signatures file is not one this sink writes.
 type pageFiles struct {
 	f       *folder
 	st      *boltstore.Store
 	sec     *secretsStore
+	src     *sourcesStore
 	sig     *signaturesStore
 	subj    *subjectsStore
 	ix      *indexSnapshot
@@ -68,6 +69,10 @@ func (s *Sink) openPage(all bool) (*pageFiles, error) {
 		return p, nil
 	}
 	if p.sec, err = openSecretsReadOnly(s.secretsPath(), s.lockTimeout); err != nil {
+		p.close()
+		return nil, err
+	}
+	if p.src, err = openSourcesReadOnly(s.sourcesPath(), s.lockTimeout); err != nil {
 		p.close()
 		return nil, err
 	}
@@ -109,6 +114,9 @@ func (p *pageFiles) close() {
 	}
 	if p.sig != nil {
 		p.sig.Close()
+	}
+	if p.src != nil {
+		p.src.Close()
 	}
 	if p.sec != nil {
 		p.sec.Close()

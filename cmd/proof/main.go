@@ -22,6 +22,7 @@
 //	1  verification FAILED — the chain is broken
 //	2  usage error
 //	3  I/O or parse error, including a store file too damaged to read
+//	4  the chain or its database is busy: another writer holds it; retry
 //
 // The distinction between 1 and 3 matters in a script: "the chain is broken" and
 // "I could not read the file" call for different responses, and collapsing them
@@ -29,16 +30,18 @@
 package main
 
 import (
+	"bufio"
 	ctx "context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 
 	"github.com/aleutian-ai/proof/chainformat"
-	"github.com/aleutian-ai/proof/internal/fault"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
@@ -54,15 +57,21 @@ const (
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 // run is main's testable body.
+//
+// A damaged store file is reported by the storage wrappers as an error: their
+// every call is guarded, and a handle that failed is abandoned rather than
+// closed, so nothing waits on a lock a failed transaction left held. This is
+// the last line behind them. A panic that still gets here is not known to be
+// file damage (it may be a bug), and is reported as what it is: the command
+// ends with an error, never with the Go runtime's status 2, which in this
+// command line means a usage error.
 func run(args []string, stdout, stderr *os.File) int {
-	if !readsStoreOnly(args) {
-		return dispatch(args, stdout, stderr)
-	}
-	code, err := dispatchRecovered(args, stdout, stderr)
-	if err != nil {
-		fmt.Fprintf(stderr, "proof: %v\n", err)
+	code, failure := dispatchRecovered(args, stdout, stderr)
+	if failure != nil {
+		fmt.Fprintf(stderr, "proof: unexpected failure: %v\nThis is a bug in proof, or a store file damaged in "+
+			"a way its storage layer did not report. Nothing can be said about the result.\n", failure)
 		if len(args) > 1 && args[0] == "sink" && args[1] == "verify" {
-			// A damaged evidence file is a failed verification.
+			// Verification did not pass.
 			return exitBroken
 		}
 		return exitIOError
@@ -70,31 +79,14 @@ func run(args []string, stdout, stderr *os.File) int {
 	return code
 }
 
-// readsStoreOnly reports whether the command only reads store files: the
-// commands whose panics are recovered.
-//
-// A damaged store file panics or faults inside the storage layer. Unrecovered,
-// the Go runtime ends the process with status 2, which here means a usage
-// error. The commands that write are left to do that: a panic inside a write
-// transaction leaves the storage layer holding a lock that the deferred close
-// then waits on, so recovering there would turn the crash into a hang.
-func readsStoreOnly(args []string) bool {
-	if len(args) == 0 {
-		return false
-	}
-	switch args[0] {
-	case "export", "anchor":
-		return true
-	case "sink":
-		return len(args) > 1 && (args[1] == "verify" || args[1] == "checkpoint" || args[1] == "export")
-	}
-	return false
-}
-
-// dispatchRecovered runs the command and reports a panic or memory fault in
-// the storage layer as an error.
-func dispatchRecovered(args []string, stdout, stderr *os.File) (_ int, err error) {
-	defer fault.Recover(&err)()
+// dispatchRecovered runs the command and returns a panic or memory fault that
+// escaped it, if any.
+func dispatchRecovered(args []string, stdout, stderr *os.File) (code int, failure any) {
+	old := debug.SetPanicOnFault(true)
+	defer func() {
+		debug.SetPanicOnFault(old)
+		failure = recover()
+	}()
 	return dispatch(args, stdout, stderr), nil
 }
 
@@ -144,7 +136,7 @@ usage:
   proof verify <entries.json> [--json] [--max-breaks N]
                [--anchor <anchor.json>] [--previous <prev.json>]
                [--key <public.pem>] [--key-trust platform|provided|self]
-  proof export --db <path> --chain <id> [--out <path>] [--jsonl]
+  proof export --db <path> --chain <id> [--out <path>] [--jsonl] [--force]
   proof init   --db <path>
   proof commit --db <path> --chain <id> [--format-v2]   < entries.jsonl
   proof import --db <path> --chain <id>                 < exported.jsonl
@@ -153,13 +145,17 @@ usage:
   proof keygen [--alg x-wing] [--out-dir .] [--slot primary|backup|dual]
                [--name LABEL] [--op-vault VAULT] [--force]
   proof anchor --db <path> --chain <id> --subject <s> --key <private.pem>
-               [--previous <anchor.json>] [--out <path>]
-  proof sink commit|checkpoint|verify|erase [--dir D] …   (proof sink help)
+               [--previous <anchor.json>] [--out <path>] [--force]
+  proof sink commit|checkpoint|verify|erase|repair|export [--dir D] …   (proof sink help)
   proof version
 
 exit: 0 ok · 1 chain broken · 2 usage · 3 io error · 4 chain busy
 
 verify reads only the files you name. No network, no credentials.
+
+export and anchor only read the database: they never create it or change it,
+so a mistyped --db is an error. --out refuses to replace an existing file
+unless --force is given.
 
 Three claims, and they are not the same:
 
@@ -217,21 +213,32 @@ func cmdVerify(args []string, stdout, stderr *os.File) int {
 		return exitUsage
 	}
 
-	entries, err := loadEntries(positional[0])
-	if err != nil {
+	// The entries are walked as they are read and never held: a chain of any
+	// length is verified in the memory one entry takes. The anchor is bound by
+	// a walker of its own, as verify.BindAnchor would make, so what binding
+	// reports does not depend on --max-breaks.
+	w := verify.NewWalker(verify.Options{MaxBreaks: *maxBreaks})
+	walkers := []*verify.Walker{w}
+	var bindWalker *verify.Walker
+	if opts.anchorPath != "" {
+		bindWalker = verify.NewWalker(verify.Options{MaxBreaks: 1})
+		walkers = append(walkers, bindWalker)
+	}
+	if err := walkEntriesFile(positional[0], walkers...); err != nil {
 		fmt.Fprintf(stderr, "proof verify: %v\n", err)
 		return exitIOError
 	}
+	res := w.Result()
 
-	res, err := verify.Chain(entries, verify.Options{MaxBreaks: *maxBreaks})
-	if err != nil {
-		fmt.Fprintf(stderr, "proof verify: %v\n", err)
-		return exitIOError
-	}
-
-	anchorRes, aerr := verifyAnchorFlags(opts, entries)
+	anchorRes, aerr := verifyAnchorFlags(opts, bindWalker)
 	if aerr != nil {
 		fmt.Fprintf(stderr, "proof verify: %v\n", aerr)
+		// A file that is missing or is not what its flag says is an input
+		// failure. Flags that do not fit together are a usage error.
+		var bad *inputFileError
+		if errors.As(aerr, &bad) {
+			return exitIOError
+		}
 		return exitUsage
 	}
 
@@ -369,16 +376,34 @@ func shortHash(h string) string {
 	}
 }
 
-// loadEntries reads exported entries as a JSON array or as JSONL.
+// walkEntriesFile reads exported entries from a file, a JSON array or JSONL,
+// and adds each to every walker as it is read.
 //
 // The format is sniffed rather than flagged: a caller verifying a file someone
-// handed them should not have to know which shape it is.
-func loadEntries(path string) ([]verify.Entry, error) {
-	raw, err := os.ReadFile(path)
+// handed them should not have to know which shape it is. Input that is not
+// entries (an anchor, an export bundle, `{}`) is an error here, so it is never
+// verified and reported as a broken chain. The error may come after entries
+// have been walked; the caller reports it and no verdict.
+func walkEntriesFile(path string, walkers ...*verify.Walker) error {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return fmt.Errorf("read %s: %w", path, err)
 	}
-	return parseEntries(raw, path)
+	defer f.Close()
+
+	rd := verify.NewEntryReader(f)
+	for {
+		e, err := rd.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		for _, w := range walkers {
+			w.Add(e)
+		}
+	}
 }
 
 // loadEntriesFrom reads exported entries from a stream, sniffing the same two
@@ -403,7 +428,16 @@ func parseEntries(raw []byte, path string) ([]verify.Entry, error) {
 	return entries, nil
 }
 
+// exportPage is how many rows export reads from the store at a time. It is
+// the most export holds, whatever the chain's length.
+const exportPage = 1000
+
 // cmdExport dumps a chain to portable JSON.
+//
+// It only reads. The database is opened read-only, so a mistyped --db is an
+// error and not a new, empty database, and a chain that is not there is an
+// error and not an empty file. Rows go from the store to the output a page at
+// a time.
 func cmdExport(args []string, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -411,6 +445,7 @@ func cmdExport(args []string, stdout, stderr *os.File) int {
 	chainID := fs.String("chain", "", "chain id to export")
 	outPath := fs.String("out", "", "write here instead of stdout")
 	asJSONL := fs.Bool("jsonl", false, "one entry per line instead of a JSON array")
+	force := fs.Bool("force", false, "replace the --out file if it exists")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -418,40 +453,148 @@ func cmdExport(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stderr, "proof export: --db and --chain are required")
 		return exitUsage
 	}
+	if err := refuseExistingOutput(*outPath, *force); err != nil {
+		fmt.Fprintf(stderr, "proof export: %v\n", err)
+		return exitUsage
+	}
 
-	s, err := boltstore.Open(*dbPath)
+	s, err := boltstore.Open(*dbPath, boltstore.WithReadOnly())
 	if err != nil {
 		fmt.Fprintf(stderr, "proof export: %v\n", err)
+		if errors.Is(err, boltstore.ErrLocked) {
+			return exitBusy
+		}
 		return exitIOError
 	}
 	defer s.Close()
 
-	rows, err := s.Range(ctx.Background(), *chainID, 0, 1<<62, 0)
+	// The first page is read before the output is opened: a chain that is not
+	// there leaves no file behind.
+	rows, err := s.Range(ctx.Background(), *chainID, 0, 1<<62, exportPage)
 	if err != nil {
 		fmt.Fprintf(stderr, "proof export: %v\n", err)
 		return exitIOError
 	}
-
-	entries := make([]verify.Entry, 0, len(rows))
-	for _, r := range rows {
-		entries = append(entries, toExported(r))
+	if len(rows) == 0 {
+		fmt.Fprintf(stderr, "proof export: chain %q has no entries in %s\n", *chainID, *dbPath)
+		return exitIOError
 	}
 
-	out := stdout
-	if *outPath != "" {
-		f, err := os.Create(*outPath)
-		if err != nil {
+	out, err := openOutput(*outPath, stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "proof export: %v\n", err)
+		return exitIOError
+	}
+	defer out.abort()
+
+	ew := newEntryWriter(out.w, *asJSONL)
+	for len(rows) > 0 {
+		for _, r := range rows {
+			if err := ew.write(toExported(r)); err != nil {
+				fmt.Fprintf(stderr, "proof export: %v\n", err)
+				return exitIOError
+			}
+		}
+		if len(rows) < exportPage {
+			break
+		}
+		next := rows[len(rows)-1].GlobalSeq + 1
+		if rows, err = s.Range(ctx.Background(), *chainID, next, 1<<62, exportPage); err != nil {
 			fmt.Fprintf(stderr, "proof export: %v\n", err)
 			return exitIOError
 		}
-		defer f.Close()
-		out = f
 	}
-	if err := writeEntries(out, entries, *asJSONL); err != nil {
+	if err := ew.close(); err != nil {
+		fmt.Fprintf(stderr, "proof export: %v\n", err)
+		return exitIOError
+	}
+	if err := out.commit(); err != nil {
 		fmt.Fprintf(stderr, "proof export: %v\n", err)
 		return exitIOError
 	}
 	return exitOK
+}
+
+// refuseExistingOutput is the --out rule export and anchor share: a file that
+// is already there is not replaced unless --force was given.
+//
+// A device or a pipe (/dev/stdout, a FIFO) is not a file that can be replaced,
+// and is written to as it always was. Lstat, so a symlink counts as something
+// at the path whether or not it points anywhere.
+func refuseExistingOutput(path string, force bool) error {
+	if path == "" || force || isStream(path) {
+		return nil
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("%s already exists — use --force to replace it", path)
+	}
+	return nil
+}
+
+// isStream reports whether path is a device, a pipe or a socket: something
+// written to, never replaced.
+func isStream(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode()&(os.ModeDevice|os.ModeNamedPipe|os.ModeSocket) != 0
+}
+
+// output is where export and anchor write: stdout, or the --out file.
+//
+// A file is written beside its destination and renamed over it by commit, so
+// a failed or interrupted run leaves no partial file and never truncates the
+// one that was there.
+type output struct {
+	w      *os.File
+	file   *atomicFile // a regular --out file, until committed or aborted
+	stream *os.File    // a device or pipe named by --out
+}
+
+// openOutput opens path for writing, or returns stdout when path is empty.
+// The caller has already applied refuseExistingOutput.
+func openOutput(path string, stdout *os.File) (*output, error) {
+	switch {
+	case path == "":
+		return &output{w: stdout}, nil
+	case isStream(path):
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return nil, err
+		}
+		return &output{w: f, stream: f}, nil
+	}
+	a, err := createAtomic(path, 0o666, false)
+	if err != nil {
+		return nil, err
+	}
+	return &output{w: a.File, file: a}, nil
+}
+
+// commit finishes the output: a file becomes durable and takes its name.
+func (o *output) commit() error {
+	switch {
+	case o.file != nil:
+		a := o.file
+		o.file = nil
+		return a.commit()
+	case o.stream != nil:
+		f := o.stream
+		o.stream = nil
+		return f.Close()
+	}
+	return nil
+}
+
+// abort discards an output that was not committed. After commit it does
+// nothing, so it can be deferred.
+func (o *output) abort() {
+	if o.file != nil {
+		o.file.abort()
+		o.file = nil
+	}
+	if o.stream != nil {
+		_ = o.stream.Close()
+		o.stream = nil
+	}
 }
 
 // toExported converts a stored row to its portable form.
@@ -480,19 +623,64 @@ func toExported(r store.Entry) verify.Entry {
 	return e
 }
 
-func writeEntries(w *os.File, entries []verify.Entry, jsonl bool) error {
-	if jsonl {
-		enc := json.NewEncoder(w)
-		for _, e := range entries {
-			if err := enc.Encode(e); err != nil {
-				return fmt.Errorf("encode entry %s: %w", e.EntryID, err)
-			}
-		}
-		return nil
+// entryWriter writes exported entries one at a time, as JSONL or as an
+// indented JSON array.
+//
+// The bytes are the ones a json.Encoder with a two-space indent writes for the
+// whole slice, so an export is byte-identical to what earlier releases wrote.
+type entryWriter struct {
+	w     *bufio.Writer
+	jsonl bool
+	n     int
+}
+
+func newEntryWriter(w io.Writer, jsonl bool) *entryWriter {
+	return &entryWriter{w: bufio.NewWriterSize(w, 64<<10), jsonl: jsonl}
+}
+
+// write appends one entry.
+func (ew *entryWriter) write(e verify.Entry) error {
+	var doc []byte
+	var err error
+	sep := ""
+	switch {
+	case ew.jsonl:
+		doc, err = json.Marshal(e)
+	case ew.n == 0:
+		sep = "[\n  "
+		doc, err = json.MarshalIndent(e, "  ", "  ")
+	default:
+		sep = ",\n  "
+		doc, err = json.MarshalIndent(e, "  ", "  ")
 	}
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(entries)
+	if err != nil {
+		return fmt.Errorf("encode entry %d: %w", ew.n, err)
+	}
+	ew.n++
+	if _, err := ew.w.WriteString(sep); err != nil {
+		return err
+	}
+	if _, err := ew.w.Write(doc); err != nil {
+		return err
+	}
+	if ew.jsonl {
+		return ew.w.WriteByte('\n')
+	}
+	return nil
+}
+
+// close ends the array, if there is one, and flushes.
+func (ew *entryWriter) close() error {
+	if !ew.jsonl {
+		end := "\n]\n"
+		if ew.n == 0 {
+			end = "[]\n"
+		}
+		if _, err := ew.w.WriteString(end); err != nil {
+			return err
+		}
+	}
+	return ew.w.Flush()
 }
 
 // cmdInit creates an empty chain database.

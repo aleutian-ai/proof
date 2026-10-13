@@ -281,3 +281,50 @@ func TestVerifyAnchor_ASignatureErrorIsNeverBound(t *testing.T) {
 		t.Fatalf("detail %q, proven %q", res.Detail, res.Proven)
 	}
 }
+
+// TestBindAnchor_OnlyABindSaysTheChainIsTheAnchors: a result that is not bound
+// says nothing was proven. Every outcome once carried the wording of a
+// successful bind ("the chain in front of you is the one this anchor committed
+// to"), printed by the CLI directly under "ANCHOR DOES NOT DESCRIBE THIS CHAIN".
+func TestBindAnchor_OnlyABindSaysTheChainIsTheAnchors(t *testing.T) {
+	entries, head := buildChain(t, 5)
+	a := anchorOver(t, entries, head, anchor.SeedAnchorHash)
+
+	bound, err := BindAnchor(a, entries, anchor.SeedAnchorHash)
+	if err != nil || !bound.Bound || !strings.Contains(bound.Proven, "is the one this anchor committed to") {
+		t.Fatalf("control failed: %+v, %v", bound, err)
+	}
+
+	edited := append([]Entry(nil), entries...)
+	edited[2].ContentHash = strings.Repeat("f", 128)
+	wrongHead := a
+	wrongHead.ChainHash = strings.Repeat("e", 128)
+	for name, res := range map[string]BindResult{
+		"chain_broken":       mustBind(t, a, edited),
+		"range_end_mismatch": mustBind(t, a, entries[:4]),
+		"head_mismatch":      mustBind(t, wrongHead, entries),
+		"predecessor_mismatch": func() BindResult {
+			r, err := BindAnchor(a, entries, strings.Repeat("a", 128))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return r
+		}(),
+	} {
+		if res.Bound || string(res.Outcome) != name {
+			t.Fatalf("%s: got %+v", name, res)
+		}
+		if !strings.HasPrefix(res.Proven, "nothing") || strings.Contains(res.Proven, "is the one this anchor committed to") {
+			t.Errorf("%s: a result that is not bound says %q", name, res.Proven)
+		}
+	}
+}
+
+func mustBind(t *testing.T, a anchor.Anchor, entries []Entry) BindResult {
+	t.Helper()
+	res, err := BindAnchor(a, entries, anchor.SeedAnchorHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}

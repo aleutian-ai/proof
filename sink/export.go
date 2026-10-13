@@ -174,7 +174,9 @@ func (s *Sink) Export(ctx context.Context, sel ExportSelection, w io.Writer) (_ 
 		return sum, fmt.Errorf("%w: %d chains, at most %d", ErrExportTooLarge, len(chains), maxBundleChains)
 	}
 
-	cw := &countingWriter{w: bufio.NewWriterSize(w, 1<<16)}
+	// The caller's writer, called through a wrapper: a panic in it is the
+	// caller's, not a damaged file (see callbacks.go).
+	cw := &countingWriter{w: bufio.NewWriterSize(callerWriter{w}, 1<<16)}
 	ex := &exporter{sel: sel, listedSet: map[string]bool{}, found: map[string]int{}, cw: cw,
 		cpKeys: map[string]bool{}, recKeys: map[string]bool{}}
 	for _, id := range listed {
@@ -495,7 +497,13 @@ func (ex *exporter) chain(ctx context.Context, p *pageFiles, pos int, chain stri
 	genuine := erasedBefore >= 0 && rows[erasedBefore].EntryType == EntryTypeErasure
 	// A chain whose subject is forgotten but whose erasure is not finished:
 	// nothing on it is ever disclosed.
-	pending := p.ix.state(chain) == IndexPending
+	// A damaged index is an error here, never "not pending": that would
+	// disclose a forgotten subject's content.
+	row, err := p.ix.state(chain)
+	if err != nil {
+		return err
+	}
+	pending := row == IndexPending
 
 	cw := ex.cw
 	cw.str(`{"chain_id":`)

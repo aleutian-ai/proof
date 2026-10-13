@@ -25,8 +25,7 @@ import (
 //
 // # Description
 //
-// In this order (docs/AleutianChain/subject_index_design.md, "Crash
-// consistency"):
+// In this order (docs/sink-format.md §4.3):
 //
 //  1. Check first: every one of the subject's chains can be erased (a valid id,
 //     readable to its end). If one cannot,
@@ -68,11 +67,13 @@ import (
 //   - SubjectErasure: the chains erased, and any pending erasures of earlier,
 //     interrupted calls that were completed. No chains means the sink holds
 //     nothing for the subject (never committed, or already erased).
-//   - error: nil means the erasure recovery invariant holds (ticket _69b):
+//   - error: nil means the erasure recovery invariant holds (docs/sink-format.md §4.3):
 //     nothing of the subject in the index, every chain erased, every file
 //     rewritten. ErrInvalidSubject, ErrRecordSignerRequired, ErrSinkNotSigning,
-//     a record signer failure, or a plain error from a check before
-//     forgetting: nothing changed. *ErasureIncompleteError: part done, and what
+//     a record signer failure, ErrCorrupt from the check before the first
+//     write, or a plain error from a check before forgetting: nothing changed.
+//     ErrCorrupt can also come from a read or write that met damage part-way
+//     (inside an *ErasureIncompleteError once the subject is forgotten). *ErasureIncompleteError: part done, and what
 //     is left is marked pending; ResumeErasures (or any later erasure) finishes
 //     it without re-linking the subject. Messages name no chain (the ids are in
 //     the result); never log those ids beside the subject.
@@ -140,7 +141,8 @@ func (s *Sink) EraseSubjectClass(ctx context.Context, subject, class string) (Su
 //
 // # Outputs
 //
-//   - []EraseResult: the pending chains it completed
+//   - []EraseResult: the pending chains it completed. One whose index row was
+//     live on an erased chain (relinked) is marked Relinked.
 //   - error: nil when nothing is left pending and every file was compacted;
 //     otherwise an *ErasureIncompleteError (safe to run again), or a plain
 //     error when the files could not be opened, the record signer failed, or
@@ -165,6 +167,9 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	defer f.Close()
 	if _, err := os.Lstat(s.DBPath()); errors.Is(err, os.ErrNotExist) {
 		return out, fmt.Errorf("sink: %s: %w", s.dir, errNoSink)
+	}
+	if err := s.preflight(); err != nil {
+		return out, err
 	}
 	st, sec, err := s.openFiles()
 	if err != nil {
@@ -198,11 +203,17 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	}
 	defer closeRS()
 
+	relinked := map[string]bool{}
 	if resumeOnly {
 		// A live row on a chain that ends with a genuine erasure (the index was
 		// restored from before an erasure, or edited) re-links an erased subject:
 		// forget it again, so it is completed below like any pending erasure.
-		if err := s.forgetRelinked(ctx, st, subj); err != nil {
+		// Its erasure entry is not one this call made, and the result says so.
+		forgotten, err := s.forgetRelinked(ctx, st, subj)
+		for _, chain := range forgotten {
+			relinked[chain] = true
+		}
+		if err != nil {
 			return out, err
 		}
 	}
@@ -252,7 +263,9 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	for _, group := range []struct {
 		chains []string
 		into   *[]EraseResult
-	}{{earlier, &out.Resumed}, {mine, &out.Erased}} {
+		// live: the index bound these chains to a subject when the call began.
+		live bool
+	}{{earlier, &out.Resumed, false}, {mine, &out.Erased, true}} {
 		for _, chain := range group.chains {
 			if !ValidChainID(chain) {
 				// Not an id this sink mints, so there is no chain of ours to erase.
@@ -284,6 +297,10 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 				incomplete.Pending = append(incomplete.Pending, chain)
 				continue
 			}
+			// An erasure entry that was already there, on a chain the index
+			// still bound to a subject: not this sink's known erasure, whichever
+			// call met it.
+			res.Relinked = relinked[chain] || (group.live && res.adopted)
 			*group.into = append(*group.into, res)
 		}
 	}
@@ -299,7 +316,7 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	closeRS()
 	incomplete.Compacted = true
 	for _, p := range []string{s.secretsPath(), s.sourcesPath(), s.subjectsPath()} {
-		if err := s.compact(p, s.lockTimeout); err != nil {
+		if err := s.compactChecked(p); err != nil {
 			incomplete.Compacted = false
 			errs = append(errs, fmt.Errorf("sink: rewriting %s failed: %w; the deleted values may "+
 				"still be in its free pages", filepath.Base(p), err))
@@ -309,7 +326,7 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 	// failed commit's cleanup deleted leave its free pages (absent: nothing to
 	// do). It holds no erased values, so a failure here is reported but does
 	// not keep erased chains pending.
-	if err := s.compact(s.signaturesPath(), s.lockTimeout); err != nil {
+	if err := s.compactChecked(s.signaturesPath()); err != nil {
 		errs = append(errs, fmt.Errorf("sink: rewriting %s failed: %w; rows a failed commit removed "+
 			"may still be in its free pages (no erased values)", filepath.Base(s.signaturesPath()), err))
 	}
@@ -324,7 +341,7 @@ func (s *Sink) eraseSubject(ctx context.Context, subject, class string, resumeOn
 			// The cleared rows held only chain ids (a pending row holds no
 			// subject; the subject's rows went, and were rewritten away, above).
 			// Rewrite the index once more so those ids leave it too.
-			if err := s.compact(s.subjectsPath(), s.lockTimeout); err != nil {
+			if err := s.compactChecked(s.subjectsPath()); err != nil {
 				errs = append(errs, fmt.Errorf("sink: rewriting %s after clearing erased chains failed: "+
 					"%w; their (opaque) ids may remain in its free pages", filepath.Base(s.subjectsPath()), err))
 			}
@@ -358,24 +375,27 @@ func (s *Sink) clearErased(chains []string) error {
 	return nil
 }
 
-// forgetRelinked turns every relinked chain's live row into a pending erasure.
-func (s *Sink) forgetRelinked(ctx context.Context, st *boltstore.Store, subj *subjectsStore) error {
+// forgetRelinked turns every relinked chain's live row into a pending erasure,
+// and returns the chains it did that for.
+func (s *Sink) forgetRelinked(ctx context.Context, st *boltstore.Store, subj *subjectsStore) ([]string, error) {
 	live, err := subj.liveChains()
 	if err != nil {
-		return fmt.Errorf("sink: read the subject index: %w", err)
+		return nil, fmt.Errorf("sink: read the subject index: %w", err)
 	}
+	var forgotten []string
 	for _, chain := range live {
 		erased, err := endsWithGenuineErasure(ctx, st, chain)
 		if err != nil {
-			return err
+			return forgotten, err
 		}
 		if erased {
 			if err := subj.forgetChain(chain); err != nil {
-				return fmt.Errorf("sink: forget the subject of relinked chain %s: %w", chain, err)
+				return forgotten, fmt.Errorf("sink: forget the subject of relinked chain %s: %w", chain, err)
 			}
+			forgotten = append(forgotten, chain)
 		}
 	}
-	return nil
+	return forgotten, nil
 }
 
 // endsWithGenuineErasure reports whether a chain's last entry is a genuine
@@ -422,6 +442,8 @@ func (s *Sink) checkErasable(ctx context.Context, st *boltstore.Store, chain str
 // not compact; the caller does, once, at the end.
 //
 // It is idempotent, so a crash at any point is repaired by running it again.
+// The result's adopted field reports that the chain already ended with a
+// genuine erasure entry, which was kept rather than a new one appended.
 func (s *Sink) eraseChain(ctx context.Context, st *boltstore.Store, sec *secretsStore,
 	l oneAppender, chain string, pre *presigned, rs *recordSigning) (EraseResult, error) {
 	if !ValidChainID(chain) {
@@ -561,7 +583,7 @@ func (s *Sink) eraseChain(ctx context.Context, st *boltstore.Store, sec *secrets
 		return EraseResult{}, fmt.Errorf("sink: chain %s: the erasure is recorded but deleting "+
 			"source positions failed: %w", chain, err)
 	}
-	return EraseResult{Chain: chain, Events: events, ErasureEntryID: id}, nil
+	return EraseResult{Chain: chain, Events: events, ErasureEntryID: id, adopted: lastWasErasure}, nil
 }
 
 // presigned is an erasure entry decided, and in a signing sink signed, BEFORE

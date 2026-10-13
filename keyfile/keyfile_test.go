@@ -557,3 +557,103 @@ func TestPlatformKeygenFilesValidateSize(t *testing.T) {
 		})
 	}
 }
+
+// TestOnlyOnePEMBlockIsAccepted: a key file is one PEM block and nothing else.
+// The PEM decoder skips whatever precedes a block and parses headers inside
+// it, so text in front of a key and a block marked "Proc-Type: 4,ENCRYPTED"
+// both once parsed as a plain key. Private and public keys, current and
+// legacy labels.
+func TestOnlyOnePEMBlockIsAccepted(t *testing.T) {
+	withHeader := func(data []byte, headers map[string]string) []byte {
+		block, _ := pem.Decode(data)
+		if block == nil {
+			t.Fatal("test input has no PEM block")
+		}
+		block.Headers = headers
+		return pem.EncodeToMemory(block)
+	}
+	encrypted := map[string]string{"Proc-Type": "4,ENCRYPTED", "DEK-Info": "AES-256-CBC,00"}
+
+	pub, err := keyfile.MarshalPublicKey(keyfile.MLDSA65, make([]byte, keyfile.MLDSA65.PublicKeySize()))
+	if err != nil {
+		t.Fatalf("marshal public key: %v", err)
+	}
+	files := []struct {
+		name    string
+		data    []byte
+		private bool
+	}{
+		{"private", read(t, "mlkem768_seed.pem"), true},
+		{"legacy private", read(t, "legacy_xwing_private.pem"), true},
+		{"public", pub, false},
+		{"legacy public", read(t, "legacy_xwing_public.pem"), false},
+		// The platform keygen files: these two carry a "Name" header, which is
+		// the one header accepted, and only on these labels.
+		{"platform private", read(t, "keygen_xwing_primary_private.pem"), true},
+		{"platform public", read(t, "keygen_xwing_primary_public.pem"), false},
+	}
+	for _, f := range files {
+		parse := func(data []byte) error {
+			if f.private {
+				_, _, err := keyfile.ParsePrivateKey(data)
+				return err
+			}
+			_, _, err := keyfile.ParsePublicKey(data)
+			return err
+		}
+		if err := parse(f.data); err != nil {
+			t.Fatalf("%s: the unmodified file does not parse: %v", f.name, err)
+		}
+		cases := map[string][]byte{
+			"text before the block":      append([]byte("C4N4RY this key is trusted\n"), f.data...),
+			"a newline before the block": append([]byte("\n"), f.data...),
+			"a BEGIN line before the block": append(
+				[]byte("-----BEGIN PRIVATE KEY-----\nC4N4RY\n"), f.data...),
+			"an encryption header": withHeader(f.data, encrypted),
+			"any other header":     withHeader(f.data, map[string]string{"Comment": "C4N4RY"}),
+			"a second header beside Name": withHeader(f.data,
+				map[string]string{"Name": "C4N4RY", "Proc-Type": "4,ENCRYPTED"}),
+		}
+		if !strings.HasPrefix(f.name, "platform") {
+			cases["a Name header on a label that has none"] = withHeader(f.data,
+				map[string]string{"Name": "C4N4RY"})
+		}
+		for name, data := range cases {
+			t.Run(f.name+"/"+name, func(t *testing.T) {
+				err := parse(data)
+				if !errors.Is(err, keyfile.ErrMalformed) {
+					t.Fatalf("error = %v, want ErrMalformed", err)
+				}
+				if strings.Contains(err.Error(), "C4N4RY") {
+					t.Errorf("the error echoes the file's contents: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// TestPKCS8AttributesRejected: attributes say things about a key that nothing
+// here can check. The field was declared so that it would be detected, and
+// then never looked at.
+func TestPKCS8AttributesRejected(t *testing.T) {
+	type outKey struct {
+		Version    int
+		Algorithm  pkix.AlgorithmIdentifier
+		PrivateKey []byte
+		Attributes asn1.RawValue `asn1:"optional,tag:0"`
+	}
+	// SET OF Attribute, empty: the smallest thing that is present.
+	der, err := asn1.Marshal(outKey{
+		Version:    0,
+		Algorithm:  pkix.AlgorithmIdentifier{Algorithm: keyfile.MLDSA65.OID()},
+		PrivateKey: seedChoice(t, seedPattern(32)),
+		Attributes: asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: []byte{}},
+	})
+	if err != nil {
+		t.Fatalf("build DER: %v", err)
+	}
+	data := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	if _, _, err := keyfile.ParsePrivateKey(data); !errors.Is(err, keyfile.ErrMalformed) {
+		t.Errorf("error = %v, want ErrMalformed", err)
+	}
+}

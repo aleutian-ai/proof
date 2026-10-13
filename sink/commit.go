@@ -4,6 +4,7 @@
 package sink
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -49,6 +50,13 @@ import (
 // record is then committed normally. This is what lets a streaming consumer
 // acknowledge after committing without committing a redelivery twice.
 //
+// A duplicate is a record the chain already HOLDS: when a Source has a
+// position on the chain, the entry's stored content must equal the record's.
+// If it differs, or the stored content is gone or cannot be read, the record
+// is refused with ErrSourceConflict: it cannot be shown to be the record
+// already committed, and reporting it as one would drop it silently. The same
+// holds for a Source repeated within one call.
+//
 // # Inputs
 //
 //   - ctx: honoured by record signing and the append. With a remote record
@@ -69,12 +77,19 @@ import (
 //     is removed, all of it erasable. Errors never name a chain (a chain id
 //     beside the caller's records would be a row of the secret index); they
 //     still unwrap to their cause. The kinds:
-//   - *RecordError: an invalid record.
+//   - *RecordError: an invalid record (ErrInvalidRecord; nothing was
+//     attempted), or one whose Source is already committed with other content
+//     (ErrSourceConflict). Index names the record. Neither is retryable: set
+//     the record aside (dead-letter it) and retry the rest.
 //   - *PairError: one (class, subject) pair's own stored state failed (an
 //     inconsistent index row, an index that re-links an erased chain, a
 //     chain id that could not be minted). Records names that pair's records:
 //     set them aside and retry the rest.
 //   - ErrBusy: another process holds the folder.
+//   - ErrCorrupt: a file of the folder is damaged. Found before anything was
+//     written (the check each Sink makes once per file), or part-way, by the
+//     read or write that met the damage; the call then leaves what a crash at
+//     that point leaves, and cleanup failures are joined to the error.
 //   - ErrRecordSignerRequired, ErrSinkNotSigning: this Sink's signing does not
 //     match the sink's mode (WithRecordSigner). Configuration: do not retry.
 //   - A record signer failure: nothing was written; retry when it recovers.
@@ -99,8 +114,15 @@ import (
 //     recoverable: the next Commit of the same records reuses or recommits it,
 //     erasure removes it, and Verify reports leftovers. It is never committed
 //     evidence.
-//   - A reused Source is taken as the same record (see Record.Source): its
-//     outcome is Committed and Duplicate even if its content differs.
+//   - A Source reused for different content fails the whole call
+//     (ErrSourceConflict), every time it is delivered: all-or-none holds for
+//     it as for any other error.
+//   - The duplicate check reads the stored content, so it trusts the secrets
+//     file as far as it trusts the sources file: someone who can write both,
+//     and knows a future record's exact bytes, can still make it read as a
+//     duplicate. So can a sources row pointing a future Source at an existing
+//     entry whose content is byte-for-byte what that record will be (events
+//     that repeat exactly); Verify reports an entry with two source positions.
 //
 // # Assumptions
 //
@@ -138,6 +160,9 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Outcome, error) 
 		return nil, err
 	}
 	defer f.Close()
+	if err := s.preflight(); err != nil {
+		return nil, err
+	}
 	st, sec, err := s.openFiles()
 	if err != nil {
 		return nil, err
@@ -218,7 +243,13 @@ func (s *Sink) Commit(ctx context.Context, records []Record) ([]Outcome, error) 
 		for j, i := range idx {
 			recs[j] = records[i]
 		}
-		keep, dup, err := dropDuplicates(ctx, st, src, chains[pi], recs)
+		keep, dup, err := dropDuplicates(ctx, st, sec, src, chains[pi], recs)
+		var conflict *sourceConflict
+		if errors.As(err, &conflict) {
+			// One record's own fault, like an invalid record: named by its index
+			// in the call, so a consumer can set it aside and retry the rest.
+			return fail(&RecordError{Index: idx[conflict.at], Err: conflict})
+		}
 		if err != nil {
 			return fail(&PairError{Records: idx, Err: err})
 		}
@@ -331,32 +362,63 @@ func (s *Sink) resolvePair(ctx context.Context, st *boltstore.Store, subj *subje
 	return "", false, errors.New("sink: could not mint an unused chain id; the random source is suspect")
 }
 
+// sourceConflict is dropDuplicates' refusal of one record: recs[at] carries a
+// Source that is already committed (or earlier in the batch) with other
+// content. It unwraps to ErrSourceConflict.
+type sourceConflict struct {
+	at   int
+	what string
+}
+
+func (e *sourceConflict) Error() string { return ErrSourceConflict.Error() + ": " + e.what }
+func (e *sourceConflict) Unwrap() error { return ErrSourceConflict }
+
+// contentReader is what dropDuplicates reads stored content through.
+type contentReader interface {
+	get(chain, entryID string) (content, nonce []byte, tooBig bool, err error)
+}
+
 // dropDuplicates removes records whose Source is already committed on the
 // chain, or repeated earlier in the batch. dup[j] reports whether recs[j] was
 // dropped.
-func dropDuplicates(ctx context.Context, st *boltstore.Store, src *sourcesStore, chain string,
+//
+// A record is a duplicate only when the chain already holds it: the entry its
+// Source points at must be on the chain at that sequence AND its stored content
+// must equal the record's. A position alone proves nothing: the sources file
+// takes no key, so rows written into it for future sources would otherwise make
+// new records vanish as "already committed". Different content, or content that
+// is gone or unreadable, is a *sourceConflict.
+func dropDuplicates(ctx context.Context, st *boltstore.Store, sec contentReader, src *sourcesStore, chain string,
 	recs []Record) ([]Record, []bool, error) {
 	dup := make([]bool, len(recs))
 	if src == nil {
 		return recs, dup, nil
 	}
 	keep := make([]Record, 0, len(recs))
-	inBatch := map[string]bool{}
+	inBatch := map[string]int{} // source → index of its first record in recs
 	for j, r := range recs {
 		if r.Source == "" {
 			keep = append(keep, r)
 			continue
 		}
-		if inBatch[r.Source] {
+		if first, seen := inBatch[r.Source]; seen {
+			if !bytes.Equal(recs[first].Content, r.Content) {
+				return nil, nil, &sourceConflict{at: j, what: "the same source is given twice in this call " +
+					"with different content"}
+			}
 			dup[j] = true
 			continue
 		}
-		inBatch[r.Source] = true
+		inBatch[r.Source] = j
 		p, found, err := src.get(chain, r.Source)
 		if err != nil {
 			return nil, nil, err
 		}
-		if found {
+		// A row that is not a position this sink writes (a negative sequence,
+		// which a range read would take as "from the start", or an id that is
+		// no entry id) proves nothing: the record is committed, and the row
+		// replaced. Verify reports such rows.
+		if found && p.seq >= 0 && entryIDPattern.MatchString(p.entryID) {
 			// Recorded. Committed only if the chain holds that entry at that
 			// position; otherwise the earlier attempt stopped before its append.
 			rows, err := st.Range(ctx, chain, p.seq, p.seq, 1)
@@ -364,6 +426,17 @@ func dropDuplicates(ctx context.Context, st *boltstore.Store, src *sourcesStore,
 				return nil, nil, fmt.Errorf("check source position: %w", err)
 			}
 			if len(rows) == 1 && rows[0].EntryID == p.entryID {
+				content, _, tooBig, err := sec.get(chain, p.entryID)
+				switch {
+				case err != nil:
+					return nil, nil, &sourceConflict{at: j, what: "the content already committed for it could " +
+						"not be read, so the record cannot be shown to be the same one"}
+				case content == nil || tooBig:
+					return nil, nil, &sourceConflict{at: j, what: "the content already committed for it is " +
+						"missing, so the record cannot be shown to be the same one"}
+				case !bytes.Equal(content, r.Content):
+					return nil, nil, &sourceConflict{at: j, what: "it is already committed with different content"}
+				}
 				dup[j] = true
 				continue
 			}
@@ -391,6 +464,11 @@ type (
 	positionWriter interface {
 		putAll(positions map[string]map[string]position) error
 	}
+	// positionDeleter is the cleanup half of a positionWriter. Optional, so a
+	// writer that only ever fails need not have one.
+	positionDeleter interface {
+		deleteRows(positions map[string]map[string]position) error
+	}
 	chainsAppender interface {
 		AppendChains(ctx context.Context, batches []linker.ChainInputs) ([]linker.Result, error)
 	}
@@ -413,9 +491,9 @@ type (
 //
 // Content, nonces and signatures are durable before any entry that commits to
 // them exists. If a later step fails, this call's content, nonce and signature
-// rows are removed, for EVERY pair. Positions are left: a position with no entry
-// behind it is harmless, because the next Commit of that source checks the
-// chain and commits it.
+// rows are removed, for EVERY pair, and so are its source positions: a position
+// with no entry behind it would not stop the next Commit of that source (it
+// checks the chain), but Verify reports one, so a returned error leaves none.
 func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.Store,
 	sec secretsWriter, src positionWriter, rs *recordSigning, plans []pairPlan) error {
 	// One plan per chain: two pairs on one chain means a corrupt index. Refused
@@ -506,9 +584,9 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 		}
 	}
 
-	// cleanup removes this call's content, nonce and signature rows (one
-	// transaction per file). A failure is returned (joined): what it leaves is
-	// still erasable, but not gone.
+	// cleanup removes this call's content, nonce and signature rows and its
+	// source positions (one transaction per file). A failure is returned
+	// (joined): what it leaves is still erasable, but not gone.
 	cleanup := func() error {
 		ids := map[string][]string{}
 		for chain, byEntry := range rows {
@@ -522,6 +600,11 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 		}
 		if rs != nil {
 			if err := rs.writer.deleteRows(ids); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if d, ok := src.(positionDeleter); ok && len(positions) > 0 {
+			if err := d.deleteRows(positions); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -545,9 +628,10 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 			return fail(fmt.Errorf("store record signatures: %w", err))
 		}
 	}
-	// Positions go down BEFORE the append. A position with no entry behind it is
-	// harmless: the next Commit of that source sees it is not on the chain. An
-	// entry with no position is the duplicate this exists to prevent.
+	// Positions go down BEFORE the append. A position with no entry behind it
+	// does not suppress anything: the next Commit of that source sees it is not
+	// on the chain (and cleanup removes it on a returned error). An entry with
+	// no position is the duplicate this exists to prevent.
 	if len(positions) > 0 {
 		if err := src.putAll(positions); err != nil {
 			return fail(fmt.Errorf("record sources: %w", err))
@@ -578,7 +662,7 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 }
 
 // errCleanupFailed marks a failed call whose prepared rows (content and
-// nonces, or record signatures) could not be removed: the index rows are kept,
+// nonces, record signatures, or source positions) could not be removed: the index rows are kept,
 // so the subject's erasure still reaches them.
 var errCleanupFailed = errors.New("this call's prepared rows could not be removed")
 

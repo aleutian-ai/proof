@@ -2,8 +2,8 @@
   "_comment": "The AleutianChain conformance vectors, and their digests. THIS FILE IS THE CONTRACT. Every implementation claiming compatibility must reproduce these vectors' expected outputs exactly. The digests exist so that a copy vendored into another repository cannot drift unnoticed: an implementation reads its local copy and checks it against these digests before trusting it. Changing a vector is a deliberate act that changes a digest here, which every other implementation then notices. A vector must never be regenerated to make a failing implementation pass -- that is the circularity these vectors exist to break.",
   "vectors": {
     "anchor_chain_hash_vectors.json": {
-      "sha256": "a201732e12591267693286f62ebbd1d8ecae1b2e8dec38905df4d1ec927cd067",
-      "bytes": 3836
+      "sha256": "21976ad5755f7914b06f553dab75a2eb54024163f141c4e45af337e259feaac8",
+      "bytes": 3890
     },
     "anchor_v4_canonical_vectors.json": {
       "sha256": "66277f5d390d2e307cb97b0dcbf9331b839cdcedb54f0919d1f46cfa3d3cfde3",
@@ -22,12 +22,12 @@
       "bytes": 5733
     },
     "chain_vectors.json": {
-      "sha256": "1f1e112920c203ba6c2e24543c6745582e5cbf7e458a9daf5702fe10b21506b5",
-      "bytes": 1590
+      "sha256": "7be85a1331b25d243920c754fcad32a16bdc5c8aa0341b8c25a8b29c75c121d9",
+      "bytes": 1718
     },
     "commitment_vectors.json": {
-      "sha256": "5ff4a440548f2f61b0604b7bbd735a1fc082ceacb87368731f0bc42c8e491e73",
-      "bytes": 7314
+      "sha256": "c97cf5f7d97f09437d0fc505198065468c96a69a2c03127704de6a64d74aa902",
+      "bytes": 7592
     },
     "keyid_vectors.json": {
       "sha256": "159e3a40e365dce5cf803a753e77b6d8f0c020d1460b5333a065351231c9f03d",

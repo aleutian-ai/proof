@@ -36,33 +36,49 @@ type anchorResult struct {
 	// assumedGenesis records that no predecessor was supplied, so the anchor
 	// was checked as though it were the first in its chain. Reported because a
 	// head mismatch alongside it almost certainly means the missing input
-	// rather than an attack — the exact confusion `_51` was about.
+	// rather than an attack, and the two must not be confused.
 	assumedGenesis bool
 }
+
+// inputFileError is a failure to read or use a file named by --anchor,
+// --previous or --key: it is missing, unreadable, or not what the flag says.
+//
+// It is told apart from the other errors here because it is an input failure
+// (exit 3), where flags that do not fit together are a usage error (exit 2).
+type inputFileError struct{ err error }
+
+// Error implements the error interface.
+func (e *inputFileError) Error() string { return e.err.Error() }
+
+// Unwrap returns the underlying error.
+func (e *inputFileError) Unwrap() error { return e.err }
 
 // verifyAnchorFlags runs the anchor half of `proof verify`.
 //
 // # Description
 //
-// Resolves the predecessor hash, loads the key if one was given, and calls
-// either [verify.BindAnchor] or [verify.VerifyAnchor]. Returns nil when no
+// Resolves the predecessor hash, loads the key if one was given, and binds
+// the anchor to the entries the walker has seen: [verify.Walker.BindAnchor]
+// without a key, [verify.Walker.VerifyAnchor] with one. Returns nil when no
 // --anchor was supplied, which leaves `proof verify` doing exactly what it
 // always did.
 //
 // # Inputs
 //
 //   - opts: the anchor flags
-//   - entries: the chain already loaded for the linkage check
+//   - w: a walker that has been given every entry of the chain. Unused, and
+//     may be nil, when no --anchor was supplied.
 //
 // # Outputs
 //
 //   - *anchorResult: nil when no anchor was requested
-//   - error: a usage or I/O failure; a FAILED verification is not an error, it
-//     is a result
+//   - error: an *inputFileError for a file that could not be read or used,
+//     otherwise a usage failure; a FAILED verification is not an error, it is
+//     a result
 //
 // # Example
 //
-//	res, err := verifyAnchorFlags(opts, entries)
+//	res, err := verifyAnchorFlags(opts, w)
 //
 // # Limitations
 //
@@ -70,8 +86,8 @@ type anchorResult struct {
 //
 // # Assumptions
 //
-//   - entries are the same ones the linkage check just walked.
-func verifyAnchorFlags(opts anchorOptions, entries []verify.Entry) (*anchorResult, error) {
+//   - w walked the same entries the linkage check did, from the chain's first.
+func verifyAnchorFlags(opts anchorOptions, w *verify.Walker) (*anchorResult, error) {
 	if opts.anchorPath == "" {
 		if opts.keyPath != "" {
 			return nil, fmt.Errorf("--key was given without --anchor; there is nothing " +
@@ -86,7 +102,7 @@ func verifyAnchorFlags(opts anchorOptions, entries []verify.Entry) (*anchorResul
 
 	a, err := loadAnchorFile(opts.anchorPath)
 	if err != nil {
-		return nil, err
+		return nil, &inputFileError{err}
 	}
 
 	previousHash, assumed, err := resolvePreviousHash(opts)
@@ -96,7 +112,7 @@ func verifyAnchorFlags(opts anchorOptions, entries []verify.Entry) (*anchorResul
 	out := &anchorResult{assumedGenesis: assumed}
 
 	if opts.keyPath == "" {
-		out.bind, err = verify.BindAnchor(*a, entries, previousHash)
+		out.bind, err = w.BindAnchor(*a, previousHash)
 		if err != nil {
 			return nil, err
 		}
@@ -107,7 +123,7 @@ func verifyAnchorFlags(opts anchorOptions, entries []verify.Entry) (*anchorResul
 	if err != nil {
 		return nil, err
 	}
-	out.bind, err = verify.VerifyAnchor(*a, entries, previousHash, ring)
+	out.bind, err = w.VerifyAnchor(*a, previousHash, ring)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +151,8 @@ func verifyAnchorFlags(opts anchorOptions, entries []verify.Entry) (*anchorResul
 //
 //   - string: the predecessor's chain hash
 //   - bool: true when nothing was supplied and genesis was assumed
-//   - error: if both forms were given, or the file could not be read
+//   - error: if both forms were given, or an *inputFileError if the file
+//     could not be read
 //
 // # Example
 //
@@ -158,7 +175,7 @@ func resolvePreviousHash(opts anchorOptions) (string, bool, error) {
 	case opts.previousPath != "":
 		prev, err := loadAnchorFile(opts.previousPath)
 		if err != nil {
-			return "", false, err
+			return "", false, &inputFileError{err}
 		}
 		return prev.ChainHash, false, nil
 
@@ -190,8 +207,9 @@ func resolvePreviousHash(opts anchorOptions) (string, bool, error) {
 // # Outputs
 //
 //   - *anchor.KeyRing: holding exactly this key
-//   - error: if the file cannot be read, is the wrong algorithm, or the trust
-//     label is unrecognised
+//   - error: an *inputFileError if the file cannot be read, does not parse
+//     or holds a key of another algorithm; a plain error if the trust label is
+//     unrecognised
 //
 // # Example
 //
@@ -208,15 +226,15 @@ func resolvePreviousHash(opts anchorOptions) (string, bool, error) {
 func loadPublicKeyRing(path, trustLabel, keyID string) (*anchor.KeyRing, error) {
 	pem, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, &inputFileError{fmt.Errorf("read %s: %w", path, err)}
 	}
 	alg, pub, err := keyfile.ParsePublicKey(pem)
 	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, &inputFileError{fmt.Errorf("parse %s: %w", path, err)}
 	}
 	if alg != keyfile.MLDSA65 {
-		return nil, fmt.Errorf("%s holds a %s key, but anchors are signed with ML-DSA-65",
-			path, alg)
+		return nil, &inputFileError{fmt.Errorf("%s holds a %s key, but anchors are signed with ML-DSA-65",
+			path, alg)}
 	}
 
 	trust := anchor.TrustProvided

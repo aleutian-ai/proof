@@ -27,8 +27,8 @@ import (
 // Only key generation is covered. ACVP's signature vectors drive
 // Sign_internal from an expanded signing key with no context prefix, which is
 // not the seed-based pure-ML-DSA path this package exposes, so they cannot be
-// run through it without reaching into internals. That gap is stated in the
-// ticket rather than papered over.
+// run through it without reaching into internals. That gap is stated here
+// rather than papered over.
 func TestACVPKeyGen(t *testing.T) {
 	f, err := os.Open("testdata/acvp_keygen.json.gz")
 	if err != nil {

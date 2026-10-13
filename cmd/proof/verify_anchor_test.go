@@ -201,8 +201,8 @@ func TestVerifyAnchor_FlagsMayFollowTheFilename(t *testing.T) {
 	}
 }
 
-// TestVerifyAnchor_AssumedGenesisIsReported is the `_51` lesson carried into the
-// CLI: a missing predecessor must never masquerade as tamper evidence.
+// TestVerifyAnchor_AssumedGenesisIsReported: a missing predecessor must never
+// masquerade as tamper evidence.
 func TestVerifyAnchor_AssumedGenesisIsReported(t *testing.T) {
 	f := newVerifyFixture(t, 3)
 
@@ -390,5 +390,60 @@ func TestVerifyAnchor_JSONCarriesBothResults(t *testing.T) {
 	}
 	if bare["verdict"] != string(verify.VerdictIntact) {
 		t.Errorf("verdict = %v, want %v without an anchor", bare["verdict"], verify.VerdictIntact)
+	}
+}
+
+// TestVerifyAnchor_AFileThatCannotBeReadIsAnIOError: a missing --anchor,
+// --previous or --key file is the same failure as a missing entries file, and
+// has the same exit code. It was reported as a usage error, so a script could
+// not tell a path that does not exist from flags that do not fit together.
+func TestVerifyAnchor_AFileThatCannotBeReadIsAnIOError(t *testing.T) {
+	f := newVerifyFixture(t, 2)
+	missing := filepath.Join(f.dir, "not-here")
+	notAnAnchor := filepath.Join(f.dir, "not-an-anchor.json")
+	if err := os.WriteFile(notAnAnchor, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	notAKey := filepath.Join(f.dir, "not-a-key.pem")
+	if err := os.WriteFile(notAKey, []byte("C4N4RY not a key\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"--anchor is missing", []string{f.entriesPath, "--anchor", missing}},
+		{"--previous is missing", []string{f.entriesPath, "--anchor", f.anchorPath, "--previous", missing}},
+		{"--key is missing", []string{f.entriesPath, "--anchor", f.anchorPath, "--key", missing}},
+		{"--anchor is not an anchor", []string{f.entriesPath, "--anchor", notAnAnchor}},
+		{"--key is not a key", []string{f.entriesPath, "--anchor", f.anchorPath, "--key", notAKey}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, stdout, stderr := runVerify(t, tc.args...)
+			if code != exitIOError {
+				t.Errorf("exit %d, want %d (io error): %s", code, exitIOError, stderr)
+			}
+			if strings.Contains(stdout, "INTACT") || strings.Contains(stdout, "BROKEN") {
+				t.Errorf("a verdict was printed although an input could not be read:\n%s", stdout)
+			}
+			if strings.Contains(stderr, "C4N4RY") {
+				t.Errorf("the error echoes the file's contents: %s", stderr)
+			}
+		})
+	}
+}
+
+// TestVerifyAnchor_BindsWhateverMaxBreaksIs: the anchor is bound by a walk of
+// its own, so limiting or silencing the breaks that are REPORTED changes
+// nothing about what binding finds.
+func TestVerifyAnchor_BindsWhateverMaxBreaksIs(t *testing.T) {
+	f := newVerifyFixture(t, 4)
+	for _, max := range []string{"0", "1", "3", "-1"} {
+		code, out, stderr := runVerify(t, f.entriesPath, "--anchor", f.anchorPath, "--key", f.pubPath, "--max-breaks", max)
+		if code != exitOK || !strings.Contains(out, "ANCHOR BOUND") || !strings.Contains(out, "INTACT, ANCHORED") {
+			t.Errorf("--max-breaks %s: exit %d\n%s%s", max, code, out, stderr)
+		}
 	}
 }

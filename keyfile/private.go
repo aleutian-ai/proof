@@ -4,6 +4,7 @@
 package keyfile
 
 import (
+	"bytes"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/pem"
@@ -125,6 +126,11 @@ func MarshalPrivateKey(alg Algorithm, seed []byte) ([]byte, error) {
 // "ALEUTIAN HYBRID KEM PRIVATE KEY" file (always X-Wing). The algorithm comes
 // from the file's object identifier.
 //
+// The file is one PEM block and nothing else: it starts at the block's BEGIN
+// line, the block has no headers (an encrypted key in the old PEM form carries
+// "Proc-Type" and "DEK-Info" there), and only whitespace follows it. The
+// platform keygen labels may carry their "Name" header and no other.
+//
 // For a "both"-form key the seed is returned and the expanded key checked
 // where possible — see [CheckConsistency]. An expandedKey-only file is
 // rejected: expansion is one-way, so it contains no seed to return.
@@ -151,7 +157,8 @@ func MarshalPrivateKey(alg Algorithm, seed []byte) ([]byte, error) {
 // # Limitations
 //
 //   - Does not decrypt encrypted private key files (EncryptedPrivateKeyInfo).
-//   - Rejects a file carrying an embedded public key, which it cannot verify.
+//   - Rejects a file carrying an embedded public key, which it cannot verify,
+//     and one carrying PKCS#8 attributes.
 //
 // # Assumptions
 //
@@ -161,13 +168,12 @@ func ParsePrivateKey(data []byte) (Algorithm, []byte, error) {
 		return Unknown, nil, fmt.Errorf("%w: %d bytes exceeds the %d-byte limit",
 			ErrMalformed, len(data), maxFileSize)
 	}
-	block, rest := pem.Decode(data)
-	if block == nil {
-		return Unknown, nil, fmt.Errorf("%w: no PEM block", ErrMalformed)
+	block, err := decodeOnlyBlock(data)
+	if block != nil {
+		defer mem.Zeroize(block.Bytes)
 	}
-	defer mem.Zeroize(block.Bytes)
-	if len(trimSpace(rest)) != 0 {
-		return Unknown, nil, fmt.Errorf("%w: %d bytes after the PEM block", ErrMalformed, len(rest))
+	if err != nil {
+		return Unknown, nil, err
 	}
 	if block.Type == legacyPEMTypePrivate {
 		return parseLegacyPrivate(block.Bytes)
@@ -191,6 +197,10 @@ func ParsePrivateKey(data []byte) (Algorithm, []byte, error) {
 
 	if k.Version != 0 && k.Version != 1 {
 		return Unknown, nil, fmt.Errorf("%w: version %d", ErrMalformed, k.Version)
+	}
+	if len(k.Attributes.FullBytes) != 0 {
+		// Attributes say things about the key that nothing here can check.
+		return Unknown, nil, fmt.Errorf("%w: attributes are not accepted", ErrMalformed)
 	}
 	if len(k.PublicKey.FullBytes) != 0 {
 		// An embedded public key cannot be checked against the seed here, and a
@@ -271,6 +281,69 @@ func parseChoice(alg Algorithm, info algorithmInfo, inner []byte) (Algorithm, []
 	default:
 		return Unknown, nil, fmt.Errorf("%w: private key tag 0x%02x", ErrMalformed, inner[0])
 	}
+}
+
+// pemBegin starts every PEM block.
+var pemBegin = []byte("-----BEGIN ")
+
+// decodeOnlyBlock reads a file that must be exactly one PEM block.
+//
+// # Description
+//
+// encoding/pem skips whatever precedes a block and parses "Name: value"
+// headers inside it. A key file with text in front of the block, or with
+// headers, is not the file this package writes, and a reader shown the text
+// may take it for something the key says about itself. Both are refused, as
+// trailing bytes are. The one header kept is the "Name" label the platform's
+// keygen writes on its own file format; see headersAccepted.
+//
+// # Outputs
+//
+//   - *pem.Block: the block. It may be non-nil beside an error, so a caller
+//     holding a private key can zeroize its bytes either way.
+//   - error: ErrMalformed, naming what is wrong and never the bytes
+func decodeOnlyBlock(data []byte) (*pem.Block, error) {
+	block, rest := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("%w: no PEM block", ErrMalformed)
+	}
+	// The decoder skips a BEGIN line it cannot finish as well as plain text,
+	// so the block read must be the first one and start at the first byte.
+	consumed := data[:len(data)-len(rest)]
+	if !bytes.HasPrefix(consumed, pemBegin) || bytes.Count(consumed, pemBegin) != 1 {
+		return block, fmt.Errorf("%w: bytes before the PEM block", ErrMalformed)
+	}
+	if !headersAccepted(block) {
+		return block, fmt.Errorf("%w: the PEM block has headers that are not accepted",
+			ErrMalformed)
+	}
+	if len(trimSpace(rest)) != 0 {
+		return block, fmt.Errorf("%w: %d bytes after the PEM block", ErrMalformed, len(rest))
+	}
+	return block, nil
+}
+
+// legacyNameHeader is the one PEM header the platform's keygen writes.
+const legacyNameHeader = "Name"
+
+// headersAccepted reports whether a block's PEM headers are ones this package
+// reads past.
+//
+// A block has none, with one exception. The platform's keygen format (the
+// "ALEUTIAN XWING …" labels) carries an operator's label in a "Name" header,
+// and those are files customers already hold. That header alone is accepted,
+// on those labels alone, and its value is never read. Every other header is
+// refused on every label: "Proc-Type" and "DEK-Info" mark a body that is
+// encrypted, which this package would otherwise read as a plain key.
+func headersAccepted(block *pem.Block) bool {
+	if len(block.Headers) == 0 {
+		return true
+	}
+	if !legacyRawPrivateTypes[block.Type] && !legacyRawPublicTypes[block.Type] {
+		return false
+	}
+	_, named := block.Headers[legacyNameHeader]
+	return named && len(block.Headers) == 1
 }
 
 // clone returns a copy of b, so a returned seed never aliases a buffer this

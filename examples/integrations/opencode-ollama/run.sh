@@ -4,7 +4,7 @@
 # with the proof CLI, which trusts none of the above.
 #
 #   ./run.sh                          # ministral-3:3b
-#   MODEL=ornith-1.5:35b ./run.sh     # any Ollama model that supports tools
+#   MODEL=ornith-1.5:9b ./run.sh     # any Ollama model that supports tools
 set -euo pipefail
 
 MODEL="${MODEL:-ministral-3:3b}"

@@ -62,8 +62,8 @@ func subProof(m int, leaves [][]byte, b bool) [][]byte {
 //
 // Reconstructs BOTH the old root (size m) and the new root (size n) from the proof and
 // requires them to match rootA and rootB respectively — proving rootB's tree is an
-// append-only extension of rootA's. Both roots MUST come from signature-verified anchors
-// (ADR 003 D8). Compares constant-time.
+// append-only extension of rootA's. Both roots MUST come from signature-verified anchors.
+// Compares constant-time.
 //
 // # Inputs
 //

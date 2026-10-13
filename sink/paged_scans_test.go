@@ -103,7 +103,10 @@ func TestReverseAndForwardAfter(t *testing.T) {
 	var keys []string
 	after := ""
 	for i := 0; i < 10; i++ {
-		rows := ix.reverseAfter(after, 1)
+		rows, err := ix.reverseAfter(after, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(rows) == 0 {
 			break
 		}
@@ -116,7 +119,10 @@ func TestReverseAndForwardAfter(t *testing.T) {
 	examined := 0
 	var cur []byte
 	for i := 0; i < 10; i++ {
-		bad, next, done := ix.badForwardAfter(cur, 1)
+		bad, next, done, err := ix.badForwardAfter(cur, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(bad) != 0 {
 			t.Fatalf("a consistent index reported bad rows: %v", bad)
 		}

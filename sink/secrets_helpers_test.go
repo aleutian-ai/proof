@@ -10,7 +10,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// Content now lives in evidence.db.secrets (_74c). These stand in for the file
+// Content now lives in evidence.db.secrets. These stand in for the file
 // operations the tests used to tamper with content: each opens the secrets file
 // directly, as someone editing it would.
 

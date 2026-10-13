@@ -36,9 +36,13 @@ func decodeVector(t *testing.T, v vector) (nonce, content []byte) {
 }
 
 // TestCompute_MatchesTheVectors is the conformance check. The expected values
-// were computed with Python's hashlib, not by this package, so agreement here
-// means two independent implementations agree. The reject cases are shared too,
-// so every language checks the same refusals.
+// were computed with Python's hashlib (scripts/spec-vectors.py), not by this
+// package, so agreement here means two independent implementations agree. The
+// reject cases are shared too, so every language checks the same refusals.
+//
+// The wrong-length-nonce reject cases store the commitment the formula gives
+// for that nonce when nothing checks its length. An implementation that hashes
+// such a nonce therefore ACCEPTS the case; only a refusal passes.
 func TestCompute_MatchesTheVectors(t *testing.T) {
 	var file struct {
 		Domain    string   `json:"domain"`
@@ -77,6 +81,20 @@ func TestCompute_MatchesTheVectors(t *testing.T) {
 			nonce, content := decodeVector(t, v)
 			if Verify(v.Commitment, nonce, content) {
 				t.Error("Verify accepted a case every implementation must reject")
+			}
+			if len(nonce) != NonceSize {
+				// The refusal must be for the length, and must come before any hashing.
+				if got, err := compute(nonce, content); !errors.Is(err, ErrNonceSize) || got != "" {
+					t.Errorf("compute(%d-byte nonce) = %q, %v; want \"\", ErrNonceSize", len(nonce), got, err)
+				}
+				// The case has teeth only if the stored value is what a
+				// non-checking implementation would compute.
+				h := sha512.Sum512(content)
+				unchecked := sha512.Sum512(append(append([]byte(Domain), nonce...), h[:]...))
+				if v.Commitment != hex.EncodeToString(unchecked[:]) {
+					t.Error("the stored commitment is not the unchecked formula over this nonce: " +
+						"an implementation with no length check would pass this case")
+				}
 			}
 		})
 	}

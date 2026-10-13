@@ -61,7 +61,7 @@ func inclusionPath(m int, leaves [][]byte) [][]byte {
 // Recomputes the tree root by folding leafHash up through the proof using the same
 // (index, treeSize) subtree structure the proof was generated with, then compares
 // (constant-time) to the trusted root. The root MUST come from a signature-verified
-// anchor (ADR 003 D8) — this function does not fetch or trust it.
+// anchor — this function does not fetch or trust it.
 //
 // # Inputs
 //

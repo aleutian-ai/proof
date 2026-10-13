@@ -92,6 +92,17 @@ say) can be refused as over 64 KiB though it was smaller as protobuf.
 the record is refused; the resource is consulted only when the record has no
 such attribute.
 
+## The demo collector is not a deployment recipe
+
+`run.sh` starts one OpenTelemetry Collector in a container. Its OTLP receivers
+accept anything sent to them, without TLS and without authentication, and it
+forwards to `otel-sink` over plain HTTP, which `otel-sink` also accepts without
+authentication. Anyone who can reach either port can put records on a chain.
+That is acceptable for a demo on one machine, and for nothing else. A real
+deployment needs TLS and client authentication on the collector's receivers,
+and `otel-sink` reachable only by the collector; none of that is shown here
+(see Notes).
+
 ## Run it
 
 ```sh

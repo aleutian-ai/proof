@@ -4,7 +4,7 @@
 //go:build bundlefixture
 
 // Command bundlefixture builds a real sink with fixed keys and exports it with
-// `sink.Export`, for the bundle conformance vectors (`_72c`). It writes the
+// `sink.Export`, for the bundle conformance vectors. It writes the
 // bundle together with a description of what it BUILT (chains, events,
 // erasure positions, checkpoints), so scripts/bundle-vectors.py derives the
 // expected result from the construction and the spec, never by verifying the

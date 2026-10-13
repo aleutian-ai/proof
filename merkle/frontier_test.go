@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestFrontier_RootMatchesWholeTree_EverySize is the load-bearing invariant (ADR 003 D5):
+// TestFrontier_RootMatchesWholeTree_EverySize is the load-bearing invariant:
 // the incrementally-maintained frontier root equals the whole-tree root at EVERY size.
 func TestFrontier_RootMatchesWholeTree_EverySize(t *testing.T) {
 	t.Parallel()
@@ -45,7 +45,7 @@ func TestFrontierFromLeaves_MatchesIncremental(t *testing.T) {
 
 // TestFrontier_ErasureStable: the frontier root is a pure function of the content_hash
 // leaves. Since GDPR erasure leaves content_hash inherited/unchanged, rebuilding from the
-// same content_hashes reproduces the exact root (ADR 003 D3 erasure stability).
+// same content_hashes reproduces the exact root (erasure stability).
 func TestFrontier_ErasureStable(t *testing.T) {
 	t.Parallel()
 	d := leaves(9)

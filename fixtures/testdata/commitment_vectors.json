@@ -1,5 +1,5 @@
 {
-  "_comment": "Salted commitments: SHA-512(\"aleutian.commit.v1:\" || nonce || SHA-512(content)), nonce exactly 32 bytes. Expected values computed with Python hashlib, independently of any implementation under test. 'vectors' MUST reproduce exactly; every 'reject' case MUST fail verification. See docs/format-spec.md section 8.",
+  "_comment": "Salted commitments: SHA-512(\"aleutian.commit.v1:\" || nonce || SHA-512(content)), nonce exactly 32 bytes. Expected values computed with Python hashlib (scripts/spec-vectors.py), independently of any implementation under test. 'vectors' MUST reproduce exactly; every 'reject' case MUST fail verification. In the three wrong-length-nonce reject cases the stored commitment is the formula applied to that nonce without a length check, so an implementation that hashes a nonce of the wrong length accepts the case and fails it; only refusing the nonce passes. See docs/format-spec.md section 8.",
   "domain": "aleutian.commit.v1:",
   "nonce_size": 32,
   "vectors": [
@@ -69,19 +69,19 @@
       "description": "nonce of 0 bytes",
       "nonce_hex": "",
       "content_hex": "78",
-      "commitment": "a373ef1ad31021e12de598dc570e44c26700db32bf9d5fee170bebf54a0d59ee4b2f0d2a17dd68b6dee688533caafbc9b0427f4c56ad4aa47e9d27a62e987188"
+      "commitment": "24daaf479554cbbfe4bd042bc02ebf618ffe80152b5c97c868d5ee0e81c9aec20055c5a364200f899aaf4a83898f5065c21eb140b09068d61661b1b266f9d7ed"
     },
     {
       "description": "nonce of 31 bytes",
       "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e",
       "content_hex": "636f6e73656e743a20796573",
-      "commitment": "a373ef1ad31021e12de598dc570e44c26700db32bf9d5fee170bebf54a0d59ee4b2f0d2a17dd68b6dee688533caafbc9b0427f4c56ad4aa47e9d27a62e987188"
+      "commitment": "933bb08ee0c1162f7881edc5020d2514b94687975d59e3c7322a60f39e1d735e594eaafc6a9a3e239a13e0eb0ec4e7d3f7eb236a816c99d9d34c705e3598f45a"
     },
     {
       "description": "nonce of 33 bytes",
       "nonce_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f00",
       "content_hex": "636f6e73656e743a20796573",
-      "commitment": "a373ef1ad31021e12de598dc570e44c26700db32bf9d5fee170bebf54a0d59ee4b2f0d2a17dd68b6dee688533caafbc9b0427f4c56ad4aa47e9d27a62e987188"
+      "commitment": "9bb4c1044c7785a6a3f0590b5b693d80b4ed9419890ed0cdca8ef05375576f825afcc24cd6d2b8a0c38fe1264cae343f795157ef80a831a654f13177fd6c3061"
     },
     {
       "description": "uppercase commitment: commitments compare exactly",

@@ -18,7 +18,9 @@ import (
 	"github.com/aleutian-ai/proof/store"
 )
 
-// _75d review fixes.
+// What Verify reports when a chain with record signatures, or the signatures
+// file, was edited: a spliced or truncated chain, a damaged file, rows that
+// match no entry, and a key source that fails.
 
 func readEntries(t *testing.T, s *Sink, chain string, n int) []store.Entry {
 	t.Helper()
@@ -29,10 +31,10 @@ func readEntries(t *testing.T, s *Sink, chain string, n int) []store.Entry {
 	return es
 }
 
-// #1 (HIGH), regression: a validly signed record spliced into the MIDDLE of a
+// A validly signed record spliced into the MIDDLE of a
 // chain, with the keyless chain hashes recomputed and the next entry's signed
 // previous_hash left as it was, is caught: the stored previous_hash must be the
-// previous entry's chain hash. Found by the _75d review (two PoCs).
+// previous entry's chain hash.
 func TestVerify_MiddleSpliceIsCaught(t *testing.T) {
 	ctx := context.Background()
 	s, ring, rs := signedSink(t)
@@ -63,7 +65,7 @@ func TestVerify_MiddleSpliceIsCaught(t *testing.T) {
 	}
 }
 
-// #1 (HIGH), regression: front truncation (entry 0 removed, the keyless hashes
+// Front truncation (entry 0 removed, the keyless hashes
 // recomputed) is caught: a sink chain starts at sequence 0 with no previous
 // hash.
 func TestVerify_FrontTruncationIsCaught(t *testing.T) {
@@ -98,7 +100,7 @@ func TestVerify_FrontTruncationIsCaught(t *testing.T) {
 	}
 }
 
-// #2: a first signed commit that never reached its chain (its cleanup failed,
+// A first signed commit that never reached its chain (its cleanup failed,
 // as a crash would leave it) leaves signature rows; erasing the subject removes
 // them, and the folder then verifies (not REMOVED).
 func TestErase_FirstCommitLeftoverSignatures(t *testing.T) {
@@ -135,7 +137,7 @@ func TestErase_FirstCommitLeftoverSignatures(t *testing.T) {
 	}
 }
 
-// #4: a damaged signatures file is a finding in the report, never a reason
+// A damaged signatures file is a finding in the report, never a reason
 // for Verify to report nothing.
 func TestVerify_DamagedSignaturesFileIsAFinding(t *testing.T) {
 	cases := map[string]func(t *testing.T, s *Sink){
@@ -182,7 +184,7 @@ func TestVerify_DamagedSignaturesFileIsAFinding(t *testing.T) {
 	}
 }
 
-// #7: an entry in another chain format than v3 (all this sink writes) is
+// An entry in another chain format than v3 (all this sink writes) is
 // reported: v2 hashes bind a free-form run id no signature covers.
 func TestVerify_NonV3EntryIsReported(t *testing.T) {
 	s, ring, _ := signedSink(t)
@@ -193,7 +195,7 @@ func TestVerify_NonV3EntryIsReported(t *testing.T) {
 	}
 }
 
-// #8: an orphan signature on an erased chain keeps it erased-unanchored even
+// An orphan signature on an erased chain keeps it erased-unanchored even
 // with record trust (a trailing run of orphans is the erasure-reversal shape).
 func TestVerify_SignedErasureWithOrphanWaitsForACheckpoint(t *testing.T) {
 	s, ring, rs := signedSink(t)
@@ -217,7 +219,7 @@ func (failingSource) PublicKey(string) ([]byte, anchor.Trust, error) {
 	return nil, anchor.TrustProvided, errors.New("kms: unavailable")
 }
 
-// #19: a key source that fails is an error (verification could not run), not
+// A key source that fails is an error (verification could not run), not
 // a verdict on the signatures.
 func TestVerify_KeySourceFailureIsAnError(t *testing.T) {
 	s, ring, _ := signedSink(t)
@@ -227,7 +229,7 @@ func TestVerify_KeySourceFailureIsAnError(t *testing.T) {
 	}
 }
 
-// #19: signature rows of a pending chain with no entries are a note.
+// Signature rows of a pending chain with no entries are a note.
 func TestVerify_PendingChainSignatureRowsAreANote(t *testing.T) {
 	s, ring, _ := signedSink(t)
 	fresh := "events." + strings.Repeat("6", 32)
@@ -241,7 +243,7 @@ func TestVerify_PendingChainSignatureRowsAreANote(t *testing.T) {
 	}
 }
 
-// #13: a crafted row under a valid chain but an invalid entry id is counted
+// A crafted row under a valid chain but an invalid entry id is counted
 // once (malformed), not also as an orphan.
 func TestVerify_CraftedRowCountedOnce(t *testing.T) {
 	s, ring, _ := signedSink(t)
@@ -258,7 +260,7 @@ func TestVerify_CraftedRowCountedOnce(t *testing.T) {
 	}
 }
 
-// #1, the variant the start-at-zero check alone catches: entry 0 removed AND
+// The front truncation the start-at-zero check alone catches: entry 0 removed AND
 // the new first entry's previous_hash blanked (no record trust, so no
 // signature notices). Only "a sink chain starts at sequence 0" sees it.
 func TestVerify_FrontTruncationWithBlankedPrevious(t *testing.T) {

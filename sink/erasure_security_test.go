@@ -14,7 +14,7 @@ import (
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 )
 
-// TestErase_ForgedErasureIsRejected is review finding 1.1. entry_type is not in
+// TestErase_ForgedErasureIsRejected: entry_type is not in
 // the chain hash or the checkpoint, so a writer can relabel event k as an
 // erasure. If an erasure record were checked by plain SHA-512, the writer could
 // make the "record" the 115-byte commitment preimage of event k, whose plain
@@ -77,7 +77,7 @@ func TestErase_ForgedErasureIsRejected(t *testing.T) {
 	}
 }
 
-// TestErase_RemovesNoncesFromTheFile is review finding 1.2. Deleting keys in
+// TestErase_RemovesNoncesFromTheFile: deleting keys in
 // bbolt leaves the bytes in free pages: an erased nonce must not be findable
 // anywhere in the live nonce file.
 func TestErase_RemovesNoncesFromTheFile(t *testing.T) {
@@ -103,7 +103,7 @@ func TestErase_RemovesNoncesFromTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The erased events' plaintext is gone from the file's bytes too: content
-	// lives in the same file and is rewritten out of it (_74c), not unlinked.
+	// lives in the same file and is rewritten out of it, not unlinked.
 	if bytes.Contains(raw, []byte(`"user":"u-81"`)) {
 		t.Fatal("an erased event's plaintext is still in the secrets file's bytes")
 	}
@@ -119,8 +119,7 @@ func TestErase_RemovesNoncesFromTheFile(t *testing.T) {
 	}
 }
 
-// TestErase_DeletesSourcesAndForgetsThem is review finding 1.3, owner decision
-// (a). Erasure deletes the chain's upstream positions from the live sources
+// TestErase_DeletesSourcesAndForgetsThem: erasure deletes the chain's upstream positions from the live sources
 // file, so the file no longer maps the erased pseudonym to upstream messages.
 // The accepted cost: a redelivery after the erasure is committed again, after
 // the erasure entry, where it is visible and can be erased again.
@@ -152,9 +151,9 @@ func TestErase_DeletesSourcesAndForgetsThem(t *testing.T) {
 
 	got, err := s.Commit(ctx, recs)
 	if err != nil || pattern(got) != "NN" {
-		t.Fatalf("redelivery after erasure: %v, %v; want committed again (decision (a))", got, err)
+		t.Fatalf("redelivery after erasure: %v, %v; want committed again", got, err)
 	}
-	// ...on a NEW chain: the subject was forgotten (_69b), so the redelivery can
+	// ...on a NEW chain: the subject was forgotten, so the redelivery can
 	// never rejoin the erased history.
 	if cidIn(t, s, testClass, "u-1") == cid(t, s, "u-1") {
 		t.Fatal("the redelivery was appended to the erased chain")

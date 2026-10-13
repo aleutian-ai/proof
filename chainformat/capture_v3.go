@@ -81,7 +81,7 @@ import (
 )
 
 // DomainPrefixV3 is the locked v3 domain prefix shared with the consent chain
-// (internal/consent.ChainCanonicalV3DomainPrefix). Per the v3 spec the prefix
+// (the consent encoder's own prefix constant). Per the v3 spec the prefix
 // is concatenated with canonical_bytes to form the content-hash + signature
 // preimage but is NOT itself part of canonical_bytes.
 //
@@ -90,7 +90,7 @@ import (
 // Changing this byte sequence invalidates every signed v3 chain entry across
 // BOTH chains and all language ports. It MUST stay byte-identical to the
 // consent encoder's prefix (pinned by
-// TestDomainPrefixV3_MatchesConsentEncoder). Bumping requires a v4 ticket chain
+// TestDomainPrefixV3_MatchesConsentEncoder). Bumping requires a v4 format
 // + cross-language verifier coordination.
 const DomainPrefixV3 = "aleutian.chain.entry.v3:"
 
@@ -137,7 +137,7 @@ const MaxCanonicalBytesV3 = 4096
 // maxPlausibleTimestampMs is an absolute far-future sanity ceiling (~year 2200)
 // for the server-stamped anchor clock. TimestampMs is stamped at ingest
 // (time.Now), so any value beyond this is an obvious misconfiguration/bug, not a
-// real anchor — reject it before it becomes immutable (4-agent review F8;
+// real anchor — reject it before it becomes immutable (this
 // mirrors the consent SARExtended path's upper-bound discipline). Pure constant
 // so the encoder stays a deterministic pure function.
 const maxPlausibleTimestampMs int64 = 7258118400000 // 2200-01-01T00:00:00Z in UnixMilli
@@ -147,13 +147,13 @@ const v3SHA512HexLen = 128
 
 // PIIDigestKeyVersionCharClass is the SINGLE source-of-truth character class for
 // the `pii_digest_key_version` field, shared by the capture leaf (here), the
-// consent/SAR leaf (internal/consent), and the audit-api wire DTO
-// (cmd/audit-api/handlers). Source-namespaced lowercase IDs ("sm:v1") — the `:`
+// consent/SAR leaf, and the producer's API wire DTO.
+// Source-namespaced lowercase IDs ("sm:v1") — the `:`
 // separates source from version. The three regexes differ ONLY in their length
 // quantifier (`{0,64}` for the on-chain encoders which permit empty; `{1,64}`
 // for the DTO which is gated on non-empty), so pinning the charset here closes
-// the "no third regex" drift the R6 review (M1) flagged. A cross-package test in
-// internal/ingest asserts the compiled patterns stay in lockstep.
+// the "no third regex" drift. A cross-package test in
+// the producer asserts the compiled patterns stay in lockstep.
 const PIIDigestKeyVersionCharClass = `[a-z0-9:_.-]`
 
 // PIIDigestKeyVersionRegexpString returns the compiled capture-leaf
@@ -182,10 +182,10 @@ var (
 	v3SHA512HexRe = regexp.MustCompile(`^[0-9a-f]{128}$`)
 
 	// v3EncryptionModeAllowed is the locked vocabulary for encryption_mode — the
-	// KEY-CUSTODY field on storage.RawEntry (verified 2026-06-28 against
-	// types.go:502-515: who can decrypt the GCS payload). This is ORTHOGONAL to
+	// KEY-CUSTODY field of the producer's stored entry (who can decrypt the
+	// stored payload). This is ORTHOGONAL to
 	// processing_mode (inspection authorization) below — the two were conflated
-	// in the 01a draft and corrected here. `cmek` is defined but not yet emitted
+	// in an earlier draft and corrected here. `cmek` is defined but not yet emitted
 	// by any resolver; included for forward-compat.
 	v3EncryptionModeAllowed = map[string]struct{}{
 		"zero-knowledge":   {},
@@ -205,7 +205,7 @@ var (
 
 	// v3PIIActionAllowed is the closed vocabulary for pii_action. "none" is the
 	// default the producer emits when no action was taken; the other three
-	// mirror the PII scanner's Action outputs (internal/ingest PII scan).
+	// mirror the PII scanner's Action outputs.
 	v3PIIActionAllowed = map[string]struct{}{
 		"none":     {},
 		"flagged":  {},
@@ -236,7 +236,7 @@ var (
 	// v3ModelRe constrains model (e.g. "gpt-4o-2024-08-06", "claude-opus-4-8",
 	// "meta-llama/Llama-3"). Closed to the alphabet real provider/model
 	// identifiers use — letters, digits, and the `_./-` separators — and
-	// length-capped. The `:` separator was dropped (4-agent review F6): no
+	// length-capped. The `:` separator was dropped: no
 	// shipping model id requires it and it needlessly widened the signed-byte
 	// alphabet. Empty permitted.
 	//
@@ -255,8 +255,8 @@ var (
 // field is the FINAL canonical value (pseudonyms/digests already minted
 // upstream at ingest); this type carries no cleartext.
 //
-// Field provenance maps to storage.RawEntry as established by the 01b
-// field-timing trace: Subject/UserID/Provider/Model/Region/EncryptionMode/
+// Field provenance maps to the producer's stored entry:
+// Subject/UserID/Provider/Model/Region/EncryptionMode/
 // ContentHash and the server-stamped ingested_at are known synchronously at
 // ingest; PIIDetected/PIIAction/PIICategories/DLP/TrustLevel/CaptureMethod/
 // SourceType are computed inline before the first write. Dedup + linkage fields
@@ -279,7 +279,7 @@ type CaptureRequestV3 struct {
 	Subject string `json:"subject"`
 
 	// SigningKeyID is the trust-manifest alias of the per-tenant
-	// FamilyCaptureLeaf ML-DSA-65 key that will sign this leaf (01k). Opaque
+	// FamilyCaptureLeaf ML-DSA-65 key that will sign this leaf. Opaque
 	// registry shape; never a tenant slug.
 	SigningKeyID string `json:"signing_key_id"`
 
@@ -299,10 +299,10 @@ type CaptureRequestV3 struct {
 
 	// DLP is the per-tenant HMAC-SHA512 digest (128 hex) of the canonical DLP
 	// verdict, OR empty when no DLP verdict was produced (empty on every
-	// ingest-path row; populated only on the proxy path). Minted upstream at 01k.
+	// ingest-path row; populated only on the proxy path). Minted upstream at ingest.
 	DLP string `json:"dlp"`
 
-	// EncryptionMode is the KEY-CUSTODY flag from storage.RawEntry, one of
+	// EncryptionMode is the KEY-CUSTODY flag from the producer's stored entry, one of
 	// {zero-knowledge, aleutian-managed, cmek} — who can decrypt the payload.
 	// It is ORTHOGONAL to ProcessingMode (inspection authorization) and does NOT
 	// by itself gate the compliance fields: a zero-knowledge (client-key) row can
@@ -319,7 +319,7 @@ type CaptureRequestV3 struct {
 	// PIICategories is the per-tenant HMAC-SHA512 digest (128 hex) of the
 	// sorted union of request+response PII category labels, OR empty. A digest
 	// (not a CSV) so the low-entropy label set is not a cross-tenant
-	// correlation oracle (B4/C3). Minted upstream at 01k.
+	// correlation oracle. Minted upstream at ingest.
 	PIICategories string `json:"pii_categories"`
 
 	// PIIDetected is the regulator-facing verdict; encoded as the u64 0 or 1.
@@ -338,15 +338,14 @@ type CaptureRequestV3 struct {
 	// {zk, pii_inspection} (storage/processing_mode_types.go). It is the mode that
 	// actually governs the compliance surface: when "zk", inspection is not
 	// authorized and the compliance fields (PIIDetected/PIIAction/PIICategories/
-	// DLP) MUST be empty — enforced by the zk invariant in validate(). 01k sources
-	// this from the write-time processing decision (NOT storage.RawEntry, which
-	// does not carry it).
+	// DLP) MUST be empty — enforced by the zk invariant in validate(). The producer sources
+	// this from the write-time processing decision (not from the stored entry,
+	// which does not carry it).
 	//
 	// DEPENDENCY: the zk invariant only holds in production once the ingest PII
-	// scanner is gated to skip/zero verdicts in zk mode (see the
-	// chainlinker_modernization_17 (zk_scanner_gate) privacy ticket). Until then a real zk-mode row may
+	// scanner is gated to skip/zero verdicts in zk mode. Until then a real zk-mode row may
 	// carry a non-empty verdict and this encoder will (correctly) refuse to seal
-	// it — so v3 cutover (01j) MUST NOT precede that gate.
+	// it — so v3 cutover MUST NOT precede that gate.
 	ProcessingMode string `json:"processing_mode"`
 
 	// Provider is the AI provider identifier. Empty permitted.
@@ -363,7 +362,7 @@ type CaptureRequestV3 struct {
 
 	// UserID is the per-tenant HMAC-SHA512 actor pseudonym (128 hex). The raw
 	// actor identifier never reaches this struct — pseudonymization happens at
-	// ingest (01k). Required (non-empty).
+	// ingest. Required (non-empty).
 	UserID string `json:"user_id"`
 }
 
@@ -400,7 +399,7 @@ type CaptureRequestV3 struct {
 //
 // # Limitations
 //
-//   - Does NOT sign or link; signing (ML-DSA-65) happens at 01k, linkage at 01h.
+//   - Does NOT sign or link; signing (ML-DSA-65) happens at ingest, linkage at the linker.
 //
 // # Assumptions
 //
@@ -438,8 +437,8 @@ func CanonicalV3(entry EntryV3) ([]byte, error) {
 //
 // This is the capture leaf's content-hash. The domain prefix is concatenated
 // with the canonical bytes (it is NOT part of canonical bytes) and the pair is
-// SHA-512'd. The verifier (01i) recomputes this and constant-time-compares it
-// against the stored column, and the linker (01h) links the chain hash over it.
+// SHA-512'd. The verifier recomputes this and constant-time-compares it
+// against the stored column, and the linker links the chain hash over it.
 // It is a SEPARATE integrity gate from the ML-DSA-65 signature, which signs
 // DomainPrefixV3 || canonical directly; neither replaces the other.
 //
@@ -507,8 +506,8 @@ func ContentHashV3(canonical []byte) string {
 //
 // # Limitations
 //
-//   - Does NOT sign or link; ML-DSA-65 signing happens at ingest (01k) and
-//     chain linkage at the linker (01h).
+//   - Does NOT sign or link; ML-DSA-65 signing happens at ingest and
+//     chain linkage at the linker.
 //
 // # Assumptions
 //
@@ -710,7 +709,7 @@ func (e CaptureRequestV3) validateV3() error {
 	// Enforcing this here makes "zk ⇒ no sealed verdict" a real, immutable
 	// guarantee rather than a producer convention, and fail-closes if a zk-mode
 	// row ever arrives with a verdict (which it can until the ingest scanner is
-	// gated — see the chainlinker_modernization_17 (zk_scanner_gate) ticket; v3 cutover must not precede
+	// gated; v3 cutover must not precede
 	// that gate).
 	if e.ProcessingMode == "zk" {
 		if e.PIIDetected {

@@ -19,19 +19,47 @@ import (
 // changed. See WithLockTimeout.
 var ErrBusy = errors.New("sink: the folder is in use by another process")
 
-// ErrCorrupt is returned by the operations that only read the folder (Verify,
-// VerifyEach, Export, Checkpoint, ChainSubjects, UsesRecordKey) when one of its
-// files cannot be read as the database it should be: truncated, overwritten,
-// or not a sink file (a valid database without the buckets a secrets file or
-// subject index has is one of these). Either the file was refused when it was
-// opened, or the read panicked or faulted inside the storage layer and the
-// operation stopped there. For Verify it means the folder does not verify.
+// ErrCorrupt is returned by every operation when one of the folder's files
+// cannot be used as the database it should be: truncated, overwritten, or not
+// a sink file (a valid database without the buckets a secrets file or subject
+// index has is one of these). No operation panics, faults or hangs on such a
+// file. For Verify it means the folder does not verify.
 //
-// The operations that write (Commit, EraseSubject, EraseSubjectClass,
-// ResumeErasures) do NOT return it: a panic inside a write transaction leaves
-// the storage layer holding a lock that closing the file then waits on, so
-// recovering there would turn a crash into a hang. On a damaged file they
-// still panic. Run Verify first when a folder's integrity is in doubt.
+// It is reached in one of three ways:
+//
+//   - the file was refused when it was opened;
+//   - an operation that writes (Commit, EraseSubject, EraseSubjectClass,
+//     ResumeErasures, Repair, RequireRecordSigning) read the file through
+//     before first writing to it, and it did not read cleanly. This check runs
+//     once per file per Sink (WithoutIntegrityCheck turns it off) and refuses
+//     the call before anything is written;
+//   - a read or write met the damage inside the storage layer, which panicked
+//     or faulted. The call that met it returns ErrCorrupt, and that open file
+//     is not used again. In a call that had already written to other files,
+//     what is left is what a crash at that point leaves (see each operation).
+//
+// In the last case the file is abandoned, not closed: closing it would enter
+// the storage layer again, which can wait for good on a lock the failed
+// transaction left held. Its file lock is released and its descriptor closed,
+// so later calls can open the file again (and will report it damaged again);
+// its memory map, the size of the file in address space, stays until the
+// process exits. A long-lived process that keeps calling into a damaged folder
+// leaks one such mapping per file per call: stop and repair the folder.
+//
+// What is covered is DAMAGE: a file cut short, pages overwritten, and meta
+// pages or a freelist header holding a size or a count that cannot fit the
+// file (those are refused before the storage layer reads them, on every open).
+// What is NOT covered is a file deliberately crafted beyond that. Pages that
+// point back at each other are followed without end inside one call, and a
+// count or offset inside a data page is believed as written. These are a
+// sink's own files, not an interchange format: evidence from someone else is
+// verified as an exported bundle, never by opening their files.
+//
+// A panic in code the CALLER supplied (a signer, a key source, a heads store,
+// VerifyEach's function, Export's writer) is not ErrCorrupt: it comes back out
+// of the operation as the caller's own panic.
+//
+// It is the same value as the bolt store's ErrCorrupt.
 var ErrCorrupt = fault.ErrCorrupt
 
 // ErrInvalidRecord is returned (wrapped, usually in a *RecordError) for a
@@ -40,14 +68,30 @@ var ErrCorrupt = fault.ErrCorrupt
 // terminate or dead-letter the message, not redeliver it.
 var ErrInvalidRecord = errors.New("sink: invalid record")
 
-// RecordError reports which record of a Commit call was invalid.
+// ErrSourceConflict is returned (wrapped in a *RecordError) for a record whose
+// Source is already committed on its chain, or given earlier in the same call,
+// with DIFFERENT content, or whose committed content is missing or unreadable
+// so that it cannot be compared.
 //
-// errors.Is(err, ErrInvalidRecord) holds for every RecordError, and
-// errors.Is(err, ErrInvalidClass) or errors.Is(err, ErrInvalidSubject)
-// additionally when the class or the subject was the problem.
+// A duplicate is a record the chain already holds. A Source that points at an
+// entry holding other content is not that: either the producer reused a
+// position for a new message, or a row was written into the sources file to
+// make a new record vanish. Either way the record was NOT committed, and
+// nothing else in the call was. It is NOT retryable: a redelivery fails the
+// same way. A streaming consumer should dead-letter the message and look at
+// why. The message never repeats the source or the content.
+var ErrSourceConflict = errors.New("sink: a record's source is already committed with other content")
+
+// RecordError reports which record of a Commit call could not be committed for
+// a reason of its own.
+//
+// errors.Is(err, ErrInvalidRecord) holds when the record was invalid (and
+// ErrInvalidClass or ErrInvalidSubject additionally when the class or the
+// subject was the problem); errors.Is(err, ErrSourceConflict) when its Source
+// is already committed with other content. Neither is retryable.
 type RecordError struct {
 	Index int   // position in the records passed to Commit
-	Err   error // wraps ErrInvalidRecord
+	Err   error // wraps ErrInvalidRecord or ErrSourceConflict
 }
 
 func (e *RecordError) Error() string { return fmt.Sprintf("sink: record %d: %v", e.Index, e.Err) }
@@ -60,7 +104,7 @@ func (e *RecordError) Unwrap() error { return e.Err }
 // EraseSubject/EraseSubjectClass) forgotten; a problem found before that is a
 // plain error, and nothing changed.
 //
-// What holds (ticket _69b, "Erasure recovery invariant"): every chain NOT in
+// What holds (the recovery invariant, docs/sink-format.md §4.3): every chain NOT in
 // Pending is completely erased and its index row cleared; each chain in Pending
 // is marked pending, a row that holds no subject. Running ResumeErasures, or any
 // later erasure, completes them and compacts again, without ever re-linking a

@@ -109,7 +109,8 @@ func newChainID(class string) (string, error) {
 }
 
 // JSONFields says where a JSON line's class and subject come from: exactly one
-// of Class and ClassField (with Classes), and SubjectField.
+// of Class and ClassField (with Classes), and SubjectField; and, optionally,
+// its Source (SourceField).
 //
 // A class is public and permanent: it is the prefix of the chain id, in the
 // shareable evidence file and every checkpoint, and no erasure removes it. A
@@ -126,6 +127,13 @@ type JSONFields struct {
 	Classes []string
 	// SubjectField is the top-level field holding each line's subject.
 	SubjectField string
+	// SourceField, if set, is the top-level field holding each line's Source:
+	// where the line sat upstream (a message id, an offset), which makes
+	// committing it again a no-op. It must hold a non-empty JSON string, or a
+	// whole number written in digits, and must differ from the subject and
+	// class fields: a source is stored for as long as its chain is not erased,
+	// so it is a position, never an identifier of a person.
+	SourceField string
 }
 
 // RecordFromJSON makes a Record from one JSON object: its subject from one of
@@ -145,12 +153,13 @@ type JSONFields struct {
 //
 // # Outputs
 //
-//   - Record: Class, Subject and Content set. Nothing is validated yet
-//     (Validate or Commit does that).
+//   - Record: Class, Subject and Content set, and Source when f names a
+//     source field. Nothing is validated yet (Validate or Commit does that).
 //   - error: f does not give exactly one of Class and ClassField, gives
-//     ClassField without Classes or equal to SubjectField, or no SubjectField;
-//     the line is not a JSON object; a field is absent or not a string; the
-//     class read is not one of Classes
+//     ClassField without Classes or equal to SubjectField, no SubjectField, or
+//     a SourceField equal to another field; the line is not a JSON object; a
+//     field is absent or not a string (a source may also be a whole number,
+//     and must not be empty); the class read is not one of Classes
 //
 // # Example
 //
@@ -176,6 +185,9 @@ func RecordFromJSON(line []byte, f JSONFields) (Record, error) {
 			"(a class is public and never erased)")
 	case f.ClassField != "" && len(f.Classes) == 0:
 		return Record{}, errors.New("sink: a class field needs the list of classes it may hold")
+	case f.SourceField != "" && (f.SourceField == f.SubjectField || f.SourceField == f.ClassField):
+		return Record{}, errors.New("sink: the source field must differ from the subject and class fields " +
+			"(a source is a position upstream, never who the record is about)")
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(line, &obj); err != nil {
@@ -196,7 +208,33 @@ func RecordFromJSON(line []byte, f JSONFields) (Record, error) {
 				ErrInvalidRecord, f.ClassField)
 		}
 	}
-	return Record{Class: class, Subject: subject, Content: append([]byte(nil), line...)}, nil
+	source := ""
+	if f.SourceField != "" {
+		if source, err = sourceField(obj, f.SourceField); err != nil {
+			return Record{}, err
+		}
+	}
+	return Record{Class: class, Subject: subject, Content: append([]byte(nil), line...), Source: source}, nil
+}
+
+// wholeNumber is a JSON number that is a non-negative integer in plain digits.
+var wholeNumber = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+
+// sourceField reads a top-level field that must hold a non-empty JSON string
+// or a whole number in digits (taken as its digits). An absent or empty source
+// is refused rather than committed without one: the record would silently
+// lose its protection against being committed twice.
+func sourceField(obj map[string]json.RawMessage, field string) (string, error) {
+	raw, ok := obj[field]
+	if ok && wholeNumber.Match(raw) {
+		return string(raw), nil
+	}
+	var v string
+	if !ok || len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &v) != nil || v == "" {
+		return "", fmt.Errorf("%w: field %q is missing, empty, or neither a string nor a whole number",
+			ErrInvalidRecord, field)
+	}
+	return v, nil
 }
 
 // stringField reads a top-level field that must hold a JSON string.

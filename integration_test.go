@@ -29,8 +29,8 @@ import (
 //
 // # What is NOT covered yet
 //
-// Chain linkage (prev_hash) needs aleutianchain_06; persistence needs _09.._11;
-// anchors need _07/_08. So these prove "verify a committed SET", not "verify a
+// Chain linkage (prev_hash), persistence and anchors are not exercised here.
+// So these prove "verify a committed SET", not "verify a
 // chain". The distinction matters and is not papered over.
 
 // goldenVector mirrors one record of the cross-language fixture.

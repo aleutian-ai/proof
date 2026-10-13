@@ -151,7 +151,7 @@ func KeyIDOf(s ContextSigner) (string, []byte, error) {
 //     the key that produced it, but nothing checks that the label names that
 //     key. Leave the field empty to get the derived id, which cannot be wrong.
 //   - Verifies the signature, not the CLAIM. Whether the anchor honestly
-//     describes a chain is verify.Chain's job, and `_35b`'s.
+//     describes a chain is verify.Chain's job.
 //   - ML-DSA-65 only.
 //
 // # Assumptions

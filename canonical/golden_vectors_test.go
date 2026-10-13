@@ -64,8 +64,8 @@ func TestGoldenVectors(t *testing.T) {
 		{"mixed_array", []any{
 			1, "two", true, nil, map[string]any{"k": "v"},
 		}},
-		// Batch A (L14) — ASCII-edge cases the crypto review flagged as
-		// behaving consistently across Go/Python/JS but not yet pinned.
+		// ASCII-edge cases that behave consistently across Go/Python/JS,
+		// pinned here.
 		{"forward_slash", map[string]any{
 			"path": "a/b/c",
 		}},
@@ -135,9 +135,8 @@ func TestGoldenVectors_Rejects(t *testing.T) {
 	})
 }
 
-// TestRejects_FailClosedString pins the new fail-closed checks added in
-// response to the 4-agent review batch A (2026-06-02): lone surrogates
-// (C2) and non-NFC strings (H7) MUST be rejected by all three encoder
+// TestRejects_FailClosedString pins the fail-closed checks: lone surrogates
+// and non-NFC strings MUST be rejected by all three encoder
 // ports. Tests Go side here; Python + JS run the parallel suite.
 func TestRejects_FailClosedString(t *testing.T) {
 	t.Run("lone_surrogate_in_value", func(t *testing.T) {
@@ -182,8 +181,8 @@ func TestRejects_FailClosedString(t *testing.T) {
 	})
 }
 
-// TestGoldenVectors_NonBMPKeySort pins the UTF-8 byte-order key sort
-// (C1 fix). Object with keys spanning the BMP boundary MUST sort by
+// TestGoldenVectors_NonBMPKeySort pins the UTF-8 byte-order key sort.
+// Object with keys spanning the BMP boundary MUST sort by
 // UTF-8 bytes in all three ports — emoji (U+1F600, UTF-8 prefix 0xF0)
 // sorts AFTER U+FFFF (UTF-8 prefix 0xEF), NOT before it (which is what
 // JS default UTF-16 sort would produce).

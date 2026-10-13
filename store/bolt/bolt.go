@@ -18,6 +18,8 @@ import (
 
 	bolt "go.etcd.io/bbolt"
 
+	"github.com/aleutian-ai/proof/internal/fault"
+	"github.com/aleutian-ai/proof/internal/safebolt"
 	"github.com/aleutian-ai/proof/store"
 )
 
@@ -62,12 +64,20 @@ const keySep = 0x00
 // Safe for concurrent use; bbolt serialises writers itself. That is also why the
 // lease implementation is thin — see Acquire.
 //
+// # A damaged file
+//
+// bbolt panics, or faults in its memory map, on a file that is truncated or
+// whose pages were overwritten. No method here lets that out: each returns an
+// error wrapping [ErrCorrupt] instead, and from the first such error every
+// further method on this Store returns it too, without touching the file
+// again (see Close).
+//
 // # Limitations
 //
 //   - One process at a time. bbolt takes an exclusive file lock on Open, so a
 //     second process blocks rather than corrupting.
 type Store struct {
-	db *bolt.DB
+	db *safebolt.DB
 }
 
 var _ store.Store = (*Store)(nil)
@@ -89,11 +99,25 @@ const DefaultLockTimeout = 5 * time.Second
 // from "this file is corrupt or unreadable", which call for opposite responses.
 var ErrLocked = errors.New("bolt: database is locked by another process")
 
+// ErrCorrupt means the database file is not a well-formed database:
+// truncated, overwritten, or not a chain database at all.
+//
+// It is returned (wrapped) by [Open] when the file fails its check, and by any
+// method when the storage layer panicked or faulted reading or writing it. The
+// Store is then finished: every later method returns ErrCorrupt as well, and
+// Close abandons the file instead of closing it. It is the same value the sink
+// reports, so errors.Is matches across both.
+var ErrCorrupt = fault.ErrCorrupt
+
+// checked remembers the files Open has already checked in this process.
+var checked safebolt.Checker
+
 // config holds Open's options.
 type config struct {
 	lockTimeout time.Duration
 	readOnly    bool
 	noFollow    bool
+	noCheck     bool
 }
 
 // Option configures Open.
@@ -187,6 +211,39 @@ func WithNoFollow() Option {
 	return func(c *config) { c.noFollow = true }
 }
 
+// WithoutCheck skips the check Open makes before it first opens a file for
+// writing.
+//
+// # Description
+//
+// The first time a process opens an existing file for writing, Open reads it
+// through once, read-only, and refuses it with [ErrCorrupt] if it is damaged:
+// a clean refusal before anything is written. The check takes time linear in
+// the file (about 0.1 s per GiB once the file is in the page cache; a first
+// read from disk takes as long as the disk does). Skipping it is safe: a
+// damaged file is then reported by the first method that reads the damage,
+// also as ErrCorrupt.
+//
+// # Outputs
+//
+//   - Option: to pass to [Open]
+//
+// # Example
+//
+//	s, err := bolt.Open(path, bolt.WithoutCheck())
+//
+// # Limitations
+//
+//   - Without the check, a write can fail part-way on a damaged file, and
+//     whether its transaction reached the disk is then not known.
+//
+// # Assumptions
+//
+//   - The caller checks the file some other way, or prefers the faster open.
+func WithoutCheck() Option {
+	return func(c *config) { c.noCheck = true }
+}
+
 // openRegularNoFollow is os.OpenFile that never follows a symlink and refuses
 // anything but a regular file, checked on the opened handle.
 func openRegularNoFollow(path string, flag int, mode os.FileMode) (*os.File, error) {
@@ -216,8 +273,9 @@ func openRegularNoFollow(path string, flag int, mode os.FileMode) (*os.File, err
 // # Outputs
 //
 //   - *Store: ready for use; the caller must Close it
-//   - error: [ErrLocked] when another process holds the file lock, or if the
-//     file cannot be opened or the buckets cannot be created
+//   - error: [ErrLocked] when another process holds the file lock; an error
+//     wrapping [ErrCorrupt] when the file is damaged; or if the file cannot be
+//     opened or the buckets cannot be created
 //
 // # Example
 //
@@ -231,6 +289,8 @@ func openRegularNoFollow(path string, flag int, mode os.FileMode) (*os.File, err
 //
 //   - Waits [DefaultLockTimeout] for a contended lock and then fails. Pass
 //     WithLockTimeout(0) to wait indefinitely instead.
+//   - The first open of an existing file for writing reads it through once
+//     (see [WithoutCheck]).
 func Open(path string, opts ...Option) (*Store, error) {
 	cfg := config{lockTimeout: DefaultLockTimeout}
 	for _, o := range opts {
@@ -241,14 +301,23 @@ func Open(path string, opts ...Option) (*Store, error) {
 	if cfg.noFollow {
 		bopts.OpenFile = openRegularNoFollow
 	}
-	db, err := bolt.Open(path, 0o600, bopts)
-	if err != nil {
+	locked := func(err error) error {
 		if errors.Is(err, bolt.ErrTimeout) {
-			return nil, fmt.Errorf("%w: %s is held by another process (waited %s). "+
+			return fmt.Errorf("%w: %s is held by another process (waited %s). "+
 				"Only one process may hold a chain database at a time",
 				ErrLocked, path, cfg.lockTimeout)
 		}
-		return nil, fmt.Errorf("bolt: open %s: %w", path, err)
+		return fmt.Errorf("bolt: open %s: %w", path, err)
+	}
+	if !cfg.readOnly && !cfg.noCheck {
+		// Before the first write to this file in this process: read it through.
+		if err := checked.Once(path, bopts); err != nil {
+			return nil, locked(err)
+		}
+	}
+	db, err := safebolt.Open(path, 0o600, bopts)
+	if err != nil {
+		return nil, locked(err)
 	}
 	if cfg.readOnly {
 		// Every read method dereferences these buckets. Refuse a file that lacks
@@ -302,6 +371,13 @@ func Open(path string, opts ...Option) (*Store, error) {
 }
 
 // Close releases the database and its file lock.
+//
+// After a method returned [ErrCorrupt] the file is abandoned rather than
+// closed: closing it would enter the storage layer again, which may wait for
+// good on a lock the failed transaction left held. The file lock is released
+// and the descriptor closed, so the file can be opened again; its memory map
+// stays until the process exits. Close then returns an error wrapping
+// ErrCorrupt.
 func (s *Store) Close() error { return s.db.Close() }
 
 // entryKey builds chainID ‖ 0x00 ‖ big-endian uint64(seq).
@@ -720,8 +796,12 @@ var _ store.ChainsUpdater = (*Store)(nil)
 //
 //   - fn does not call back into the store (bbolt would deadlock on a nested
 //     write transaction).
+//   - A panic in fn is the caller's: the transaction rolls back, nothing is
+//     written, the Store stays usable, and the panic then continues out of
+//     UpdateChains as it was raised. It is never reported as ErrCorrupt.
 func (s *Store) UpdateChains(ctx context.Context, chainIDs []string,
 	fn func(tails []store.Tail) ([]store.Entry, []store.State, error)) error {
+	defer fault.Rethrow()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -757,7 +837,12 @@ func (s *Store) UpdateChains(ctx context.Context, chainIDs []string,
 			}
 			tails[i] = t
 		}
-		entries, states, err := fn(tails)
+		var entries []store.Entry
+		var states []store.State
+		var err error
+		// The caller's code, inside the transaction: marked, so a panic in it
+		// is not taken for a damaged file.
+		fault.Callback(func() { entries, states, err = fn(tails) })
 		if err != nil {
 			fnErr = err
 			return err

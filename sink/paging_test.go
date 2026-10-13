@@ -18,7 +18,7 @@ import (
 	"github.com/aleutian-ai/proof/store"
 )
 
-// _74b: Verify a page at a time.
+// Verify a page at a time.
 
 // tinyPages makes every page one chain (or one key) for the test.
 func tinyPages(t *testing.T) {
@@ -62,7 +62,7 @@ func TestVerifyEach_Streams(t *testing.T) {
 	}
 }
 
-// The point of _74b: between pages the files are released, so a writer with
+// The point of paging: between pages the files are released, so a writer with
 // a SHORT lock timeout commits while Verify is still running.
 func TestVerifyEach_WriterGetsTheLockBetweenPages(t *testing.T) {
 	tinyPages(t)

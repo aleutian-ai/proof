@@ -4,13 +4,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -274,5 +278,341 @@ func TestCLI_InitRefusesToOverwrite(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "refusing") {
 		t.Errorf("init should explain why it refused:\n%s", stderr)
+	}
+}
+
+// seedV3Chain writes n linked v3 entries to chainID in the database at dbPath,
+// a batch at a time, and returns nothing: the chain is the fixture.
+func seedV3Chain(t *testing.T, dbPath, chainID string, n int) {
+	t.Helper()
+	s, err := boltstore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	base := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
+	content := strings.Repeat("0123456789abcdef", 8)
+	prev := ""
+	const batch = 20_000
+	rows := make([]store.Entry, 0, batch)
+	for i := 0; i < n; i++ {
+		ts := base.Add(time.Duration(i) * time.Millisecond)
+		e := store.Entry{
+			ChainID: chainID, EntryID: fmt.Sprintf("ent_%07d", i), EntryType: "capture.request.v3",
+			FormatVersion: chainformat.FormatV3, GlobalSeq: int64(i), Timestamp: ts,
+			ContentHash: content, PreviousHash: prev,
+		}
+		e.ChainHash = chainformat.ComputeChainHashV3Unchecked(prev, e.GlobalSeq, ts, content)
+		prev = e.ChainHash
+		rows = append(rows, e)
+		if len(rows) == batch || i == n-1 {
+			if err := s.WriteBatch(context.Background(), rows); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			rows = rows[:0]
+		}
+	}
+}
+
+// TestExport_AMistypedDatabaseIsAnErrorAndCreatesNothing: export only reads.
+// It used to open the database for writing, so a --db that named nothing was
+// created, and the command printed `[]` and exited 0.
+func TestExport_AMistypedDatabaseIsAnErrorAndCreatesNothing(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "chian.db")
+	out := filepath.Join(dir, "out.json")
+
+	code, stdout, stderr := capture(t, "export", "--db", missing, "--chain", testChainID)
+	if code != exitIOError {
+		t.Errorf("exit %d, want %d (stderr: %s)", code, exitIOError, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("export of a database that is not there printed: %q", stdout)
+	}
+	if code, _, _ := capture(t, "export", "--db", missing, "--chain", testChainID, "--out", out); code != exitIOError {
+		t.Errorf("with --out: exit %d, want %d", code, exitIOError)
+	}
+	for _, p := range []string{missing, out} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%s was created", filepath.Base(p))
+		}
+	}
+	assertOnlyFiles(t, dir)
+}
+
+// TestExport_AChainThatIsNotThereIsAnError, not an empty file and exit 0: a
+// mistyped --chain looked like a chain with nothing in it.
+func TestExport_AChainThatIsNotThereIsAnError(t *testing.T) {
+	dbPath := seedChain(t, 3)
+	out := filepath.Join(t.TempDir(), "out.json")
+	for _, extra := range [][]string{nil, {"--jsonl"}, {"--out", out}} {
+		args := append([]string{"export", "--db", dbPath, "--chain", "no-such-chain"}, extra...)
+		code, stdout, stderr := capture(t, args...)
+		if code != exitIOError {
+			t.Errorf("%v: exit %d, want %d", extra, code, exitIOError)
+		}
+		if stdout != "" {
+			t.Errorf("%v: printed %q", extra, stdout)
+		}
+		if !strings.Contains(stderr, "no entries") || !strings.Contains(stderr, "no-such-chain") {
+			t.Errorf("%v: the error does not say the chain has no entries: %q", extra, stderr)
+		}
+	}
+	if _, err := os.Lstat(out); !os.IsNotExist(err) {
+		t.Error("an output file was left for a chain that is not there")
+	}
+}
+
+// TestExport_DoesNotChangeTheDatabase: every open used to run a write
+// transaction, so an export changed the file it read and failed on read-only
+// media. The bytes are the same afterwards, and a read-only file exports.
+func TestExport_DoesNotChangeTheDatabase(t *testing.T) {
+	dbPath := seedChain(t, 5)
+	before, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dbPath, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := capture(t, "export", "--db", dbPath, "--chain", testChainID, "--jsonl")
+	if code != exitOK || strings.Count(stdout, "\n") != 5 {
+		t.Fatalf("export of a read-only database: exit %d, %d lines: %s", code, strings.Count(stdout, "\n"), stderr)
+	}
+	after, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("export changed the database file")
+	}
+}
+
+// TestExport_OutIsNotOverwrittenWithoutForce: --out used to truncate whatever
+// was there. An existing file, or a symlink, is now refused before anything is
+// read; --force replaces it, and replaces a symlink itself, not its target.
+func TestExport_OutIsNotOverwrittenWithoutForce(t *testing.T) {
+	dbPath := seedChain(t, 3)
+	dir := t.TempDir()
+	out := filepath.Join(dir, "entries.json")
+	if err := os.WriteFile(out, []byte("an earlier export"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := capture(t, "export", "--db", dbPath, "--chain", testChainID, "--out", out)
+	if code != exitUsage || !strings.Contains(stderr, "--force") {
+		t.Fatalf("exit %d, want %d and a mention of --force: %s", code, exitUsage, stderr)
+	}
+	if got, _ := os.ReadFile(out); string(got) != "an earlier export" {
+		t.Fatalf("the refused export changed the file: %q", got)
+	}
+
+	if code, _, stderr := capture(t, "export", "--db", dbPath, "--chain", testChainID, "--out", out, "--force"); code != exitOK {
+		t.Fatalf("--force: exit %d: %s", code, stderr)
+	}
+	if code, stdout, _ := capture(t, "verify", out); code != exitOK {
+		t.Errorf("the file --force wrote does not verify:\n%s", stdout)
+	}
+
+	// A symlink at --out: refused, and with --force replaced, never followed.
+	target := filepath.Join(t.TempDir(), "elsewhere.json")
+	if err := os.WriteFile(target, []byte("untouched"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := capture(t, "export", "--db", dbPath, "--chain", testChainID, "--out", link); code != exitUsage {
+		t.Errorf("a symlink at --out: exit %d, want %d", code, exitUsage)
+	}
+	if code, _, stderr := capture(t, "export", "--db", dbPath, "--chain", testChainID, "--out", link, "--force"); code != exitOK {
+		t.Fatalf("--force over a symlink: exit %d: %s", code, stderr)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "untouched" {
+		t.Error("the export was written through the symlink")
+	}
+	if info, err := os.Lstat(link); err != nil || !info.Mode().IsRegular() {
+		t.Error("--force did not replace the symlink with the export")
+	}
+
+	// A failed export leaves the file that was there, whole.
+	if code, _, _ := capture(t, "export", "--db", dbPath, "--chain", "no-such-chain", "--out", out, "--force"); code != exitIOError {
+		t.Errorf("unknown chain with --force: exit %d", code)
+	}
+	if code, _, _ := capture(t, "verify", out); code != exitOK {
+		t.Error("a failed --force export damaged the file it would have replaced")
+	}
+	assertOnlyFiles(t, dir, "entries.json", "link.json")
+}
+
+// assertOnlyFiles checks dir holds exactly the named files: nothing was
+// created by mistake and no temp file was left.
+func assertOnlyFiles(t *testing.T, dir string, want ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("%s holds %v, want %v", dir, got, want)
+	}
+}
+
+// TestExport_StreamedBytesAreTheOnesTheEncoderWrote: export writes a page at a
+// time, and the file is byte for byte what encoding the whole chain at once
+// produced, around every page boundary.
+func TestExport_StreamedBytesAreTheOnesTheEncoderWrote(t *testing.T) {
+	for _, n := range []int{1, 2, exportPage - 1, exportPage, exportPage + 1, 2*exportPage + 3} {
+		dbPath := filepath.Join(t.TempDir(), "chain.db")
+		seedV3Chain(t, dbPath, "c", n)
+		entries, err := readChain(dbPath, "c")
+		if err != nil || len(entries) != n {
+			t.Fatalf("n=%d: read %d entries, %v", n, len(entries), err)
+		}
+
+		var array, jsonl bytes.Buffer
+		enc := json.NewEncoder(&array)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(entries); err != nil {
+			t.Fatal(err)
+		}
+		lineEnc := json.NewEncoder(&jsonl)
+		for _, e := range entries {
+			if err := lineEnc.Encode(e); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		if _, got, _ := capture(t, "export", "--db", dbPath, "--chain", "c"); got != array.String() {
+			t.Errorf("n=%d: the JSON array differs from the encoder's", n)
+		}
+		if _, got, _ := capture(t, "export", "--db", dbPath, "--chain", "c", "--jsonl"); got != jsonl.String() {
+			t.Errorf("n=%d: the JSONL differs from the encoder's", n)
+		}
+	}
+}
+
+// peakHeld runs fn and returns the most heap fn HELD at any sample taken
+// while it ran, above what was held before it started.
+//
+// Each sample collects first, so it counts what is still reachable and not
+// garbage waiting for the collector: the figure does not depend on how the
+// collector happened to pace itself, only on what the code under test keeps.
+func peakHeld(fn func()) uint64 {
+	var m runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&m)
+	base, peak := m.HeapAlloc, m.HeapAlloc
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tick := time.NewTicker(25 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-tick.C:
+				var s runtime.MemStats
+				runtime.GC()
+				runtime.ReadMemStats(&s)
+				if s.HeapAlloc > peak {
+					peak = s.HeapAlloc
+				}
+			}
+		}
+	}()
+	fn()
+	close(stop)
+	wg.Wait()
+	if peak < base {
+		return 0
+	}
+	return peak - base
+}
+
+// TestExportAndVerify_MemoryDoesNotGrowWithTheChain: 100,000 entries are
+// exported, anchored and then verified against the anchor, and the heap in
+// use never comes near the size of the data. Each verb used to hold the whole
+// chain: the file, every decoded entry, and for export and anchor every row.
+func TestExportAndVerify_MemoryDoesNotGrowWithTheChain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes a 100,000-entry chain")
+	}
+	const n = 100_000
+	f := newAnchorFixture(t, 1)
+	seedV3Chain(t, f.db, "long", n)
+	exported := filepath.Join(f.dir, "long.jsonl")
+
+	var code int
+	var stderr string
+	exportPeak := peakHeld(func() {
+		code, _, stderr = capture(t, "export", "--db", f.db, "--chain", "long", "--jsonl", "--out", exported)
+	})
+	if code != exitOK {
+		t.Fatalf("export: exit %d: %s", code, stderr)
+	}
+	info, err := os.Stat(exported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := uint64(info.Size())
+
+	anchorPath := filepath.Join(f.dir, "long-anchor.json")
+	anchorPeak := peakHeld(func() {
+		code, _, stderr = runAnchor(t, "--db", f.db, "--chain", "long", "--subject", "acct-7f3a",
+			"--key", f.key, "--out", anchorPath)
+	})
+	if code != exitOK {
+		t.Fatalf("anchor: exit %d: %s", code, stderr)
+	}
+
+	var stdout string
+	verifyPeak := peakHeld(func() {
+		code, stdout, stderr = capture(t, "verify", exported, "--anchor", anchorPath)
+	})
+	if code != exitOK || !strings.Contains(stdout, fmt.Sprintf("INTACT, ANCHORED — %d entries", n)) ||
+		!strings.Contains(stdout, "ANCHOR BOUND") {
+		t.Fatalf("verify: exit %d\n%s%s", code, stdout, stderr)
+	}
+
+	t.Logf("%d entries, %d bytes exported: held at most %d bytes in export, %d in anchor, %d in verify",
+		n, size, exportPeak, anchorPeak, verifyPeak)
+	// Holding the chain costs more than its size; streaming costs a few
+	// megabytes whatever its size. A twentieth of the data separates the two
+	// with room on both sides.
+	if limit := size / 20; exportPeak > limit || anchorPeak > limit || verifyPeak > limit {
+		t.Errorf("held %d bytes (export), %d (anchor) and %d (verify) over %d bytes of data; "+
+			"want each under %d", exportPeak, anchorPeak, verifyPeak, size, limit)
+	}
+}
+
+// TestUsage_StatesTheExitCodesAndForce: the usage text is where a script's
+// author reads the exit codes, busy among them.
+func TestUsage_StatesTheExitCodesAndForce(t *testing.T) {
+	code, stdout, _ := capture(t, "help")
+	if code != exitOK {
+		t.Fatalf("help exited %d", code)
+	}
+	for _, want := range []string{
+		"0 ok · 1 chain broken · 2 usage · 3 io error · 4 chain busy",
+		"[--out <path>] [--jsonl] [--force]",
+		"[--previous <anchor.json>] [--out <path>] [--force]",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the usage text does not contain %q", want)
+		}
+	}
+	if exitBusy != 4 {
+		t.Errorf("exitBusy = %d; the usage text says 4", exitBusy)
 	}
 }

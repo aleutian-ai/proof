@@ -16,10 +16,10 @@ import (
 	"github.com/aleutian-ai/proof/mldsa"
 )
 
-// --- C1: the ordering bug ---------------------------------------------------
+// --- the ordering bug -------------------------------------------------------
 
 // TestSignAnchor_OrderingCannotBeGotWrong is the regression test for the
-// CRITICAL found in review: the documented sequence was
+// ordering bug: the documented sequence was
 //
 //	canonical := Canonicalize(a)      // signing_key_id is still ""
 //	sig, keyID := SignCanonical(...)
@@ -279,7 +279,7 @@ func TestSignCanonical_BoundsItsInput(t *testing.T) {
 // --- KeyIDOf ----------------------------------------------------------------
 
 // TestKeyIDOf_MatchesTheConcreteSigner: the shared derivation and the concrete
-// type's cached value must agree, or _35b and the CLI would disagree about a
+// type's cached value must agree, or two callers would disagree about a
 // key's identity.
 func TestKeyIDOf_MatchesTheConcreteSigner(t *testing.T) {
 	s := newTestSigner(t)

@@ -76,6 +76,10 @@ func MarshalPublicKey(alg Algorithm, pub []byte) ([]byte, error) {
 // Accepts SubjectPublicKeyInfo under the "PUBLIC KEY" label, and the legacy
 // "ALEUTIAN HYBRID KEM PUBLIC KEY" format (always X-Wing).
 //
+// The file is one PEM block and nothing else: no bytes before it, no PEM
+// headers in it, and only whitespace after it. The platform keygen labels may
+// carry their "Name" header and no other.
+//
 // # Inputs
 //
 //   - data: the PEM file contents, at most 64 KiB
@@ -102,12 +106,9 @@ func ParsePublicKey(data []byte) (Algorithm, []byte, error) {
 		return Unknown, nil, fmt.Errorf("%w: %d bytes exceeds the %d-byte limit",
 			ErrMalformed, len(data), maxFileSize)
 	}
-	block, rest := pem.Decode(data)
-	if block == nil {
-		return Unknown, nil, fmt.Errorf("%w: no PEM block", ErrMalformed)
-	}
-	if len(trimSpace(rest)) != 0 {
-		return Unknown, nil, fmt.Errorf("%w: %d bytes after the PEM block", ErrMalformed, len(rest))
+	block, err := decodeOnlyBlock(data)
+	if err != nil {
+		return Unknown, nil, err
 	}
 	if block.Type == legacyPEMTypePublic {
 		return parseLegacyPublic(block.Bytes)

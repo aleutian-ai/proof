@@ -1,6 +1,8 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
+// This file is duplicated on purpose in the kafka, nats, redis and otel examples, so each example stands alone; change all four together.
+
 package main
 
 import (

@@ -4,6 +4,7 @@
 package chainformat
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -265,5 +266,43 @@ func TestComputeChainHash_RefusesYearsWithNoFourDigitForm(t *testing.T) {
 	east := time.Date(0, 1, 1, 0, 0, 0, 0, time.FixedZone("east", 3600))
 	if err := ValidateTimestamp(east); err == nil {
 		t.Error("an instant in UTC year -1 was accepted")
+	}
+}
+
+// TestChainHash_NeverPanicsOnAnyTime: a time.Time can hold a year of eleven or
+// more digits, and formatting one once indexed out of range. The checked
+// functions refuse such a timestamp; the unchecked ones return a hash.
+func TestChainHash_NeverPanicsOnAnyTime(t *testing.T) {
+	content := strings.Repeat("ab", 64)
+	times := []time.Time{
+		time.Unix(1<<60, 0),
+		time.Unix(math.MaxInt64, 999999999),
+		time.Unix(math.MinInt64, 0),
+		time.Unix(-1<<60, 0),
+		time.Date(math.MaxInt32, 12, 31, 23, 59, 59, 999999999, time.UTC),
+		time.Date(math.MinInt32, 1, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(10000000000, 1, 1, 0, 0, 0, 0, time.UTC),
+		{},
+	}
+	for _, ts := range times {
+		year := ts.UTC().Year()
+		if got := ComputeChainHashV3Unchecked("", 0, ts, content); len(got) != 128 {
+			t.Errorf("v3 unchecked, year %d: got %d characters, want 128", year, len(got))
+		}
+		if got := ComputeChainHashUnchecked("", "run", 0, ts, content); len(got) != 128 {
+			t.Errorf("v2 unchecked, year %d: got %d characters, want 128", year, len(got))
+		}
+		_, err3 := ComputeChainHashV3("", 0, ts, content)
+		_, err2 := ComputeChainHash("", "run", 0, ts, content)
+		inRange := year >= 0 && year <= 9999
+		if (err3 == nil) != inRange || (err2 == nil) != inRange {
+			t.Errorf("year %d: checked functions returned v3 %v, v2 %v", year, err3, err2)
+		}
+	}
+	// The digits are all written, so two long years do not hash alike.
+	a := ComputeChainHashV3Unchecked("", 0, time.Date(10000000000, 1, 1, 0, 0, 0, 0, time.UTC), content)
+	b := ComputeChainHashV3Unchecked("", 0, time.Date(20000000000, 1, 1, 0, 0, 0, 0, time.UTC), content)
+	if a == b {
+		t.Error("two different eleven-digit years hashed alike")
 	}
 }

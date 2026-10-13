@@ -9,8 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -68,12 +66,12 @@ func validMinimalZKEntry() CaptureRequestV3 {
 }
 
 // goldenFixture is the cross-language contract record: the input fields plus the
-// expected canonical hex + content-hash hex that every SDK port (01c/d/e) must
+// expected canonical hex + content-hash hex that every SDK port must
 // reproduce byte-for-byte.
 // --- Cross-language golden fixture schema (neutral; shared with the SDK ports) ---
 //
 // testdata/v3_golden_capture_request.json is THE byte contract every language port
-// (Go SDK 01c, Python 01d, JS 01e) pins against; it is copied byte-identical into
+// (Go SDK, Python, JS) pins against; it is copied byte-identical into
 // each SDK's testdata/. Schema mirrors the consent v3_golden_sar_*.json convention:
 // a domain_prefix_v3 + entry_type + a `vectors` array whose `input` blocks use
 // language-neutral snake_case field names, with the baked expected canonical and
@@ -199,7 +197,7 @@ func captureGoldenSeeds() []captureGoldenVector {
 	}
 }
 
-// buildCaptureGoldenFile bakes the expected hexes for every seed via this encoder.
+// buildCaptureGoldenFile computes, with this encoder, the expected hexes for every seed.
 func buildCaptureGoldenFile(t *testing.T) captureGoldenFile {
 	t.Helper()
 	seeds := captureGoldenSeeds()
@@ -219,47 +217,39 @@ func buildCaptureGoldenFile(t *testing.T) captureGoldenFile {
 	}
 }
 
-// TestCanonicalV3_Golden bakes the fixture from this encoder and asserts byte-equality
-// against the committed cross-language file. UPDATE_GOLDEN=1 (re)writes it after an
-// intentional, reviewed contract change.
+// TestCanonicalV3_Golden encodes the same inputs with this encoder and requires
+// byte-equality with the committed cross-language file.
+//
+// The file is written by scripts/spec-vectors.py, which computes the canonical
+// bytes and content hashes in Python from docs/format-spec.md §6. This test only
+// reads it. It cannot rewrite it: a vector written by the encoder it checks
+// shows only that the encoder agrees with itself.
 func TestCanonicalV3_Golden(t *testing.T) {
-	// aleutianchain_20: one copy, in fixtures/. Regeneration writes the file;
-	// verification reads the EMBEDDED bytes, so what is checked is exactly what
-	// ships to consumers — a file read could pass against an on-disk copy that
-	// never made it into a build.
-	path := filepath.Join("..", "fixtures", "testdata", "v3_golden_capture_request.json")
+	// One copy, in fixtures/. The EMBEDDED bytes are read, so what is checked is
+	// exactly what ships to consumers; a file read could pass against an on-disk
+	// copy that never made it into a build.
 	got, err := json.MarshalIndent(buildCaptureGoldenFile(t), "", "  ")
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	got = append(got, '\n')
 
-	if os.Getenv("UPDATE_GOLDEN") == "1" {
-		if err := os.WriteFile(path, got, 0o644); err != nil {
-			t.Fatalf("write fixture: %v", err)
-		}
-		t.Logf("wrote golden fixture %s", path)
-		t.Log("NOTE: rebuild before the embedded copy (and any consumer) reflects this")
-		return
-	}
-
 	want := fixtures.CaptureRequestV3Golden()
 	if len(want) == 0 {
-		t.Fatal("embedded capture golden is empty (run UPDATE_GOLDEN=1, then rebuild)")
+		t.Fatal("embedded capture golden is empty")
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("golden fixture drift — the producer encoder no longer matches the committed\n"+
-			"cross-language contract %s. If this change is intentional + reviewed, regenerate with\n"+
-			"UPDATE_GOLDEN=1 and re-bake the SDK ports (01c/d/e).", path)
+		t.Fatal("this encoder no longer reproduces fixtures/testdata/v3_golden_capture_request.json.\n" +
+			"The file is the contract (written by scripts/spec-vectors.py from the spec): the encoder\n" +
+			"is what changed. A deliberate format change goes through the spec and that script.")
 	}
 }
 
-// NOTE (aleutianchain_05): the producer's TestCanonicalV3_SDKFixtureInSync was
+// NOTE: the producer's TestCanonicalV3_SDKFixtureInSync was
 // deliberately NOT ported. It compared the producer fixture against
-// sdk/verification-go/testdata/, a path that does not exist from inside this
-// module. The equivalent guards live where they can actually see both copies:
-// aleutianchain_21 (producer <-> Go SDK, discovery-based) and aleutianchain_20
-// (this module <-> the monorepo's shared copy).
+// the Go SDK's testdata, a path that does not exist from inside this
+// module. The equivalent guards live where they can actually see both copies
+// (producer <-> Go SDK, and this module <-> the producer's shared copy).
 
 // TestCanonicalV3_GoldenSelfConsistent reproduces every committed vector from its own
 // stored input and asserts the baked hexes — the exact assertion the SDK ports run, so
@@ -517,7 +507,7 @@ func TestCanonicalV3_Rejections(t *testing.T) {
 }
 
 // TestAppendStr_NFCNormalizes exercises the REAL NFC machinery directly on the
-// encoder helper (4-agent review F3). Every public CaptureRequestV3 field is
+// encoder helper. Every public CaptureRequestV3 field is
 // regex-pinned to an ASCII subset, so NFC is a no-op through the public API and
 // a struct-level test gives false coverage. This drives appendStr with a
 // decomposed vs a precomposed form of "é" and asserts (a) identical emitted
@@ -544,8 +534,8 @@ func TestAppendStr_NFCNormalizes(t *testing.T) {
 	}
 }
 
-// TestEntryType_DisjointFromConsent pins the domain-separation invariant
-// (4-agent review F5): the capture entry_type MUST NOT collide with any consent
+// TestEntryType_DisjointFromConsent pins the domain-separation invariant:
+// the capture entry_type MUST NOT collide with any consent
 // entry_type, since the two chains share DomainPrefixV3 and separate only via
 // this length-prefixed header field.
 func TestEntryType_DisjointFromConsent(t *testing.T) {
@@ -571,8 +561,8 @@ func TestEntryType_DisjointFromConsent(t *testing.T) {
 	}
 }
 
-// TestCanonicalV3_HandDerivedHeaderPrefix is an INDEPENDENT oracle (4-agent
-// review M3): rather than trusting the encoder to agree with itself, it hand-
+// TestCanonicalV3_HandDerivedHeaderPrefix is an INDEPENDENT oracle:
+// rather than trusting the encoder to agree with itself, it hand-
 // computes the first canonical record (the subject) and asserts the encoder
 // emits exactly those bytes — catching a systematic endianness/framing bug that
 // a self-referential golden regen would bake in.

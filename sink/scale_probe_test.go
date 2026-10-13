@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// TestScaleProbe splits Commit's cost by shape (ticket _74). Skipped unless
+// TestScaleProbe splits Commit's cost by shape. Skipped unless
 // SINK_PROBE is set.
 func TestScaleProbe(t *testing.T) {
 	if os.Getenv("SINK_PROBE") == "" {

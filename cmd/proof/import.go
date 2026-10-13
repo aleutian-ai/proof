@@ -94,7 +94,11 @@ func cmdImport(args []string, stdout, stderr *os.File) int {
 	defer s.Release(ctx.Background(), *chainID, token)
 
 	rows := make([]store.Entry, 0, len(entries))
-	prev := ""
+	// The first row links from what the caller said it links from: nothing
+	// for a whole chain, --previous-hash for a segment. The entries were
+	// verified against that hash, and a row that recorded "" instead would
+	// say the segment begins a chain.
+	prev := *previousHash
 	for _, e := range entries {
 		row := toStored(*chainID, e)
 		// PreviousHash is descriptive — neither format hashes it — but a store
@@ -106,6 +110,10 @@ func cmdImport(args []string, stdout, stderr *os.File) int {
 	}
 
 	if err := refuseOccupiedRange(s, *chainID, rows); err != nil {
+		fmt.Fprintf(stderr, "proof import: %v\n", err)
+		return exitIOError
+	}
+	if err := refuseDetachedImport(s, *chainID, rows[0]); err != nil {
 		fmt.Fprintf(stderr, "proof import: %v\n", err)
 		return exitIOError
 	}
@@ -186,6 +194,67 @@ func refuseOccupiedRange(s *boltstore.Store, chainID string, rows []store.Entry)
 	return nil
 }
 
+// refuseDetachedImport fails if the chain already holds entries and the import
+// does not continue from them.
+//
+// # Description
+//
+// A free range is not enough. Entries written before the chain's first entry,
+// or after a gap, or after the tail but linking from some other hash, leave
+// one chain id over rows that do not link: the store would then hold a chain
+// that no walk from its first entry verifies, made of two parts that each
+// verified when they were imported. The only import into a chain that has
+// entries is the one that continues it: its first entry takes the next
+// sequence number, and links from the tail's chain hash.
+//
+// # Inputs
+//
+//   - s: the target store
+//   - chainID: the chain being imported into
+//   - first: the first incoming row, its PreviousHash already set from
+//     --previous-hash
+//
+// # Outputs
+//
+//   - error: saying which of the two conditions failed, or nil when the chain
+//     is empty or the import continues it
+//
+// # Example
+//
+//	if err := refuseDetachedImport(s, chainID, rows[0]); err != nil {
+//	    return err
+//	}
+//
+// # Limitations
+//
+//   - Compares hashes; it does not re-verify the entries already stored.
+//
+// # Assumptions
+//
+//   - The caller holds the chain's lease, and the incoming entries have been
+//     verified as linking from first.PreviousHash.
+func refuseDetachedImport(s *boltstore.Store, chainID string, first store.Entry) error {
+	tailHash, tailSeq, err := s.ReadTail(ctx.Background(), chainID)
+	if errors.Is(err, store.ErrEmptyChain) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the chain's tail: %w", err)
+	}
+	if first.GlobalSeq != tailSeq+1 {
+		return fmt.Errorf("chain %q already holds entries up to global_seq %d, and this import "+
+			"starts at %d. An import into a chain that has entries must continue it: start "+
+			"at global_seq %d. Nothing was imported", chainID, tailSeq, first.GlobalSeq, tailSeq+1)
+	}
+	if first.PreviousHash != tailHash {
+		return fmt.Errorf("chain %q already holds entries up to global_seq %d, and this import "+
+			"does not link from the last of them. Pass --previous-hash with that entry's "+
+			"chain_hash; the entries must verify against it. Nothing was imported",
+			chainID, tailSeq)
+	}
+	return nil
+}
+
 // toStored converts an exported entry back to its stored form, verbatim.
 //
 // # Description
@@ -195,8 +264,8 @@ func refuseOccupiedRange(s *boltstore.Store, chainID string, rows []store.Entry)
 // would defeat the point of the verb.
 //
 // PreviousHash is reconstructed from the entry's predecessor at write time by
-// the caller; it is not hashed in either format and the store treats it as
-// descriptive.
+// the caller (for the first entry, from --previous-hash); it is not hashed in
+// either format and the store treats it as descriptive.
 //
 // # Inputs
 //

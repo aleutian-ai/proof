@@ -12,7 +12,7 @@ import (
 	"github.com/aleutian-ai/proof/keyfile"
 )
 
-// _75f: proof sink init.
+// proof sink init.
 
 func mode(t *testing.T, path string) os.FileMode {
 	t.Helper()
@@ -42,8 +42,18 @@ func TestSinkInit_TwoKeysAndTheyWork(t *testing.T) {
 			t.Fatalf("%s: mode %04o, want %04o", p, got, want)
 		}
 	}
-	if _, err := os.Stat(dir); err == nil {
-		t.Fatal("init created the sink folder")
+	// init puts the sink in signing mode, so the folder exists now, and a first
+	// commit that forgets --record-key is refused instead of making the sink
+	// unsigned for good.
+	if _, err := os.Stat(filepath.Join(dir, "evidence.db.signatures")); err != nil {
+		t.Fatalf("init did not put the sink in signing mode: %v", err)
+	}
+	if code, _, e := sinkRun(t, "{\"user\":\"u-81\"}\n", "commit", "--dir", dir, "--class", "events",
+		"--subject-field", "user"); code != exitUsage || !strings.Contains(e, "pass --record-key") {
+		t.Fatalf("a first commit without --record-key: exit %d\n%s", code, e)
+	}
+	if strings.Contains(out, "which you share") || !strings.Contains(out, "not something to hand over whole") {
+		t.Fatalf("the closing line still calls the sink folder something to share:\n%s", out)
 	}
 	for _, want := range []string{"--record-key " + recPriv, "--key " + cpPriv, "--record-trust " + recPub} {
 		if !strings.Contains(out, want) {
@@ -69,7 +79,7 @@ func TestSinkInit_Refusals(t *testing.T) {
 	dir := filepath.Join(base, "sink-data")
 	for _, kd := range []string{dir, filepath.Join(dir, "keys")} {
 		if code, _, errs := sinkRun(t, "", "init", "--dir", dir, "--keys-dir", kd); code != exitUsage ||
-			!strings.Contains(errs, "out of the folder you share") {
+			!strings.Contains(errs, "out of the sink folder") {
 			t.Fatalf("keys in %s: exit %d\n%s", kd, code, errs)
 		}
 	}
@@ -110,8 +120,9 @@ func TestSinkInit_OneKey(t *testing.T) {
 }
 
 // fakeOp puts a stub `op` on PATH: item create records the fingerprint and the
-// private key it was given; item get reads the fingerprint back (or a wrong
-// one); STUB_OP_FAIL makes create fail.
+// key files it was given and names the item it made; read returns a stored key
+// file (or, with STUB_OP_MISMATCH, something that is not it); item get says
+// whether an item exists; STUB_OP_FAIL makes create fail.
 func fakeOp(t *testing.T) string {
 	t.Helper()
 	bin, store := t.TempDir(), t.TempDir()
@@ -123,8 +134,18 @@ case "$1 $2" in
     case "$a" in
       "fingerprint[text]="*) printf '%s\n' "${a#fingerprint\[text\]=}" > "$STUB_OP_DIR/fp" ;;
       "privkey_pem[file]="*) cp "${a#privkey_pem\[file\]=}" "$STUB_OP_DIR/priv.pem" ;;
+      "pubkey_pem[file]="*) cp "${a#pubkey_pem\[file\]=}" "$STUB_OP_DIR/pub.pem" ;;
     esac
   done
+  echo '{"id":"abcdefghijklmnopqrstuvwxyz","vault":{"id":"zyxwvutsrqponmlkjihgfedcba"}}'
+  exit 0 ;;
+"read op://zyxwvutsrqponmlkjihgfedcba/abcdefghijklmnopqrstuvwxyz/"*)
+  [ -n "$STUB_OP_MISMATCH" ] && { echo wrong; exit 0; }
+  case "$2" in
+    */privkey_pem) cat "$STUB_OP_DIR/priv.pem" ;;
+    */pubkey_pem) cat "$STUB_OP_DIR/pub.pem" ;;
+    *) echo "op: no such file" >&2; exit 1 ;;
+  esac
   exit 0 ;;
 "item get")
   [ -f "$STUB_OP_DIR/fp" ] || { echo "op: no item found" >&2; exit 1; }
@@ -220,7 +241,7 @@ func TestSinkInit_KeysNeverInsideTheSink(t *testing.T) {
 		"the folder itself, by a symlink": filepath.Join(base, "link"),
 	} {
 		code, _, errs := sinkRun(t, "", "init", "--dir", dir, "--keys-dir", kd)
-		if code != exitUsage || !strings.Contains(errs, "out of the folder you share") {
+		if code != exitUsage || !strings.Contains(errs, "out of the sink folder") {
 			t.Fatalf("%s (%s): exit %d\n%s", name, kd, code, errs)
 		}
 	}

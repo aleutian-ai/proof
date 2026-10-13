@@ -4,15 +4,20 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha512"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aleutian-ai/proof/keyfile"
@@ -141,8 +146,11 @@ func generateOne(a keyfile.Algorithm, outDir, slot, name, opVault string, force 
 
 	privPath, pubPath := keyPaths(outDir, a, slot)
 	if !force {
+		// Lstat, not Stat: a symlink that points nowhere is still something at
+		// the path, and writing "through" it would put the key wherever it
+		// points.
 		for _, p := range []string{privPath, pubPath} {
-			if _, err := os.Stat(p); err == nil {
+			if _, err := os.Lstat(p); err == nil {
 				return "", &usageError{msg: fmt.Sprintf("%s already exists — use --force to overwrite", p)}
 			}
 		}
@@ -172,17 +180,18 @@ func generateOne(a keyfile.Algorithm, outDir, slot, name, opVault string, force 
 		zero(privPEM)
 		return "", fmt.Errorf("encode public key: %w", err)
 	}
-	writeErr := os.WriteFile(privPath, privPEM, 0o600)
+	// The private key's mode is set on the file that was just created, so it
+	// is 0600 whatever was at the path before and whatever the umask is.
+	writeErr := writeFileAtomic(privPath, 0o600, true, privPEM)
 	zero(privPEM) // zero even when the write failed
 	if writeErr != nil {
 		return "", fmt.Errorf("write %s: %w", privPath, writeErr)
 	}
-	if err := os.WriteFile(pubPath, pubPEM, 0o644); err != nil {
+	if err := writeFileAtomic(pubPath, 0o644, false, pubPEM); err != nil {
 		return "", fmt.Errorf("write %s: %w", pubPath, err)
 	}
 
-	sum := sha512.Sum512(pub)
-	fingerprint := hex.EncodeToString(sum[:])
+	fingerprint := fingerprintOf(pub)
 	keyID, err := keyfile.KeyIDHex(a, pub)
 	if err != nil {
 		return "", fmt.Errorf("compute key id: %w", err)
@@ -333,8 +342,125 @@ func selfTestDescription(a keyfile.Algorithm) string {
 	}
 }
 
+// atomicFile is a file being written beside its destination, to be renamed
+// over it once it is complete.
+//
+// The destination is never opened. A reader sees the old file or the whole new
+// one, an interrupted write leaves the destination as it was, and whatever is
+// at the destination (a file with a looser mode, a symlink) is replaced, not
+// written into.
+type atomicFile struct {
+	*os.File
+	dest string
+}
+
+// createAtomic starts writing dest: it creates a temp file in dest's
+// directory with O_EXCL and O_NOFOLLOW, so the file is new and is not reached
+// through a link. With exactMode the file's mode is set to perm after it is
+// created, where the umask would otherwise only have narrowed it.
+func createAtomic(dest string, perm os.FileMode, exactMode bool) (*atomicFile, error) {
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return nil, fmt.Errorf("read random bytes: %w", err)
+	}
+	tmp := filepath.Join(filepath.Dir(dest),
+		"."+filepath.Base(dest)+"."+hex.EncodeToString(suffix[:])+".tmp")
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, perm)
+	if err != nil {
+		return nil, err
+	}
+	a := &atomicFile{File: f, dest: dest}
+	if exactMode {
+		if err := f.Chmod(perm); err != nil {
+			a.abort()
+			return nil, err
+		}
+	}
+	return a, nil
+}
+
+// commit makes the file durable and moves it to its destination: fsync, close,
+// rename, then fsync the directory so the rename itself survives a crash.
+func (a *atomicFile) commit() error {
+	if err := a.Sync(); err != nil {
+		a.abort()
+		return err
+	}
+	if err := a.Close(); err != nil {
+		_ = os.Remove(a.Name())
+		return err
+	}
+	if err := os.Rename(a.Name(), a.dest); err != nil {
+		_ = os.Remove(a.Name())
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(a.dest))
+	if err != nil {
+		return fmt.Errorf("sync the directory: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("sync the directory: %w", err)
+	}
+	return nil
+}
+
+// abort discards the file. The destination is untouched.
+func (a *atomicFile) abort() {
+	_ = a.Close()
+	_ = os.Remove(a.Name())
+}
+
+// writeFileAtomic writes data to dest through a temp file; see atomicFile.
+func writeFileAtomic(dest string, perm os.FileMode, exactMode bool, data []byte) error {
+	a, err := createAtomic(dest, perm, exactMode)
+	if err != nil {
+		return err
+	}
+	if _, err := a.Write(data); err != nil {
+		a.abort()
+		return err
+	}
+	return a.commit()
+}
+
+// opCommand runs the 1Password CLI and returns what it printed.
+//
+// It is a variable so a test can stand in for the CLI: the read-back below is
+// the part worth testing, and it cannot be run against a real vault there.
+// Nothing but a test replaces it.
+var opCommand = func(args ...string) ([]byte, error) {
+	if _, err := exec.LookPath("op"); err != nil {
+		return nil, errors.New("the 1Password CLI (op) is not on PATH")
+	}
+	out, err := exec.Command("op", args...).Output()
+	if err != nil {
+		// op explains itself on stderr. That text is its own message, not the
+		// item's contents, which only ever arrive on stdout.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(bytes.TrimSpace(exit.Stderr)) != 0 {
+			return nil, errors.New(strings.TrimSpace(string(exit.Stderr)))
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+// opCreatedItem is the part of `op item create --format=json` that names what
+// was created.
+type opCreatedItem struct {
+	ID    string `json:"id"`
+	Vault struct {
+		ID string `json:"id"`
+	} `json:"vault"`
+}
+
+// opIDPattern is the shape of a 1Password item or vault id. Checked before an
+// id is put into a secret reference, where a "/" or "?" would mean something.
+var opIDPattern = regexp.MustCompile(`^[a-z0-9]{26}$`)
+
 // storeIn1Password creates a Secure Note holding the key pair, then reads the
-// fingerprint back to confirm what actually landed.
+// stored keys back and checks that they are this key.
 //
 // # Description
 //
@@ -343,18 +469,22 @@ func selfTestDescription(a keyfile.Algorithm) string {
 // exists because "the upload command exited 0" is not the same as "the item
 // contains the right key".
 //
+// What is read back is the two ATTACHED key files, by the id of the item that
+// was just created. Each is parsed, and the SHA-512 of its public key (derived
+// from the seed, for the private file) must equal this key's fingerprint. The
+// item's fingerprint text field is not consulted: it is a string this function
+// wrote a moment earlier, and comparing it says nothing about the attachments.
+//
 // # Outputs
 //
-//   - error: if op is missing, the item could not be created, or the
-//     fingerprint read back does not match
+//   - error: if op is missing, the item could not be created, or a key read
+//     back is not the key that was generated
 func storeIn1Password(vault, title string, a keyfile.Algorithm, slot, keyID, fingerprint,
 	privPath, pubPath string, stdout *os.File) error {
 
-	if _, err := exec.LookPath("op"); err != nil {
-		return fmt.Errorf("the 1Password CLI (op) is not on PATH")
-	}
 	args := []string{
 		"item", "create",
+		"--format=json",
 		"--vault=" + vault,
 		"--category=Secure Note",
 		"--title=" + title,
@@ -362,26 +492,82 @@ func storeIn1Password(vault, title string, a keyfile.Algorithm, slot, keyID, fin
 		"key_id[text]=" + keyID,
 		"fingerprint[text]=" + fingerprint,
 		"created_at[text]=" + time.Now().UTC().Format(time.RFC3339),
-		"privkey_pem[file]=" + privPath,
-		"pubkey_pem[file]=" + pubPath,
+		opPrivateFile + "[file]=" + privPath,
+		opPublicFile + "[file]=" + pubPath,
 	}
 	if slot != "" {
 		args = append(args, "slot[text]="+slot)
 	}
-	if out, err := exec.Command("op", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("op item create failed: %s", strings.TrimSpace(string(out)))
+	created, err := opCommand(args...)
+	if err != nil {
+		return fmt.Errorf("op item create failed: %w", err)
+	}
+	var item opCreatedItem
+	if err := json.Unmarshal(created, &item); err != nil ||
+		!opIDPattern.MatchString(item.ID) || !opIDPattern.MatchString(item.Vault.ID) {
+		return errors.New("stored, but op did not say which item it created, so the keys " +
+			"could not be read back — check the item by hand")
 	}
 
-	readBack, err := exec.Command("op", "item", "get", title,
-		"--vault="+vault, "--field=fingerprint", "--reveal").Output()
-	if err != nil {
-		return fmt.Errorf("stored, but reading it back failed: %w", err)
+	if err := verifyStoredKeys(item, a, fingerprint); err != nil {
+		return fmt.Errorf("stored, but %w — check the item by hand", err)
 	}
-	if strings.TrimSpace(string(readBack)) != fingerprint {
-		return fmt.Errorf("stored, but the fingerprint read back does not match — check the item by hand")
-	}
-	fmt.Fprintf(stdout, "  1Password  %s (vault %s) — fingerprint verified\n", title, vault)
+	fmt.Fprintf(stdout, "  1Password  %s (vault %s) — stored keys read back and verified\n", title, vault)
 	return nil
+}
+
+// The names the two key files are attached under.
+const (
+	opPrivateFile = "privkey_pem"
+	opPublicFile  = "pubkey_pem"
+)
+
+// verifyStoredKeys reads the two attached key files back from the item and
+// checks each is the key with this fingerprint.
+//
+// The item and vault are named by id. A title is not unique in a vault: after
+// a --force there are two items with the same one, and a read by title could
+// be answered from the older.
+func verifyStoredKeys(item opCreatedItem, a keyfile.Algorithm, fingerprint string) error {
+	ref := "op://" + item.Vault.ID + "/" + item.ID + "/"
+
+	pubPEM, err := opCommand("read", ref+opPublicFile)
+	if err != nil {
+		return fmt.Errorf("reading the public key back failed: %w", err)
+	}
+	alg, pub, err := keyfile.ParsePublicKey(pubPEM)
+	if err != nil || alg != a {
+		return errors.New("the public key read back is not a key file for this algorithm")
+	}
+	if fingerprintOf(pub) != fingerprint {
+		return errors.New("the public key read back is not the key that was generated")
+	}
+
+	privPEM, err := opCommand("read", ref+opPrivateFile)
+	defer zero(privPEM)
+	if err != nil {
+		return fmt.Errorf("reading the private key back failed: %w", err)
+	}
+	alg, seed, err := keyfile.ParsePrivateKey(privPEM)
+	defer zero(seed)
+	if err != nil || alg != a {
+		return errors.New("the private key read back is not a key file for this algorithm")
+	}
+	derived, err := derivePublic(a, seed)
+	if err != nil {
+		return errors.New("the private key read back does not derive a public key")
+	}
+	if fingerprintOf(derived) != fingerprint {
+		return errors.New("the private key read back is not the key that was generated")
+	}
+	return nil
+}
+
+// fingerprintOf is the SHA-512 of a public key, in hex: the fingerprint keygen
+// prints.
+func fingerprintOf(pub []byte) string {
+	sum := sha512.Sum512(pub)
+	return hex.EncodeToString(sum[:])
 }
 
 // opItemTitle builds a stable, descriptive 1Password item title.

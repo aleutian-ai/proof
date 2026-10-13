@@ -73,7 +73,7 @@ const chainHashDomainPrefix = ChainHashPrefix
 //     (not int64 UnixMilli) because microsecond precision is required and the
 //     BigQuery client returns time.Time for TIMESTAMP columns.
 //   - contentHash: The SHA-512 hex digest of the entry's content payload
-//     (128 lowercase hex characters). Produced by storage.ComputeContentHash.
+//     (128 lowercase hex characters).
 //
 // # Outputs
 //
@@ -104,7 +104,7 @@ const chainHashDomainPrefix = ChainHashPrefix
 //   - runID is a non-empty UUID string that does NOT contain '|'
 //   - sequenceNum is non-negative (0-indexed within the batch run)
 //   - timestamp is in UTC (or will be converted to UTC internally)
-//   - contentHash is exactly 128 lowercase hex characters (SHA-512, from storage.ComputeContentHash)
+//   - contentHash is exactly 128 lowercase hex characters (SHA-512)
 //   - The separator character is always '|' (pipe, ASCII 0x7C)
 //   - The domain prefix is always "aleutian.chain.v2:" (with ':' terminator)
 //   - No field may contain the separator '|' (delimiter safety invariant)
@@ -151,8 +151,8 @@ func ComputeChainHashUnchecked(previousHash, runID string, sequenceNum int64, ti
 //   - sequenceNum: Must be non-negative (0-indexed within batch run)
 //   - contentHash: Must be exactly 128 lowercase hex characters (SHA-512 content
 //     hash, FIPS 180-4 §6.4). The content hash formula changed from SHA-256 (64 chars)
-//     to SHA-512 (128 chars) in ticket 06_1. Callers still using old SHA-256 content
-//     hashes must migrate to storage.ComputeContentHash.
+//     to SHA-512 (128 chars). Callers still using old SHA-256 content
+//     hashes must migrate to SHA-512 content hashes.
 //
 // This function does NOT validate timestamps because time.Time cannot contain
 // the pipe separator by construction (the timestamp is formatted internally by
@@ -190,7 +190,7 @@ func ComputeChainHashUnchecked(previousHash, runID string, sequenceNum int64, ti
 //   - Callers use this at API boundaries, not in hot loops (validation adds overhead)
 //   - ComputeChainHash remains safe to call without validation (produces valid
 //     but potentially meaningless hashes for invalid inputs)
-//   - contentHash was produced by storage.ComputeContentHash (SHA-512, 128 hex chars)
+//   - contentHash is a SHA-512 content hash (128 hex chars)
 //
 // # Standards
 //
@@ -331,9 +331,10 @@ func appendTimestampMicro(buf []byte, t time.Time) []byte {
 // A negative value is written as zero: callers check the range first
 // ([ValidateTimestamp] for the year; the other components cannot be negative).
 func appendIntPadded(buf []byte, val int, width int) []byte {
-	// Format into a fixed temporary buffer (right-to-left).
-	// Maximum width needed is 10 (for year 9999 or 6-digit microseconds).
-	var tmp [10]byte
+	// Format into a fixed temporary buffer (right-to-left). It holds every digit
+	// of any int: a time.Time can carry a year of eleven or more digits, and the
+	// unchecked hash functions format whatever they are given.
+	var tmp [20]byte
 	pos := len(tmp)
 	if val == 0 {
 		pos--

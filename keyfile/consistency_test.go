@@ -10,6 +10,9 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 
 	"github.com/cloudflare/circl/kem/mlkem/mlkem512"
@@ -124,7 +127,7 @@ func TestBadKeysFromTheSpec(t *testing.T) {
 			// crypto/mlkem implements ML-KEM-768/1024, not 512. The equivalent
 			// damage IS caught for 768 and 1024 — see
 			// TestConsistencyCatchesTamperedSeed. Harmless here because only the
-			// seed is returned and used. aleutianchain_34 would close it.
+			// seed is returned and used.
 			"bad_mlkem512_both_1_inconsistent.pem", nil,
 			"ML-KEM-512 expanded key is self-consistent but belongs to another key pair; needs derivation this package cannot do for 512",
 		},
@@ -237,4 +240,45 @@ func expandedFrom(t *testing.T, file string) []byte {
 		t.Fatalf("%s: not a both-form key: %v", file, err)
 	}
 	return both.Expanded
+}
+
+// TestSecretZIsComparedInConstantTime reads the source, because no test of
+// behaviour can tell a constant-time comparison from one that returns at the
+// first differing byte. z is the ML-KEM implicit-rejection secret; it must go
+// through crypto/subtle and never through bytes.Equal.
+func TestSecretZIsComparedInConstantTime(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "consistency.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse consistency.go: %v", err)
+	}
+	usesZ := func(call *ast.CallExpr) bool {
+		for _, arg := range call.Args {
+			if id, ok := arg.(*ast.Ident); ok && id.Name == "z" {
+				return true
+			}
+		}
+		return false
+	}
+	constantTime := 0
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || !usesZ(call) {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkg, _ := sel.X.(*ast.Ident)
+		switch {
+		case pkg != nil && pkg.Name == "subtle" && sel.Sel.Name == "ConstantTimeCompare":
+			constantTime++
+		case pkg != nil && pkg.Name == "bytes":
+			t.Errorf("z is passed to bytes.%s, which is not constant time", sel.Sel.Name)
+		}
+		return true
+	})
+	if constantTime == 0 {
+		t.Error("z is not compared with subtle.ConstantTimeCompare")
+	}
 }

@@ -216,7 +216,7 @@ func (i interloper) AppendChains(ctx context.Context, batches []linker.ChainInpu
 	return i.real.AppendChains(ctx, batches)
 }
 
-// TestCommitPairs_MovedTailIsRefused (_75c C2): every entry's chain hash is
+// TestCommitPairs_MovedTailIsRefused: every entry's chain hash is
 // pinned, so a batch whose chain moved under it is refused whole, and the call
 // leaves nothing of its own behind (the interloper's entry is not ours).
 func TestCommitPairs_MovedTailIsRefused(t *testing.T) {

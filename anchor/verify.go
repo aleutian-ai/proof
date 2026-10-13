@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ML-DSA-65 parameter sizes, fixed by FIPS 204.
@@ -165,6 +166,11 @@ func NewKeyRing(trust Trust, keys map[string][]byte) (*KeyRing, error) {
 
 	out := make(map[string][]byte, len(keys))
 	for id, k := range keys {
+		if id == "" {
+			// An anchor with no signing_key_id would look this key up, and an
+			// anchor that names no key was not signed by a key anyone chose.
+			return nil, errors.New("anchor: a key ring entry has an empty key id")
+		}
 		if len(k) != PublicKeySize {
 			// Length only — never echo key bytes into an error.
 			return nil, fmt.Errorf("anchor: key %q is %d bytes, want %d (ML-DSA-65)",
@@ -250,6 +256,11 @@ func VerifySignature(a Anchor, src KeySource) (Trust, error) {
 	}
 
 	// 2. Key lookup. Distinct from a bad signature, deliberately.
+	if a.SigningKeyID == "" {
+		// The signer refuses to sign without one (SignCanonical); the verifier
+		// refuses the same anchor.
+		return "", fmt.Errorf("%w: the anchor names no signing key", ErrUnknownKeyID)
+	}
 	pubKey, trust, err := src.PublicKey(a.SigningKeyID)
 	if err != nil {
 		return "", err
@@ -260,7 +271,13 @@ func VerifySignature(a Anchor, src KeySource) (Trust, error) {
 	}
 
 	// 3. Decode and length-check the signature BEFORE handing it to the library.
-	sig, err := base64.StdEncoding.DecodeString(a.Signature)
+	// One spelling of a signature: standard base64 with padding, no line
+	// breaks, no stray padding bits (format-spec §9.5). Go's decoder skips CR
+	// and LF even in strict mode, so they are refused here.
+	if strings.ContainsAny(a.Signature, "\r\n") {
+		return "", fmt.Errorf("%w: signature is not valid base64", ErrInvalidSignature)
+	}
+	sig, err := base64.StdEncoding.Strict().DecodeString(a.Signature)
 	if err != nil {
 		return "", fmt.Errorf("%w: signature is not valid base64", ErrInvalidSignature)
 	}

@@ -53,6 +53,12 @@ func anchorOver(t *testing.T, entries []Entry, head, previousAnchorHash string) 
 	if err != nil {
 		t.Fatalf("anchor chain hash: %v", err)
 	}
+	// The predecessor is named by id as well as bound by hash, and the two
+	// agree: the seed id goes with the seed hash only.
+	previousID := anchor.SeedAnchorID
+	if previousAnchorHash != anchor.SeedAnchorHash {
+		previousID = "anchor_00000000-0000-0000-0000-00000000000a"
+	}
 	return anchor.Anchor{
 		Version:          anchor.SubjectVersion,
 		AnchorID:         "anchor_01234567-8901-2345-6789-012345678901",
@@ -63,7 +69,7 @@ func anchorOver(t *testing.T, entries []Entry, head, previousAnchorHash string) 
 		VerifiedThrough:  int64(len(entries)),
 		SigningKeyID:     "test-key",
 		CreatedAtMs:      base().UnixMilli(),
-		PreviousAnchorID: anchor.SeedAnchorID,
+		PreviousAnchorID: previousID,
 	}
 }
 
@@ -108,21 +114,26 @@ func TestBindAnchor_WrongPredecessorFails(t *testing.T) {
 	genesis := anchorOver(t, entries, head, anchor.SeedAnchorHash)
 	chained := anchorOver(t, entries, head, genesis.ChainHash)
 
-	cases := map[string]string{
-		"the seed sentinel (the original bug)": anchor.SeedAnchorHash,
-		"a different anchor's hash":            strings.Repeat("ab", 64),
+	cases := map[string]struct {
+		wrong string
+		want  BindOutcome
+	}{
+		// The anchor names a real predecessor, so the seed hash cannot be its
+		// predecessor's: said as such, before any hash is compared.
+		"the seed sentinel (the original bug)": {anchor.SeedAnchorHash, BindPredecessorMismatch},
+		"a different anchor's hash":            {strings.Repeat("ab", 64), BindHeadMismatch},
 	}
-	for name, wrong := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			res, err := BindAnchor(chained, entries, wrong)
+			res, err := BindAnchor(chained, entries, tc.wrong)
 			if err != nil {
 				t.Fatalf("bind: %v", err)
 			}
 			if res.Bound {
 				t.Error("bound against the wrong predecessor; the anchor chain carries no history")
 			}
-			if res.Outcome != BindHeadMismatch {
-				t.Errorf("outcome = %v, want %v", res.Outcome, BindHeadMismatch)
+			if res.Outcome != tc.want {
+				t.Errorf("outcome = %v, want %v", res.Outcome, tc.want)
 			}
 		})
 	}
@@ -176,11 +187,10 @@ func TestBindAnchor_StillCatchesTampering(t *testing.T) {
 			c[2].ContentHash = strings.Repeat("ff", 64)
 			return c
 		}, BindChainBroken},
-		// The REAL truncation attack: drop entries from the front, RENUMBER and
-		// RE-LINK, so what remains is internally flawless (it starts at
-		// global_seq 0) and linkage alone cannot object. Catching this is the
-		// whole reason anchors exist — see the README's "Why linkage alone
-		// cannot see truncation".
+		// The REAL truncation attack: drop entries from the front and RE-LINK, so
+		// what remains is internally flawless and linkage alone cannot object.
+		// Catching this is the whole reason anchors exist — see the README's
+		// "Why linkage alone cannot see truncation".
 		{"entries removed from the front, then re-linked", func(e []Entry) []Entry {
 			kept := append([]Entry(nil), e[1:]...)
 			prev := ""
@@ -189,18 +199,12 @@ func TestBindAnchor_StillCatchesTampering(t *testing.T) {
 				if err != nil {
 					t.Fatalf("parse ts: %v", err)
 				}
-				kept[i].GlobalSeq = int64(i)
 				kept[i].ChainHash = chainformat.ComputeChainHashV3Unchecked(
 					prev, kept[i].GlobalSeq, ts, kept[i].ContentHash)
 				prev = kept[i].ChainHash
 			}
 			return kept
 		}, BindRangeStartMismatch},
-		// Without the renumbering the remainder starts at global_seq 1, which no
-		// whole chain does: the walk itself objects.
-		{"entries removed from the front, not renumbered", func(e []Entry) []Entry {
-			return append([]Entry(nil), e[1:]...)
-		}, BindChainBroken},
 		{"entries removed from the end", func(e []Entry) []Entry {
 			return append([]Entry(nil), e[:len(e)-1]...)
 		}, BindRangeEndMismatch},

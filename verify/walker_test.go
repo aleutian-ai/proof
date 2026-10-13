@@ -32,7 +32,8 @@ func series(t *testing.T, entries []Entry, counts ...int) ([]anchor.Anchor, anch
 		}
 		head := entries[n-1].ChainHash
 		a := anchorOver(t, entries[:n], head, prevHash)
-		a.AnchorID = "anchor_0000000" + string(rune('0'+i)) + "-0000-0000-0000-000000000000"
+		// From 1: number 0 would be the seed anchor's id.
+		a.AnchorID = "anchor_0000000" + string(rune('1'+i)) + "-0000-0000-0000-000000000000"
 		a.PreviousAnchorID = prevID
 		a.SigningKeyID = ""
 		signed, err := anchor.SignAnchor(context.Background(), signer, a)

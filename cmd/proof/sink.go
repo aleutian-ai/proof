@@ -32,6 +32,8 @@ const sinkUsage = `usage:
   proof sink erase      [--dir D] --subject S [--class C]   (or --resume)   [--record-key <record private.pem>]
   proof sink export     [--dir D] (--chain C… | --subject S [--class K] | --all)
                         [--disclose none|all|<entry id>,…] --out bundle.json
+  proof sink verify-bundle <bundle.json> [--key <public.pem>]… [--record-trust <record public.pem>]… [--json]
+                        (no sink folder needed; its own exit codes: proof sink verify-bundle -h)
 
 A sink is a folder (default ./sink-data) holding one opaque chain per
 (class, subject); only a secret index links subjects to chains. See
@@ -62,6 +64,9 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	}
 	if verb == "export" {
 		return cmdSinkExport(args[1:], stdout, stderr)
+	}
+	if verb == "verify-bundle" {
+		return cmdSinkVerifyBundle(args[1:], stdout, stderr)
 	}
 	fs := flag.NewFlagSet("sink "+verb, flag.ContinueOnError)
 	fs.SetOutput(stderr)

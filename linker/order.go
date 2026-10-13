@@ -6,6 +6,9 @@ package linker
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/aleutian-ai/proof/chainformat"
 )
 
 // validateBatchOrdering checks the invariants that make a total order possible.
@@ -52,6 +55,19 @@ func validateBatchOrdering(inputs []Input) (string, error) {
 			return inputs[i].EntryID, fmt.Errorf(
 				"entry %q has a zero ingested_at, so its arrival order is undefined",
 				inputs[i].EntryID)
+		}
+		// An appended entry is never an erased one: erasure rewrites an entry in
+		// place and keeps its chain hash (format-spec §5). A verifier does not
+		// recompute an entry it reads as a tombstone, so one that was appended
+		// half-shaped (the type and id with an ordinary content hash) left the
+		// chain permanently broken, and a fully shaped one would be a link no
+		// verifier checks.
+		if inputs[i].EntryType == chainformat.TombstoneEntryType ||
+			strings.HasPrefix(inputs[i].EntryID, chainformat.TombstoneEntryIDPrefix) ||
+			chainformat.IsTombstoneContentHash(inputs[i].ContentHash) {
+			return inputs[i].EntryID, fmt.Errorf(
+				"entry %q uses the entry type, id prefix or content hash reserved for erased "+
+					"entries; a tombstone replaces an entry and is never appended", inputs[i].EntryID)
 		}
 		if _, dup := seen[inputs[i].EntryID]; dup {
 			return inputs[i].EntryID, fmt.Errorf(

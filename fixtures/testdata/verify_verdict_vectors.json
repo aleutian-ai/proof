@@ -1,0 +1,3464 @@
+{
+  "_comment": "Verifier verdict vectors. Written by scripts/verdict-vectors.py from docs/format-spec.md (§4, §5.5, §9.4, §9.8) and never by an implementation under test. Each case is a valid chain with one stated defect; `why` cites the rule. chain_cases: verify the entries (linking the first from previous_hash, empty for a whole chain) and compare verdict, the index and type of the FIRST break (-1 and \"\" when intact), tombstones_found and last_tombstone. entries_text_cases: text is the content of an entries file; \"entries\" means it decodes, \"not_entries\" that it is refused as not being entries (an error, never a broken chain). anchor_text_cases: text is an anchor's JSON; \"parses\" or \"refused\". bind_cases: a keyless bind of anchor to entries with previous_anchor_hash; expected.error true means the anchor is refused as malformed; otherwise compare outcome, bound, tombstones and entries_not_bound. No case needs a key.",
+  "seed_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+  "seed_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+  "chain_cases": [
+    {
+      "name": "intact",
+      "why": "four well-formed v3 entries",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "INTACT",
+        "first_break": -1,
+        "first_break_type": "",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "starts_at_global_seq_1",
+      "why": "§5.5: the first global_seq is not fixed; the hosted platform starts at 1",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "b9257ce16878daaf837760572063deadd19a5aff1205fee6157f4651f08fa3a6a9adc217ba9cc692d636045349daa375e67dbb2bd306e42b2d04ecc0b84a9da1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "e75a441222219b37d009a59a49390e235e684350d8c94380a765411140c9fe2f08f189af37eb4282dd5b2aa072fe0730912da4e4ec398534e281aeba30a48d32"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "4c063c9c80a28d15124e6eaad3e4ad33c0f51f2a82d2f8476e7002dba01561c31bd68e19b6249d238246f85134753ef7ed475e74f066d306fcbbc86080e70187"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "59a065380a5716d17086412d0e900abd94944d8bdcd81b120f7072ea1951c4f88a607b03c85fb4997969c85c789e1f9730591d89177341e362fda2c40cdf95b3"
+        }
+      ],
+      "expected": {
+        "verdict": "INTACT",
+        "first_break": -1,
+        "first_break_type": "",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "starts_at_global_seq_1001",
+      "why": "§5.5: nor is a later start a break",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1001,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "ca75bb93ff330fc22fa5ce54ea928c4a0c2b3ce2b08b65ca2ce474cc7dd2a4c74010baadbc81ebc42a785aa7d2f3c5d319b43ea06dbeec51640bb301d2a11e95"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1002,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "d6077d25da6bbc1e75ac6e4ed4ebdbd8f0f3844c69316fd405b0a479f534fc2817d750266e01cc41b5e7c3c7ce07843f8d471a695dff6f65dc50088be8447c97"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1003,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "a74333259bdd060cf53df8fa496246f2dcc148293a6014416ab9a58da6ccec8a718aa290be96a3116629500b4fa6f4005ad7355e53e7f46dd5099998629c261e"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1004,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "ecbef462b8b54747d802887e22f07bc7c0e66efe302bbafa7d9810dfe666aed1ada05b3ea0c26172199ccb23803c27187d3a50f6c91d39f9644928c1aed28ceb"
+        }
+      ],
+      "expected": {
+        "verdict": "INTACT",
+        "first_break": -1,
+        "first_break_type": "",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "content_edited",
+      "why": "an edited content hash no longer hashes to the stored chain hash",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "34524f80c556d4e5c01e3ed2d06012653c02d436caa3ef8008255015f9deff1f00e8a70ae3683d06d19b5dc9fb4c130faa4559fb0ad1ca05c63e92e616e249f8",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 2,
+        "first_break_type": "hash_mismatch",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "sequence_gap",
+      "why": "global_seq must rise by one",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 7,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 3,
+        "first_break_type": "sequence_gap",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "timestamp_in_another_offset",
+      "why": "§4: a stored timestamp in any spelling but YYYY-MM-DDTHH:MM:SS.ffffffZ is a break, even though it names the instant that was hashed",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T14:30:01.000000+05:30",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "timestamp_with_no_fraction",
+      "why": "§4: a stored timestamp in any spelling but YYYY-MM-DDTHH:MM:SS.ffffffZ is a break, even though it names the instant that was hashed",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "timestamp_with_nanoseconds",
+      "why": "§4: a stored timestamp in any spelling but YYYY-MM-DDTHH:MM:SS.ffffffZ is a break, even though it names the instant that was hashed",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000999Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "timestamp_lowercase_z",
+      "why": "§4: a stored timestamp in any spelling but YYYY-MM-DDTHH:MM:SS.ffffffZ is a break, even though it names the instant that was hashed",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "timestamp_unparseable",
+      "why": "§4",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "yesterday",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "content_hash_not_a_digest",
+      "why": "§5.5: re-linked, so the hashes agree; the shape does not",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "not|a|hash",
+          "chain_hash": "e55c3186e6113bb49a5881b0715531f53533e6f30fdf68a168c3e8eb4440f307ad70066b1a30cc48d4108e52a619785f5f2b2392842eb63e4cc28150dbddc3b5"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "5ee075c788a4da06b9c81232ebfcd78a847887690cafe34197a7134722d4262bd6be45aa76078915c57e2bc39cdb7d7a4b77b44f96d5688b9c29009fa0c893d1"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "2bf572f8b621bebb32704c854037f892fae6205523df4f5da36035140888fc74e6873b3d61c52f56e2dd4a9e2c69c7b58275a51cce6c94c7a538dff5e74c7016"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "content_hash_uppercase",
+      "why": "§5.5: lowercase hex",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+          "chain_hash": "78eecafe3855a8ac654261d490bbf991dfe6c164cbae39ea3a182a36bb0bc867ae7e746a44021dff4055ea9c4c76b24a2f524633f909a93a59ed911225365e1e"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "c40d8d0b41dd0db86ac1e926203d0f3c646c940a8fb57377296d949789307e278c6f866f2329027d21c1d27199353809fb3650f2a45cfa190b57b79faf7489b6"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "ed9bcca472e209dd9548e3c032e240ebaf95f10f09ca94374a613ca39254314c60590b325da7a1fbeba9c670ada8b06763435d42bd8f9808fe954a5156a7136d"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "content_hash_64_hex",
+      "why": "§2: a content hash is SHA-512, 128 hex characters",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "abababababababababababababababababababababababababababababababab",
+          "chain_hash": "e9897f8fcf71acf70cbad5c86c18f4b94d2404c21a2262489b58a522033be0fd5344c234dfb8b2590290915ba442884c4b18ca44c026451a61080b164c7e7d78"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "44e3655ffbcb57c179e18de3877b671ab6eee63734d6d67f6a2a212cfc17c50e78d8b6f3aec9063c04cf2b71194ce37f05d2b6a1304a233b1cf300101cc22694"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "5cf53497c7659010d1ddf20249f745047679f47cea9327a884e9ed37b60727eaf29cad45c4b20a1692c32b849a1accbd11287346363e9f70e1d19ba899c04f7a"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "negative_global_seq",
+      "why": "§5.5",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": -7,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c6b48d7daff37a8893ae78ad1305e7ae1d3254f05ae83a83dc93bed743d1c897cdaf1c04714effc269ed91bb2a9d86c844831d6105ee19c7da0461a961277a5e"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": -6,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "54b4498c190ed016b75d1969e1f6754cd616816778c8b75085c29a57f02a1db43645239551bf6034425a23691de104cb8c31a4c883945e7fd4d5d1c532646a3b"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": -5,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "7a0bcfbac93c4e572a87a0e8b55b4192e7be52a99af2b67b02bc6183156f13a8ddcb6b47e7a7b48b6753d85749fd1ac8af276df3a0fe43afb3ee6543e1f2b776"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": -4,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "8025f85ddf810cedb183a86e2b686e83242800cdfa3c8988cc7538c8a300369cd928423e40e469e5261b1be8270df38710a88bb6b842170e11d35defa3eb72bb"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 0,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "chain_hash_not_a_digest",
+      "why": "§5.5: on any entry",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "short"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 2,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "unknown_format_version",
+      "why": "§2.2: never guessed",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 99,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "unknown_format",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "v3_entry_carrying_run_id",
+      "why": "§2.2: v3 binds neither run_id nor sequence_num",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "run-1",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "format_field_misuse",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "tombstone",
+      "why": "§5.1: an erased entry is not a break; its stored chain hash is carried forward",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "expected": {
+        "verdict": "INTACT",
+        "first_break": -1,
+        "first_break_type": "",
+        "tombstones_found": 1,
+        "last_tombstone": 2
+      }
+    },
+    {
+      "name": "tombstone_content_hash_on_an_ordinary_entry",
+      "why": "§5.5: the content hash alone does not make a tombstone; the entry is recomputed and does not match",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 2,
+        "first_break_type": "hash_mismatch",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "tombstone_with_a_malformed_content_hash",
+      "why": "§5",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:BADDATA",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 2,
+        "first_break_type": "invalid_tombstone",
+        "tombstones_found": 1,
+        "last_tombstone": 2
+      }
+    },
+    {
+      "name": "tombstone_with_a_malformed_chain_hash",
+      "why": "§5.5: chain_hash is a digest on every entry, tombstones included",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "a|b"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 2,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "tombstone_with_an_unknown_format",
+      "why": "§5.5: what a tombstone declares is still checked",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 99,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 2,
+        "first_break_type": "unknown_format",
+        "tombstones_found": 1,
+        "last_tombstone": 2
+      }
+    },
+    {
+      "name": "v3_tombstone_carrying_run_id",
+      "why": "§5.5",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "run-1",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 2,
+        "first_break_type": "format_field_misuse",
+        "tombstones_found": 1,
+        "last_tombstone": 2
+      }
+    },
+    {
+      "name": "entries_before_a_tombstone_rewritten",
+      "why": "§5.5, THE LIMITATION: this chain was tampered with and verifies. A verifier cannot detect it and MUST report last_tombstone so the caller knows entries 0 to 2 are not verified",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "271f07748edcd9ed678c1490451aa3f5506035190e92d7f163860b2c4a592a1c5c1a78f5eaf9fa4f78bd6d5c130d2ec0877f54dccb1e95394cf16e136361e02e",
+          "chain_hash": "c50b95d34f01e56aab6dab71f1a053e64b8c5cbc90e2144addf76d4ec562e76a02afdb550c13592a2a37d9a84997eefa779b0234ba73a41494404b4021647314"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "cdc9c1bcda763ddc1f9af256c579577b1d647cdeae49df2c023e8dd00bb1b3fcee0f14820f1c25fe17fa8e3d811e6c65f4a8e838bfb93b6e2143504131d43cad",
+          "chain_hash": "9702a99588f3929fdacc3d4804531f84df84d94a04351faeb0fbda3f250ccf99d63d655f35998d7b072473c2e3979a13bc7c14b3a45da5f5df09ffcc03a726b4"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "expected": {
+        "verdict": "INTACT",
+        "first_break": -1,
+        "first_break_type": "",
+        "tombstones_found": 1,
+        "last_tombstone": 2
+      }
+    },
+    {
+      "name": "tombstone_with_another_timestamp_spelling",
+      "why": "§5.5: the only checks on a tombstone are its chain hash shape, its content hash format, its declared format and global_seq",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:02Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "expected": {
+        "verdict": "INTACT",
+        "first_break": -1,
+        "first_break_type": "",
+        "tombstones_found": 1,
+        "last_tombstone": 2
+      }
+    },
+    {
+      "name": "timestamp_that_is_not_a_real_instant",
+      "why": "§4: the right shape, and no such day",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-02-30T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "two_defects_timestamp_before_field_shape",
+      "why": "§5.5: the timestamp is judged before the other field shapes",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "not|a|hash",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "two_defects_chain_hash_shape_first",
+      "why": "§5.5: chain_hash is checked first on every entry",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "yesterday",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "short"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "two_defects_unknown_format_before_field_shape",
+      "why": "§5.5: an entry of an unknown format has no field shapes to judge",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 99,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "not|a|hash",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "unknown_format",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "segment_with_its_predecessor_hash",
+      "why": "a segment links from the hash supplied",
+      "previous_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930",
+      "entries": [
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "INTACT",
+        "first_break": -1,
+        "first_break_type": "",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "segment_without_its_predecessor_hash",
+      "why": "and from nothing, it does not",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 0,
+        "first_break_type": "hash_mismatch",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    },
+    {
+      "name": "malformed_previous_hash",
+      "why": "§5.5: the supplied predecessor hash is a digest",
+      "previous_hash": "abc",
+      "entries": [
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 0,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1
+      }
+    }
+  ],
+  "entries_text_cases": [
+    {
+      "name": "array",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"chain_hash\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"},{\"entry_id\":\"ent_01\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:01.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":1,\"content_hash\":\"64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4\",\"chain_hash\":\"53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930\"}]",
+      "expected": "entries"
+    },
+    {
+      "name": "jsonl",
+      "text": "{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"chain_hash\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}\n{\"entry_id\":\"ent_01\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:01.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":1,\"content_hash\":\"64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4\",\"chain_hash\":\"53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930\"}\n",
+      "expected": "entries"
+    },
+    {
+      "name": "an_unknown_member",
+      "text": "[{\"producer\":\"x\",\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"chain_hash\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}]",
+      "expected": "entries"
+    },
+    {
+      "name": "only_the_required_members",
+      "text": "[{\"entry_id\": \"ent_00\", \"timestamp\": \"2026-10-12T09:00:00.000000Z\", \"content_hash\": \"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\", \"chain_hash\": \"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}]",
+      "expected": "entries"
+    },
+    {
+      "name": "empty",
+      "text": "  \n",
+      "expected": "not_entries"
+    },
+    {
+      "name": "an_empty_object",
+      "text": "{}",
+      "expected": "not_entries"
+    },
+    {
+      "name": "null",
+      "text": "null",
+      "expected": "not_entries"
+    },
+    {
+      "name": "an_empty_array",
+      "text": "[]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "an_array_of_null",
+      "text": "[null]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "an_export_bundle",
+      "text": "{\"format\":\"aleutian.proof.bundle.v1\",\"chains\":[]}",
+      "expected": "not_entries"
+    },
+    {
+      "name": "an_anchor",
+      "text": "{\"version\":6,\"subject\":\"s\",\"chain_hash\":\"aa\",\"entry_count\":1}",
+      "expected": "not_entries"
+    },
+    {
+      "name": "a_member_twice",
+      "text": "{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":7,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"chain_hash\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}",
+      "expected": "not_entries"
+    },
+    {
+      "name": "a_member_in_another_case",
+      "text": "{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"CHAIN_HASH\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}",
+      "expected": "not_entries"
+    },
+    {
+      "name": "no_chain_hash",
+      "text": "{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"other\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}",
+      "expected": "not_entries"
+    },
+    {
+      "name": "a_member_of_another_type",
+      "text": "{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":\"0\",\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"chain_hash\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}",
+      "expected": "not_entries"
+    },
+    {
+      "name": "two_objects_on_one_line",
+      "text": "{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"chain_hash\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"chain_hash\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}",
+      "expected": "not_entries"
+    },
+    {
+      "name": "an_array_that_is_not_json",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":3,\"run_id\":\"\",\"sequence_num\":0,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"chain_hash\":\"c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1\"}",
+      "expected": "not_entries"
+    }
+  ],
+  "anchor_text_cases": [
+    {
+      "name": "well_formed_v6",
+      "text": "{\"subject\":\"vector-subject\",\"version\":6,\"anchor_id\":\"anchor_11111111-1111-1111-1111-111111111111\",\"chain_hash\":\"2b007b9e42325730d6ce37e073e1248d9715d031eef0b730339b8b36d20de2eab3a962fbe9fefe7c72a25880e6ab8fd21de7cab51b0260c0578d9a15d256c220\",\"range\":{\"start_entry_id\":\"ent_00\",\"end_entry_id\":\"ent_02\"},\"entry_count\":3,\"signature\":\"\",\"signing_key_id\":\"vector-key\",\"created_at_ms\":1791795600000,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"verified_through\":3}",
+      "expected": "parses"
+    },
+    {
+      "name": "an_unknown_member",
+      "text": "{\"subject\":\"vector-subject\",\"root_hash\":\"aa\",\"version\":6,\"anchor_id\":\"anchor_11111111-1111-1111-1111-111111111111\",\"chain_hash\":\"2b007b9e42325730d6ce37e073e1248d9715d031eef0b730339b8b36d20de2eab3a962fbe9fefe7c72a25880e6ab8fd21de7cab51b0260c0578d9a15d256c220\",\"range\":{\"start_entry_id\":\"ent_00\",\"end_entry_id\":\"ent_02\"},\"entry_count\":3,\"signature\":\"\",\"signing_key_id\":\"vector-key\",\"created_at_ms\":1791795600000,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"verified_through\":3}",
+      "expected": "refused"
+    },
+    {
+      "name": "a_member_in_another_case",
+      "text": "{\"subject\":\"vector-subject\",\"version\":6,\"anchor_id\":\"anchor_11111111-1111-1111-1111-111111111111\",\"chain_hash\":\"2b007b9e42325730d6ce37e073e1248d9715d031eef0b730339b8b36d20de2eab3a962fbe9fefe7c72a25880e6ab8fd21de7cab51b0260c0578d9a15d256c220\",\"range\":{\"start_entry_id\":\"ent_00\",\"end_entry_id\":\"ent_02\"},\"ENTRY_COUNT\":3,\"signature\":\"\",\"signing_key_id\":\"vector-key\",\"created_at_ms\":1791795600000,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"verified_through\":3}",
+      "expected": "refused"
+    },
+    {
+      "name": "a_member_twice",
+      "text": "{\"subject\":\"vector-subject\",\"version\":6,\"anchor_id\":\"anchor_11111111-1111-1111-1111-111111111111\",\"chain_hash\":\"2b007b9e42325730d6ce37e073e1248d9715d031eef0b730339b8b36d20de2eab3a962fbe9fefe7c72a25880e6ab8fd21de7cab51b0260c0578d9a15d256c220\",\"range\":{\"start_entry_id\":\"ent_00\",\"end_entry_id\":\"ent_02\"},\"entry_count\":1,\"entry_count\":3,\"signature\":\"\",\"signing_key_id\":\"vector-key\",\"created_at_ms\":1791795600000,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"verified_through\":3}",
+      "expected": "refused"
+    },
+    {
+      "name": "v6_with_the_legacy_subject_name",
+      "text": "{\"company_id\":\"vector-subject\",\"version\":6,\"anchor_id\":\"anchor_11111111-1111-1111-1111-111111111111\",\"chain_hash\":\"2b007b9e42325730d6ce37e073e1248d9715d031eef0b730339b8b36d20de2eab3a962fbe9fefe7c72a25880e6ab8fd21de7cab51b0260c0578d9a15d256c220\",\"range\":{\"start_entry_id\":\"ent_00\",\"end_entry_id\":\"ent_02\"},\"entry_count\":3,\"signature\":\"\",\"signing_key_id\":\"vector-key\",\"created_at_ms\":1791795600000,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"verified_through\":3}",
+      "expected": "refused"
+    },
+    {
+      "name": "both_subject_names",
+      "text": "{\"company_id\":\"vector-subject\",\"subject\":\"vector-subject\",\"version\":6,\"anchor_id\":\"anchor_11111111-1111-1111-1111-111111111111\",\"chain_hash\":\"2b007b9e42325730d6ce37e073e1248d9715d031eef0b730339b8b36d20de2eab3a962fbe9fefe7c72a25880e6ab8fd21de7cab51b0260c0578d9a15d256c220\",\"range\":{\"start_entry_id\":\"ent_00\",\"end_entry_id\":\"ent_02\"},\"entry_count\":3,\"signature\":\"\",\"signing_key_id\":\"vector-key\",\"created_at_ms\":1791795600000,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"verified_through\":3}",
+      "expected": "refused"
+    },
+    {
+      "name": "an_unknown_member_in_range",
+      "text": "{\"subject\":\"vector-subject\",\"version\":6,\"anchor_id\":\"anchor_11111111-1111-1111-1111-111111111111\",\"chain_hash\":\"2b007b9e42325730d6ce37e073e1248d9715d031eef0b730339b8b36d20de2eab3a962fbe9fefe7c72a25880e6ab8fd21de7cab51b0260c0578d9a15d256c220\",\"range\":{\"extra\":1,\"start_entry_id\":\"ent_00\",\"end_entry_id\":\"ent_02\"},\"entry_count\":3,\"signature\":\"\",\"signing_key_id\":\"vector-key\",\"created_at_ms\":1791795600000,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"verified_through\":3}",
+      "expected": "refused"
+    },
+    {
+      "name": "a_range_member_twice",
+      "text": "{\"subject\":\"vector-subject\",\"version\":6,\"anchor_id\":\"anchor_11111111-1111-1111-1111-111111111111\",\"chain_hash\":\"2b007b9e42325730d6ce37e073e1248d9715d031eef0b730339b8b36d20de2eab3a962fbe9fefe7c72a25880e6ab8fd21de7cab51b0260c0578d9a15d256c220\",\"range\":{\"start_entry_id\":\"ent_00\",\"end_entry_id\":\"x\",\"end_entry_id\":\"ent_02\"},\"entry_count\":3,\"signature\":\"\",\"signing_key_id\":\"vector-key\",\"created_at_ms\":1791795600000,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"verified_through\":3}",
+      "expected": "refused"
+    },
+    {
+      "name": "trailing_data",
+      "text": "{\"subject\":\"vector-subject\",\"version\":6,\"anchor_id\":\"anchor_11111111-1111-1111-1111-111111111111\",\"chain_hash\":\"2b007b9e42325730d6ce37e073e1248d9715d031eef0b730339b8b36d20de2eab3a962fbe9fefe7c72a25880e6ab8fd21de7cab51b0260c0578d9a15d256c220\",\"range\":{\"start_entry_id\":\"ent_00\",\"end_entry_id\":\"ent_02\"},\"entry_count\":3,\"signature\":\"\",\"signing_key_id\":\"vector-key\",\"created_at_ms\":1791795600000,\"previous_anchor_id\":\"anchor_00000000-0000-0000-0000-000000000000\",\"verified_through\":3}{}",
+      "expected": "refused"
+    },
+    {
+      "name": "not_an_object",
+      "text": "[]",
+      "expected": "refused"
+    },
+    {
+      "name": "v4_with_the_new_subject_name",
+      "text": "{\"version\":4,\"subject\":\"vector-subject\"}",
+      "expected": "refused"
+    }
+  ],
+  "bind_cases": [
+    {
+      "name": "bound",
+      "why": "§9.7",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "bound",
+        "bound": true,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "chain_broken",
+      "why": "the chain does not verify, so nothing is bound",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "34524f80c556d4e5c01e3ed2d06012653c02d436caa3ef8008255015f9deff1f00e8a70ae3683d06d19b5dc9fb4c130faa4559fb0ad1ca05c63e92e616e249f8",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "chain_broken",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "truncated_from_the_front_and_relinked",
+      "why": "the remainder verifies on its own; the anchor's committed first entry is gone",
+      "entries": [
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "eeff6f04eddd15b7767c60b5803bb40db5ac1c35ce5c12df7b83f8ecaeb1ee14f5d3daae57722865334403f05d46cc9b214c4c4ab7b9589a168c650967407a5b"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "b0b3c5f0ec4f9f300b1b6bf987923a8250cc793246590cc55d5dd633955a139bd339774a3ee41a3fad0ef3d8aa3a56acbd6db8c71380b20efcb46f0c926bef25"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "adf425ea35dc2c1e4d8500d9bc7a9f741456d2e0179754fd151135195a694375d8ca95bf0860d4e6c6eec4104fda3aec6624ed20092e14cad15e54b6ec63104c"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "4793fb11e72bd7dc8671c9a88ed1af5f2dee7684d1cb14ac8b90e1e68c1e2f778a19fc856da4af43b768f417e39e5ad516c6470fc8c4e14c62c10291c3000477"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "range_start_mismatch",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "truncated_from_the_end",
+      "why": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "range_end_mismatch",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "height_mismatch",
+      "why": "entry_count is not the chain's length",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 4,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 4
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "height_mismatch",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "wrong_predecessor_hash",
+      "why": "§9.4: the predecessor's hash is inside the anchor's own",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "74e37c8cca6e28707ab7c4419c32496a972c8fc537219c5d9ca1aab346f47970932257ad09241a313cbccc479ed02dc9bc195678606eb9badc12ff93486d52be",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_22222222-2222-2222-2222-222222222222",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "expected": {
+        "error": false,
+        "outcome": "head_mismatch",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "first_anchor_naming_a_predecessor",
+      "why": "§9.8: the seed hash goes with the seed id only",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_22222222-2222-2222-2222-222222222222",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "predecessor_mismatch",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "later_anchor_naming_the_seed",
+      "why": "§9.8",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "74e37c8cca6e28707ab7c4419c32496a972c8fc537219c5d9ca1aab346f47970932257ad09241a313cbccc479ed02dc9bc195678606eb9badc12ff93486d52be",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+      "expected": {
+        "error": false,
+        "outcome": "predecessor_mismatch",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "chain_grown_since_the_anchor",
+      "why": "§9.7: a bind is over exactly the entries given. The caller passes the prefix the anchor covers; given the grown chain, the anchor's last entry is not the last entry",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        },
+        {
+          "entry_id": "ent_05",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:05.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 5,
+          "content_hash": "fc5caecc9deaabb9278f2b917481745cd610a1e6a62fa1dde7bdd3a8a1e514147c473dac4420debbd45dfa6a1ff7092045a86ae4154687f5caca2fc1521ea06e",
+          "chain_hash": "753ca47c9cff856e7f650caca105efcb93924fb6a15c071df84e9295f3bf6eac44badb2afdc446fe11510705a3d97dbf893f0532f492ce2930e624cbe45aa099"
+        },
+        {
+          "entry_id": "ent_06",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:06.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 6,
+          "content_hash": "2d0b7ef32127ddb7e8bf51f75cf693ab232f15b383167eadc263523a8f236251b776753ddc986f7d273f95e297ffbbd82bd2009f7cde553b000e24646e06a630",
+          "chain_hash": "200605468bf8c4d63e5d9daa5fd01d05a7f156660f468f28de031a593b083943c776c01a739f0c374d8ad298df982f4161dc5ef51c42cdd506a7ca2b46baf21d"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "range_end_mismatch",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "chain_broken_after_a_tombstone",
+      "why": "the counts are what the walk saw, whatever the outcome",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "34524f80c556d4e5c01e3ed2d06012653c02d436caa3ef8008255015f9deff1f00e8a70ae3683d06d19b5dc9fb4c130faa4559fb0ad1ca05c63e92e616e249f8",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "chain_broken",
+        "bound": false,
+        "tombstones": 1,
+        "entries_not_bound": 2
+      }
+    },
+    {
+      "name": "predecessor_checked_before_the_head",
+      "why": "§9.8: two defects, a first anchor naming a predecessor and a wrong head; the predecessor is reported",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_22222222-2222-2222-2222-222222222222",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "predecessor_mismatch",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    },
+    {
+      "name": "v6_without_verified_through",
+      "why": "§9.3: refused as malformed",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 0
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": true
+      }
+    },
+    {
+      "name": "verified_through_above_entry_count",
+      "why": "§9.8: refused as a malformed anchor, not reported as an outcome",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 999999
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": true
+      }
+    },
+    {
+      "name": "created_before_the_epoch",
+      "why": "§9.8",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": -5,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": true
+      }
+    },
+    {
+      "name": "bound_over_a_tombstone",
+      "why": "§5.5: a lawful erasure does not break the anchor, and the result reports that entries 0 to 2 are not bound",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "bound",
+        "bound": true,
+        "tombstones": 1,
+        "entries_not_bound": 3
+      }
+    },
+    {
+      "name": "entries_before_a_tombstone_rewritten",
+      "why": "§5.5, THE LIMITATION: tampered, and it binds. entries_not_bound is what tells the caller",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "271f07748edcd9ed678c1490451aa3f5506035190e92d7f163860b2c4a592a1c5c1a78f5eaf9fa4f78bd6d5c130d2ec0877f54dccb1e95394cf16e136361e02e",
+          "chain_hash": "c50b95d34f01e56aab6dab71f1a053e64b8c5cbc90e2144addf76d4ec562e76a02afdb550c13592a2a37d9a84997eefa779b0234ba73a41494404b4021647314"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "cdc9c1bcda763ddc1f9af256c579577b1d647cdeae49df2c023e8dd00bb1b3fcee0f14820f1c25fe17fa8e3d811e6c65f4a8e838bfb93b6e2143504131d43cad",
+          "chain_hash": "9702a99588f3929fdacc3d4804531f84df84d94a04351faeb0fbda3f250ccf99d63d655f35998d7b072473c2e3979a13bc7c14b3a45da5f5df09ffcc03a726b4"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "7c72e730f146b10d1d1c2cd310200c6e4e1cd2874e4070537f600f3f9d3345db88e0dbab4f47a870550f4c96db346260e63fecbdb818edd03e8e196a8061f832"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "bound",
+        "bound": true,
+        "tombstones": 1,
+        "entries_not_bound": 3
+      }
+    },
+    {
+      "name": "last_entry_given_a_tombstone_content_hash",
+      "why": "§5.5: one tombstone rule in every path. The last entry keeps its chain hash and takes a TOMBSTONE: content hash, with every other entry replaced; it is not a tombstone, and the chain is broken",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "064a6e32bd181925768a3e15cb9cab09c0cdcb6011bd4fce1d14c3b6d101fdd3c94c505bcf46b02b067b47501963280fdd40fbcbbbb10f9e0bc165e1d6abca0d",
+          "chain_hash": "3da42ec0de5e5460006af2fda0d6c5ad8b061450914868a3e1cf716dcd46339d427b9b0d98213c5471c2ef06bdf619ab47e1ab10edbf2f221627a6624909d1b9"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "3fdb4f24df394940bd794d78f4bc745e123ce353c306fe41d5cda7f6115edc537fc0bd4db3da27af463427cc6ff2e7593963fbc9f173b96faafa635834015469",
+          "chain_hash": "b8b229db9b530d0d6892ed1e34a0cfb8c292ca76d4b8f1b9ec131cbf1f40ae54e51c64283c361f23cff3aa89e98b22e4d8c101687342d80610c46993994327b6"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "91847b314bf44f44b0f8282a3d15ee95b4124919913632a453d486d387ee1f607d6f77468de1930aaaaaa6514aa6a40af8eec9fb58bc9abf36beca7290d37a22",
+          "chain_hash": "3c02fc125e4f711a7eb7260a8fff0dd0210e240badac176fcc9fa8968051effc770cf487cf9fb01e2a3abd15af935b34b655af7c4f870fe06a14e1a9f7300f2c"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "b378b14390b6f9ac7009f20fa391766e90337eded0bc6a747920a7e3c1fe299e27088dc4cbdc39fa186309ef89af2797a191d17c6ee30f04c698a04fd29c59a1",
+          "chain_hash": "dda483259bcd5958850c6df32fea68ce2c18a9384907a5800d7d5b1a499cc7649a2dd26307e324fe537c3fd06c325368bf0618a39074b6cf3e10dc8773477c7f"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 4,
+          "content_hash": "TOMBSTONE:0000000000000000000000000000000000000000000000000000000000000000",
+          "chain_hash": "938a9c69e6b254f59154e35dcb793e22abcd3afc07a6a14e5725f73f685d7158f2ac651f1a2e37b367e0e35ac0b5876088671dcd3e2231d594ee98e5be689abd"
+        }
+      ],
+      "anchor": {
+        "subject": "vector-subject",
+        "version": 6,
+        "anchor_id": "anchor_11111111-1111-1111-1111-111111111111",
+        "chain_hash": "84a867bdcab12f46c951af119b17d05f7482ed2b54f68ca373272398c03330ada211ee27ba70f118f6e66cde63eb79cde3db3958571cdfd826b49c904ffe225c",
+        "range": {
+          "start_entry_id": "ent_00",
+          "end_entry_id": "ent_04"
+        },
+        "entry_count": 5,
+        "signature": "",
+        "signing_key_id": "vector-key",
+        "created_at_ms": 1791795600000,
+        "previous_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
+        "verified_through": 5
+      },
+      "previous_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
+      "expected": {
+        "error": false,
+        "outcome": "chain_broken",
+        "bound": false,
+        "tombstones": 0,
+        "entries_not_bound": 0
+      }
+    }
+  ]
+}

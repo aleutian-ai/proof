@@ -86,7 +86,7 @@ func openSecretsReadOnly(path string, lockTimeout time.Duration) (*secretsStore,
 	}
 	if err := db.View(func(tx *bolt.Tx) error {
 		if tx.Bucket(contentBucket) == nil || tx.Bucket(noncesBucket) == nil {
-			return fmt.Errorf("sink: %s is not a secrets file", path)
+			return fmt.Errorf("sink: %s is not a secrets file: %w", path, ErrCorrupt)
 		}
 		return nil
 	}); err != nil {

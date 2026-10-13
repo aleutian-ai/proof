@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha512"
 	"encoding/base64"
@@ -34,13 +35,19 @@ import (
 // session — a real MCP round trip, without a subprocess.
 func connect(t *testing.T) *mcp.ClientSession {
 	t.Helper()
-	return connectWith(t, commitConfig{})
+	return connectWith(t, serverConfig{})
 }
 
 // connectWith starts a server with the given launch configuration.
-func connectWith(t *testing.T, cfg commitConfig) *mcp.ClientSession {
+//
+// A configuration with no root gets the system temp directory, the parent of
+// every t.TempDir(), so tests can pass the absolute paths of their fixtures.
+func connectWith(t *testing.T, cfg serverConfig) *mcp.ClientSession {
 	t.Helper()
 	ctx := context.Background()
+	if cfg.root == (fileRoot{}) {
+		cfg.root = testRoot(t, os.TempDir())
+	}
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "aleutianchain", Version: "test"}, nil)
 	if err := registerTools(server, cfg); err != nil {
@@ -58,6 +65,36 @@ func connectWith(t *testing.T, cfg commitConfig) *mcp.ClientSession {
 	}
 	t.Cleanup(func() { _ = cs.Close() })
 	return cs
+}
+
+// testRoot returns dir as a root, as --root would.
+func testRoot(t *testing.T, dir string) fileRoot {
+	t.Helper()
+	r, err := newFileRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// callErr invokes a tool that is expected to fail and returns the error text,
+// whether the SDK rejected the call or the handler did. Empty means it succeeded.
+func callErr(t *testing.T, cs *mcp.ClientSession, name string, args any) string {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		return err.Error()
+	}
+	if !res.IsError {
+		return ""
+	}
+	var msg strings.Builder
+	for _, c := range res.Content {
+		if tx, ok := c.(*mcp.TextContent); ok {
+			msg.WriteString(tx.Text)
+		}
+	}
+	return msg.String()
 }
 
 // call invokes a tool and returns its structured result decoded into v.
@@ -123,8 +160,14 @@ func writeChain(t *testing.T, n int, erase bool) string {
 // The security assertion
 // =============================================================================
 
-// TestNoKeyMaterialTools fails if a tool that could return key material or
+// TestNoKeyMaterialTools fails if a tool whose NAME suggests key material or
 // plaintext is ever registered.
+//
+// This is a denylist of substrings, so it is not the guard: a key-handling tool
+// with a name outside the list passes it. The guard is the exact allowlist in
+// TestToolsAreTheExpectedSet and TestToolsAreTheExpectedSet_WithDB, which no
+// new tool can pass without being added by hand. This test is the second,
+// coarser check, and it states the reason.
 //
 // # Why this is a test and not a code review convention
 //
@@ -147,14 +190,14 @@ func TestNoKeyMaterialTools(t *testing.T) {
 		// (_35c): the anchor signer would have been named something like
 		// "sign_anchor", which matched none of the terms above — this test would
 		// have passed while a private key crossed the MCP boundary. Only
-		// TestToolsAreTheExpectedSet would have caught it, and that one is about
-		// surface stability rather than key safety.
+		// TestToolsAreTheExpectedSet would have caught it, which is why that
+		// allowlist, and not this list, is the guard.
 		"sign", "signer", "signature_over",
 	}
 
 	// Both launch modes: the read-only server, and the one with --db, whose extra
 	// tool must pass the same name check.
-	for _, cs := range []*mcp.ClientSession{connect(t), connectWith(t, commitConfig{db: newCommitDB(t)})} {
+	for _, cs := range []*mcp.ClientSession{connect(t), connectWith(t, serverConfig{db: newCommitDB(t)})} {
 		tools, err := cs.ListTools(context.Background(), nil)
 		if err != nil {
 			t.Fatalf("list tools: %v", err)
@@ -180,6 +223,10 @@ func TestNoKeyMaterialTools(t *testing.T) {
 
 // TestToolsAreTheExpectedSet pins the surface, so a tool cannot be added without
 // someone updating this list and thinking about it.
+//
+// This exact allowlist is the guard against a tool that returns key material or
+// plaintext: whatever such a tool is called, it is not in the list. The server
+// started with --db is pinned the same way by TestToolsAreTheExpectedSet_WithDB.
 func TestToolsAreTheExpectedSet(t *testing.T) {
 	want := map[string]bool{
 		"verify_chain": true, "compute_chain_hash": true,
@@ -252,8 +299,11 @@ func TestVerifyChain_ResultCarriesTheBoundary(t *testing.T) {
 	var out verifyChainOut
 	call(t, cs, "verify_chain", map[string]any{"path": writeChain(t, 3, false)}, &out)
 
-	if out.Proven == "" {
-		t.Error("result does not say what WAS proven")
+	if !strings.Contains(out.Proven, "Nothing was edited") {
+		t.Errorf("an intact chain's result does not say what WAS proven: %q", out.Proven)
+	}
+	if out.LastTombstone != -1 {
+		t.Errorf("last_tombstone = %d for a chain with no erased entry, want -1", out.LastTombstone)
 	}
 	if !strings.Contains(out.NotProven, "anchor") {
 		t.Errorf("result does not say an anchor is needed for the stronger claim: %q", out.NotProven)
@@ -283,6 +333,66 @@ func TestVerifyChain_DetectsTampering(t *testing.T) {
 	}
 	if res.FirstBreak != 2 {
 		t.Errorf("first_break = %d, want 2", res.FirstBreak)
+	}
+}
+
+// TestVerifyChain_BrokenChainProvesNothing: the claim follows the verdict.
+//
+// The result once said "Nothing was edited by anyone unable to also rewrite
+// every entry after it" beside a BROKEN verdict, so a model quoting the proven
+// field told a human the opposite of what was found.
+func TestVerifyChain_BrokenChainProvesNothing(t *testing.T) {
+	path := writeChain(t, 5, false)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []verify.Entry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		t.Fatal(err)
+	}
+	entries[2].ContentHash = strings.Repeat("f", 128)
+	writeJSON(t, path, entries)
+
+	var out verifyChainOut
+	call(t, connect(t), "verify_chain", map[string]any{"path": path}, &out)
+
+	if out.Verdict != string(verify.VerdictBroken) {
+		t.Fatalf("verdict = %q, want BROKEN", out.Verdict)
+	}
+	if out.Proven != "Nothing. The chain does not verify." {
+		t.Errorf("proven = %q for a broken chain", out.Proven)
+	}
+	if strings.Contains(out.Proven, "Nothing was edited") {
+		t.Errorf("a broken chain is reported as unedited: %q", out.Proven)
+	}
+	for _, want := range []string{"does not verify", "first break is at entry 2", "Entry 2 is the place to look"} {
+		if !strings.Contains(out.NotProven, want) {
+			t.Errorf("not_proven is missing %q: %q", want, out.NotProven)
+		}
+	}
+}
+
+// TestVerifyChain_ErasedEntryLimitsTheClaim: an erased entry's chain hash is
+// taken as stored, so an intact verdict says nothing about the entries up to
+// and including the last erased one.
+func TestVerifyChain_ErasedEntryLimitsTheClaim(t *testing.T) {
+	var out verifyChainOut
+	call(t, connect(t), "verify_chain", map[string]any{"path": writeChain(t, 4, true)}, &out)
+
+	if out.Verdict != string(verify.VerdictIntact) {
+		t.Fatalf("verdict = %q, want INTACT", out.Verdict)
+	}
+	if out.LastTombstone != 1 {
+		t.Errorf("last_tombstone = %d, want 1", out.LastTombstone)
+	}
+	if !strings.HasPrefix(out.Proven, "Nothing after entry 1, the last erased one,") {
+		t.Errorf("proven is not limited to the entries after the erased one: %q", out.Proven)
+	}
+	for _, want := range []string{"entries 0 to 1 are unedited", "not verified", "taken as stored", "whole chain", "anchor"} {
+		if !strings.Contains(out.NotProven, want) {
+			t.Errorf("not_proven is missing %q: %q", want, out.NotProven)
+		}
 	}
 }
 
@@ -744,7 +854,7 @@ func TestVerifyAnchor_WithKeyReportsTrust(t *testing.T) {
 	var out verifyAnchorOut
 	call(t, cs, "verify_anchor", map[string]any{
 		"entries_path": entries, "anchor_path": anchorPath,
-		"public_key_path": keyPath, "key_trust": "provided",
+		"public_key_path": keyPath,
 	}, &out)
 
 	if !out.Bound || !out.SignatureVerified {
@@ -755,24 +865,6 @@ func TestVerifyAnchor_WithKeyReportsTrust(t *testing.T) {
 	}
 	if out.TrustEstablishes == "" {
 		t.Error("the result must spell out what the trust level establishes")
-	}
-}
-
-// TestVerifyAnchor_DefaultsToTheWeakerTrustClaim pins that omitting key_trust
-// does not silently assert the strongest claim.
-func TestVerifyAnchor_DefaultsToTheWeakerTrustClaim(t *testing.T) {
-	entries, anchorPath, keyPath := anchoredFixture(t, 3, 0)
-
-	cs := connect(t)
-	var out verifyAnchorOut
-	call(t, cs, "verify_anchor", map[string]any{
-		"entries_path": entries, "anchor_path": anchorPath,
-		"public_key_path": keyPath,
-	}, &out)
-
-	if out.Trust == string(anchor.TrustPlatform) {
-		t.Fatal("omitting key_trust must NOT default to the platform claim — " +
-			"this process cannot know where a key came from")
 	}
 }
 
@@ -916,14 +1008,16 @@ func TestModuleIsInstallable(t *testing.T) {
 // Loader failure diagnosis — aleutianchain_54 and _55
 // =============================================================================
 
-// TestReadCapped_DistinguishesFailures pins that each cause says what it is.
+// TestFileRootRead_DistinguishesFailures pins that, INSIDE the root, each cause
+// says what it is.
 //
 // All four used to be reported as "cannot read the <X> file at that path". Three
 // of them are not about the path, so a caller with a correct path was told the
 // path was wrong. That is the bug _54 hid behind: a PEM key over a raw-bytes cap
 // looked like a missing file.
-func TestReadCapped_DistinguishesFailures(t *testing.T) {
+func TestFileRootRead_DistinguishesFailures(t *testing.T) {
 	dir := t.TempDir()
+	root := testRoot(t, dir)
 
 	small := filepath.Join(dir, "small.txt")
 	if err := os.WriteFile(small, []byte("hello"), 0o600); err != nil {
@@ -969,7 +1063,7 @@ func TestReadCapped_DistinguishesFailures(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := readCapped(tc.path, tc.limit)
+			_, err := root.read(tc.path, tc.limit)
 			if !tc.wantErr {
 				if err != nil {
 					t.Fatalf("expected success, got %v", err)
@@ -997,9 +1091,10 @@ func TestReadCapped_DistinguishesFailures(t *testing.T) {
 	}
 }
 
-// TestLoadKeyRing_ReadsTheEncodingKeygenWrites is _54's core claim.
-func TestLoadKeyRing_ReadsTheEncodingKeygenWrites(t *testing.T) {
+// TestLoadPublicKey_ReadsTheEncodingKeygenWrites is _54's core claim.
+func TestLoadPublicKey_ReadsTheEncodingKeygenWrites(t *testing.T) {
 	dir := t.TempDir()
+	cfg := serverConfig{root: testRoot(t, dir)}
 	pub, _, err := mldsa65.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1023,8 +1118,12 @@ func TestLoadKeyRing_ReadsTheEncodingKeygenWrites(t *testing.T) {
 	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadKeyRing(path, "provided", "k1"); err != nil {
-		t.Fatalf("loadKeyRing rejected the encoding `proof keygen` writes: %v", err)
+	got, err := cfg.loadPublicKey(path)
+	if err != nil {
+		t.Fatalf("loadPublicKey rejected the encoding `proof keygen` writes: %v", err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatal("loadPublicKey returned different key bytes from the ones encoded")
 	}
 
 	// Raw bytes are NOT silently accepted: the CLI and this server must agree on
@@ -1033,15 +1132,16 @@ func TestLoadKeyRing_ReadsTheEncodingKeygenWrites(t *testing.T) {
 	if err := os.WriteFile(rawPath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadKeyRing(rawPath, "provided", "k1"); err == nil {
+	if _, err := cfg.loadPublicKey(rawPath); err == nil {
 		t.Error("raw key bytes were accepted; the two surfaces can drift again")
 	}
 }
 
-// TestLoadKeyRing_RefusesByAlgorithm pins that a wrong-algorithm key is reported
+// TestLoadPublicKey_RefusesByAlgorithm pins that a wrong-algorithm key is reported
 // as a wrong algorithm, naming both what was given and what is needed.
-func TestLoadKeyRing_RefusesByAlgorithm(t *testing.T) {
+func TestLoadPublicKey_RefusesByAlgorithm(t *testing.T) {
 	dir := t.TempDir()
+	cfg := serverConfig{root: testRoot(t, dir)}
 	// A structurally valid ML-DSA-44 public key file. The BYTES need not be a real
 	// key: the refusal must happen on the declared algorithm, before any use.
 	pemBytes, err := keyfile.MarshalPublicKey(keyfile.MLDSA44, make([]byte, 1312))
@@ -1053,7 +1153,7 @@ func TestLoadKeyRing_RefusesByAlgorithm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = loadKeyRing(path, "provided", "k1")
+	_, err = cfg.loadPublicKey(path)
 	if err == nil {
 		t.Fatal("an ML-DSA-44 key must be refused; anchors are ML-DSA-65")
 	}
@@ -1064,23 +1164,12 @@ func TestLoadKeyRing_RefusesByAlgorithm(t *testing.T) {
 	}
 }
 
-// TestLoadKeyRing_ChecksTheTrustLabelBeforeTouchingDisk pins the ordering.
-//
-// A bad key_trust reported as a file problem sends the reader to the wrong place.
-func TestLoadKeyRing_ChecksTheTrustLabelBeforeTouchingDisk(t *testing.T) {
-	_, err := loadKeyRing(filepath.Join(t.TempDir(), "does-not-exist.pem"), "nonsense", "k1")
-	if err == nil {
-		t.Fatal("expected a rejection")
-	}
-	if !strings.Contains(err.Error(), "key_trust") {
-		t.Errorf("a bad key_trust must be reported as such, not as a file error: %v", err)
-	}
-}
-
 // TestLoadAnchor_DistinguishesFailures: loadAnchor had the identical
-// single-message shape and only loadKeyRing was under test.
+// single-message shape and only the key loader was under test.
 func TestLoadAnchor_DistinguishesFailures(t *testing.T) {
 	dir := t.TempDir()
+	cfg := serverConfig{root: testRoot(t, dir)}
+	loadAnchor := cfg.loadAnchor
 	bad := filepath.Join(dir, "not-json.json")
 	if err := os.WriteFile(bad, []byte("this is not json"), 0o600); err != nil {
 		t.Fatal(err)

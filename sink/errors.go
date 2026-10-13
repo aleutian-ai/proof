@@ -22,9 +22,10 @@ var ErrBusy = errors.New("sink: the folder is in use by another process")
 // ErrCorrupt is returned by the operations that only read the folder (Verify,
 // VerifyEach, Export, Checkpoint, ChainSubjects, UsesRecordKey) when one of its
 // files cannot be read as the database it should be: truncated, overwritten,
-// or not a sink file. The read panicked or faulted inside the storage layer,
-// and the operation stopped there. For Verify it means the folder does not
-// verify.
+// or not a sink file (a valid database without the buckets a secrets file or
+// subject index has is one of these). Either the file was refused when it was
+// opened, or the read panicked or faulted inside the storage layer and the
+// operation stopped there. For Verify it means the folder does not verify.
 //
 // The operations that write (Commit, EraseSubject, EraseSubjectClass,
 // ResumeErasures) do NOT return it: a panic inside a write transaction leaves

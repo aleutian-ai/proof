@@ -4,8 +4,10 @@
 package anchor
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -248,7 +250,6 @@ func TestAnchorJSON_ReadsEitherSpelling(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"legacy key", `{"version":4,"company_id":"acme-prod"}`},
 		{"new key", `{"version":6,"subject":"acme-prod"}`},
-		{"both, matching", `{"version":6,"subject":"acme-prod","company_id":"acme-prod"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var a Anchor
@@ -345,5 +346,102 @@ func TestV6_SignedAnchorVerifies(t *testing.T) {
 	downgraded.Version = 4
 	if _, err := VerifySignature(downgraded, ring); err == nil {
 		t.Error("a v6 anchor relabelled as v4 verified")
+	}
+}
+
+// TestAnchorJSON_IsStrict: an anchor parses only if it carries exactly the
+// members its version has, each once, spelled exactly. encoding/json alone
+// matches member names without regard to case, keeps the last of a repeated
+// member and ignores unknown ones, so each of these parsed, and an anchor
+// carrying them verified: a caller could set a member nobody read and believe
+// it was signed.
+func TestAnchorJSON_IsStrict(t *testing.T) {
+	good, err := json.Marshal(validV6())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a Anchor
+	if err := json.Unmarshal(good, &a); err != nil {
+		t.Fatalf("control failed: %v", err)
+	}
+	with := func(old, new string) string {
+		t.Helper()
+		if !strings.Contains(string(good), old) {
+			t.Fatalf("the anchor JSON has no %s", old)
+		}
+		return strings.Replace(string(good), old, new, 1)
+	}
+	for name, body := range map[string]string{
+		"an unknown member":            with(`"version":`, `"root_hash":"aa","version":`),
+		"a member in another case":     with(`"entry_count":`, `"ENTRY_COUNT":`),
+		"a member twice":               with(`"entry_count":`, `"entry_count":1,"entry_count":`),
+		"v6 with the legacy subject":   with(`"subject":`, `"company_id":`),
+		"both subject spellings":       with(`"subject":`, `"company_id":"acme-prod","subject":`),
+		"an unknown member in range":   with(`"start_entry_id":`, `"extra":1,"start_entry_id":`),
+		"a range member twice":         with(`"end_entry_id":`, `"end_entry_id":"x","end_entry_id":`),
+		"trailing data":                string(good) + `{}`,
+		"not an object":                `[]`,
+		"a member of the wrong type":   with(`"entry_count":`, `"entry_count":"3","previous_anchor_id":1,"x":`),
+		"v4 with the new subject name": `{"version":4,"subject":"acme-prod"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var a Anchor
+			if err := json.Unmarshal([]byte(body), &a); err == nil {
+				t.Fatalf("parsed: %+v", a)
+			}
+		})
+	}
+}
+
+// TestVerifySignature_OneSpellingOfASignature: a signature with a line break
+// inside its base64, or with no signing key id, does not verify. Both once did.
+func TestVerifySignature_OneSpellingOfASignature(t *testing.T) {
+	s := newTestSigner(t)
+	signed, err := SignAnchor(context.Background(), s, func() Anchor { a := validV6(); a.SigningKeyID = ""; return a }())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring, err := NewKeyRing(TrustProvided, map[string][]byte{signed.SigningKeyID: pubBytes(t, s)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifySignature(signed, ring); err != nil {
+		t.Fatalf("control failed: %v", err)
+	}
+	for name, sig := range map[string]string{
+		"LF inside":   signed.Signature[:76] + "\n" + signed.Signature[76:],
+		"CRLF inside": signed.Signature[:76] + "\r\n" + signed.Signature[76:],
+		"no padding":  strings.TrimRight(signed.Signature, "="),
+	} {
+		broken := signed
+		broken.Signature = sig
+		if sig == signed.Signature {
+			continue // this signature has no padding to remove
+		}
+		if _, err := VerifySignature(broken, ring); !errors.Is(err, ErrInvalidSignature) {
+			t.Errorf("%s: err = %v, want ErrInvalidSignature", name, err)
+		}
+	}
+	if _, err := NewKeyRing(TrustProvided, map[string][]byte{"": pubBytes(t, s)}); err == nil {
+		t.Error("a key ring accepted an empty key id")
+	}
+}
+
+// TestValidateVersionInvariants_Counts: the numbers a v6 anchor signs agree
+// with each other. verified_through=999999 beside entry_count=10 once verified.
+func TestValidateVersionInvariants_Counts(t *testing.T) {
+	for name, mutate := range map[string]func(a *Anchor){
+		"verified_through above entry_count": func(a *Anchor) { a.VerifiedThrough = a.EntryCount + 1 },
+		"no entries":                         func(a *Anchor) { a.EntryCount = 0 },
+		"created before the epoch":           func(a *Anchor) { a.CreatedAtMs = -5 },
+	} {
+		a := validV6()
+		if err := ValidateVersionInvariants(a); err != nil {
+			t.Fatalf("control failed: %v", err)
+		}
+		mutate(&a)
+		if err := ValidateVersionInvariants(a); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

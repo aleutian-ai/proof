@@ -60,14 +60,19 @@ import (
 //
 // # Limitations
 //
-//   - Walks each chain with new entries once, a page at a time; a chain with
-//     nothing new is skipped from its tail alone.
+//   - Verifies each chain with new entries in full before signing it (three
+//     paged passes, reading every entry's content); a chain with nothing new
+//     is skipped from its tail alone.
+//   - It cannot tell an erasure the sink made from an erasure record written
+//     into the folder at the end of a chain with its index row removed: both
+//     verify (as erased-unanchored), and a checkpoint then covers them. See
+//     docs/sink-format.md §6.
 func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trusted anchor.KeySource) (_ []Checkpointed, err error) {
 	defer fault.Recover(&err)()
 	if signer == nil {
 		return nil, errors.New("sink: a signer is required")
 	}
-	// Read-only on the evidence file (a checkpoint writes checkpoint files,
+	// Read-only on the folder's files (a checkpoint writes checkpoint files,
 	// never entries), and a page at a time: the files are released between
 	// pages, so a writer never waits for every chain to be checkpointed.
 	if trusted == nil {
@@ -109,24 +114,38 @@ func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trus
 				return nil
 			}
 		}
-		// One paged walk: it verifies the chain, binds the existing series as it
-		// passes each checkpoint's end (a planted or damaged checkpoint is
-		// reported, never extended), and leaves the walker the new checkpoint is
-		// built from.
+		// Nothing is signed that Verify would not pass. A checkpoint is the
+		// operator's signature over the chain as it stands, so the chain is
+		// verified in full first: its links, its content against its
+		// commitments, its erasure, its index row, its existing checkpoints.
+		// Checking the links alone signed over content that had been modified
+		// or deleted, and over an erasure written into the middle of a chain.
+		cr, err := s.verifyChain(ctx, p.st, p.sec, p.sig, nil, p.f, chain, trusted, p.ix.state(chain))
+		if err != nil {
+			return err
+		}
+		if len(cr.Problems) > 0 {
+			skip(chain, "it does not verify (its existing checkpoints are checked against the trusted "+
+				"keys), so it was not signed: "+cr.Problems[0])
+			return nil
+		}
+		// One more paged walk: it binds the existing series as it passes each
+		// checkpoint's end (a planted or damaged checkpoint is reported, never
+		// extended), and leaves the walker the new checkpoint is built from.
 		w := verify.NewWalker(verify.Options{MaxBreaks: 1})
 		series := newSeriesCheck(chain, anchors, trusted)
 		total := 0
 		if err := forEachEntry(ctx, p.st, chain, func(e store.Entry) {
 			w.Add(toVerifyEntry(e))
-			series.reached(w)
+			series.Reached(w)
 			total++
 		}); err != nil {
 			return err
 		}
 		if len(anchors) > 0 {
-			series.finish(total)
-			if len(series.problems) > 0 {
-				skip(chain, "its checkpoints do not verify under the trusted keys: "+series.problems[0])
+			series.Finish(total)
+			if len(series.Problems()) > 0 {
+				skip(chain, "its checkpoints do not verify under the trusted keys: "+series.Problems()[0])
 				return nil
 			}
 		}
@@ -159,7 +178,7 @@ func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trus
 		return nil
 	}
 	var cursor *string // nil: from the first chain ("" can be a crafted chain id)
-	err = s.inPages(ctx, false, func(p *pageFiles, deadline time.Time) (bool, error) {
+	err = s.inPages(ctx, true, func(p *pageFiles, deadline time.Time) (bool, error) {
 		chains, err := p.st.ChainsAfter(ctx, cursor, pageMaxChains)
 		if err != nil {
 			return false, fmt.Errorf("sink: %w", err)

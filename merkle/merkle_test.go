@@ -6,6 +6,7 @@ package merkle
 import (
 	"bytes"
 	"crypto/sha512"
+	"math"
 	"testing"
 )
 
@@ -109,5 +110,27 @@ func TestRootFromLeaves_Deterministic(t *testing.T) {
 	d[3] = []byte{0xFF}
 	if bytes.Equal(RootFromLeaves(d), r1) {
 		t.Error("changing a leaf must change the root")
+	}
+}
+
+// TestLargestPowerOfTwoLessThan_HugeSizes: the split of a tree size above 2^62
+// is computed, not looped on forever. Doubling k overflowed to zero there, so
+// one VerifyInclusion call with a caller-supplied size of math.MaxInt never
+// returned: the MCP verify_inclusion tool pinned a CPU core.
+func TestLargestPowerOfTwoLessThan_HugeSizes(t *testing.T) {
+	for n, want := range map[int]int{
+		1: 1, 2: 1, 3: 2, 4: 2, 5: 4, 8: 4, 9: 8,
+		1<<62 - 1: 1 << 61, 1 << 62: 1 << 61, 1<<62 + 1: 1 << 62, math.MaxInt: 1 << 62,
+	} {
+		if got := largestPowerOfTwoLessThan(n); got != want {
+			t.Errorf("largestPowerOfTwoLessThan(%d) = %d, want %d", n, got, want)
+		}
+	}
+	leaf := LeafHash([]byte("x"))
+	if VerifyInclusion(leaf, 0, math.MaxInt, [][]byte{leaf}, leaf) {
+		t.Error("a one-node proof verified against a tree of math.MaxInt leaves")
+	}
+	if VerifyConsistency(math.MaxInt-1, math.MaxInt, leaf, leaf, [][]byte{leaf}) {
+		t.Error("a one-node consistency proof verified between two huge trees")
 	}
 }

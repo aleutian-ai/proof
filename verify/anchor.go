@@ -39,6 +39,20 @@ const (
 
 	// BindTenantMismatch: the anchor is for a different tenant.
 	BindTenantMismatch BindOutcome = "tenant_mismatch"
+
+	// BindPredecessorMismatch: the anchor names the seed anchor as its
+	// predecessor while a predecessor hash was supplied, or names a real
+	// predecessor while the seed hash was. One of the two is wrong, and a
+	// second anchor passing as the first is how a series is cut.
+	BindPredecessorMismatch BindOutcome = "predecessor_mismatch"
+
+	// BindSignatureInvalid: the anchor's signature did not verify (a bad
+	// signature, an unknown key, an unsupported version). Bound is false
+	// whatever the chain looked like: an anchor nobody signed describes
+	// nothing. Detail says whether the chain matched it, so "genuine anchor,
+	// different chain" and "forged anchor" stay distinguishable. Returned
+	// together with the signature error.
+	BindSignatureInvalid BindOutcome = "signature_invalid"
 )
 
 // ErrNoEntries is returned when there is nothing to bind an anchor to.
@@ -176,6 +190,13 @@ func BindAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string) (Bi
 // walker has seen. Shared by BindAnchor and Walker.VerifyAnchor, so the two
 // paths cannot drift apart.
 func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, error) {
+	if w.opts.PreviousHash != "" {
+		// An anchor's entry_count is counted from the chain's first entry
+		// (format-spec §9.1). A walk that started from a predecessor hash saw a
+		// segment, and an anchor bound to it would read as covering a chain.
+		return BindResult{}, errors.New("verify: an anchor covers a chain from its first entry; " +
+			"this walk started from a predecessor hash, so it saw a segment")
+	}
 	firstID, lastID, count := w.first.EntryID, w.last.EntryID, int64(w.Count())
 	res := BindResult{
 		EntriesCovered:  a.EntryCount,
@@ -218,6 +239,17 @@ func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, e
 		res.Outcome = BindHeightMismatch
 		res.Detail = fmt.Sprintf("chain has %d entries; the anchor committed to %d",
 			count, a.EntryCount)
+		return res, nil
+	}
+
+	// The predecessor is named twice, by id in the anchor and by hash in the
+	// argument, and the two must agree about whether there is one: the seed
+	// hash goes with the seed id and with no other. A second anchor passing as
+	// the first is how a series is cut.
+	if (previousAnchorHash == anchor.SeedAnchorHash) != (a.PreviousAnchorID == anchor.SeedAnchorID) {
+		res.Outcome = BindPredecessorMismatch
+		res.Detail = "the anchor's previous_anchor_id and the predecessor hash supplied disagree about " +
+			"whether this is the first anchor of its series"
 		return res, nil
 	}
 
@@ -307,8 +339,18 @@ func withSignature(res BindResult, a anchor.Anchor, src anchor.KeySource) (BindR
 	if verr != nil {
 		// Nothing is reported as bound or proven beside a signature error: a
 		// caller that reads the result and drops the error must not find
-		// Bound=true in it.
-		return BindResult{EntriesCovered: res.EntriesCovered}, verr
+		// Bound=true in it. What the bind found is kept, in words.
+		matched := "the chain did not match it either (" + string(res.Outcome) + ")"
+		if res.Bound {
+			matched = "the chain does match what it describes"
+		}
+		return BindResult{
+			Outcome:        BindSignatureInvalid,
+			Detail:         "the anchor's signature did not verify; " + matched,
+			EntriesCovered: res.EntriesCovered,
+			Proven:         "nothing: the anchor's signature did not verify",
+			NotProven:      "that the anchor is genuine, or that the chain is the one a genuine anchor committed to",
+		}, verr
 	}
 
 	res.SignatureVerified = true

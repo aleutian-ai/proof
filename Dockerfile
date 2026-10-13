@@ -51,8 +51,11 @@ RUN go work init . ./cmd/proof-mcp
 # was built in, so the same source produces the same bytes.
 ARG TARGETOS
 ARG TARGETARCH
+# The release the binary reports (`proof version`). The build context has no
+# .git, so the toolchain records no version of its own.
+ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w -buildid=" -o /out/proof ./cmd/proof
+    go build -trimpath -ldflags="-s -w -buildid= -X main.version=${VERSION}" -o /out/proof ./cmd/proof
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w -buildid=" -o /out/proof-mcp ./cmd/proof-mcp
 

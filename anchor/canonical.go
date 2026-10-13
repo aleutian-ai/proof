@@ -280,6 +280,9 @@ func ValidateVersionInvariants(a Anchor) error {
 		if a.VerifiedThrough <= 0 {
 			return fmt.Errorf("anchor: v4 must declare a positive verified_through")
 		}
+		if err := validateCounts(a); err != nil {
+			return err
+		}
 	case a.Version == WithdrawnVersion:
 		return errWithdrawn()
 	case a.Version == SubjectVersion:
@@ -292,9 +295,32 @@ func ValidateVersionInvariants(a Anchor) error {
 		if a.Subject == "" {
 			return fmt.Errorf("anchor: v%d must declare a non-empty subject", SubjectVersion)
 		}
+		if err := validateCounts(a); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("anchor: unsupported version %d (implemented: %d..%d)",
 			a.Version, MinVersion, MaxVersion)
+	}
+	return nil
+}
+
+// validateCounts checks the numbers a v4 or v6 anchor signs against each
+// other. They were signed and never compared: an anchor with entry_count 10
+// and verified_through 999999, or created before 1970, verified.
+//
+// verified_through is how many of the entries the producer verified before
+// signing, so it cannot exceed entry_count; an anchor covers at least one
+// entry; created_at_ms is a time after the epoch.
+func validateCounts(a Anchor) error {
+	if a.EntryCount < 1 {
+		return fmt.Errorf("anchor: v%d must cover at least one entry, entry_count is %d", a.Version, a.EntryCount)
+	}
+	if a.VerifiedThrough > a.EntryCount {
+		return fmt.Errorf("anchor: verified_through (%d) exceeds entry_count (%d)", a.VerifiedThrough, a.EntryCount)
+	}
+	if a.CreatedAtMs < 0 {
+		return fmt.Errorf("anchor: created_at_ms is negative")
 	}
 	return nil
 }

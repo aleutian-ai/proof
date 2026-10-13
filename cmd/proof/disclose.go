@@ -10,10 +10,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/aleutian-ai/proof/commitment"
 	"github.com/aleutian-ai/proof/internal/noncestore"
+	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
 )
 
@@ -50,6 +52,10 @@ func cmdDisclose(args []string, stdout, stderr *os.File) int {
 		return exitUsage
 	}
 
+	if _, err := os.Lstat(*dbPath); err != nil {
+		fmt.Fprintf(stderr, "proof disclose: %v\n", err)
+		return exitIOError
+	}
 	entries, err := readChain(*dbPath, *chainID)
 	if err != nil {
 		fmt.Fprintf(stderr, "proof disclose: %v\n", err)
@@ -67,13 +73,19 @@ func cmdDisclose(args []string, stdout, stderr *os.File) int {
 		return exitIOError
 	}
 
-	ns, err := noncestore.Open(noncestore.PathFor(*dbPath), 5*time.Second)
-	if err != nil {
-		fmt.Fprintf(stderr, "proof disclose: %v\n", err)
-		return exitIOError
+	// Read-only, so nothing is created: with no nonce file there is no nonce.
+	var nonce []byte
+	if _, lerr := os.Lstat(noncestore.PathFor(*dbPath)); errors.Is(lerr, os.ErrNotExist) {
+		err = noncestore.ErrNotFound
+	} else {
+		ns, oerr := noncestore.OpenReadOnly(noncestore.PathFor(*dbPath), 5*time.Second)
+		if oerr != nil {
+			fmt.Fprintf(stderr, "proof disclose: %v\n", oerr)
+			return exitIOError
+		}
+		nonce, err = ns.Get(*chainID, *entryID)
+		ns.Close()
 	}
-	nonce, err := ns.Get(*chainID, *entryID)
-	ns.Close()
 	if errors.Is(err, noncestore.ErrNotFound) {
 		fmt.Fprintf(stderr, "proof disclose: no nonce stored for %s. Either it was a "+
 			"content_hash entry (no salt to disclose), or its nonce was forgotten — in "+
@@ -127,19 +139,45 @@ func cmdForget(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stderr, "proof forget: --db, --chain and --entry are required")
 		return exitUsage
 	}
-	ns, err := noncestore.Open(noncestore.PathFor(*dbPath), 5*time.Second)
+	// Nothing is created here: a mistyped --db must fail, not make an empty
+	// database and nonce file and report that the nonce was forgotten.
+	if _, err := os.Lstat(*dbPath); err != nil {
+		fmt.Fprintf(stderr, "proof forget: %v\n", err)
+		return exitIOError
+	}
+	entries, err := readChain(*dbPath, *chainID)
 	if err != nil {
 		fmt.Fprintf(stderr, "proof forget: %v\n", err)
 		return exitIOError
 	}
-	defer ns.Close()
-	if err := ns.Delete(*chainID, *entryID); err != nil {
+	if !slices.ContainsFunc(entries, func(e verify.Entry) bool { return e.EntryID == *entryID }) {
+		fmt.Fprintf(stderr, "proof forget: no entry %q on chain %q; nothing was forgotten\n", *entryID, *chainID)
+		return exitIOError
+	}
+	// The evidence database's lock is what serializes writers of the nonce
+	// file. Held here because forget replaces that file with a rewritten copy.
+	st, err := boltstore.Open(*dbPath)
+	if err != nil {
 		fmt.Fprintf(stderr, "proof forget: %v\n", err)
 		return exitIOError
 	}
-	fmt.Fprintf(stdout, "forgot the nonce for %s on %s. The chain still verifies.\n"+
-		"Not reached by this: backups of %s, anyone it was disclosed to, and any\n"+
-		"conversation or log the content passed through.\n",
-		*entryID, *chainID, noncestore.PathFor(*dbPath))
+	defer st.Close()
+
+	noncePath := noncestore.PathFor(*dbPath)
+	switch err := noncestore.Forget(noncePath, *chainID, *entryID, 5*time.Second); {
+	case errors.Is(err, noncestore.ErrNotFound), errors.Is(err, noncestore.ErrNoFile):
+		fmt.Fprintf(stdout, "no nonce is stored for %s on %s: it was forgotten already, or the entry "+
+			"never had one (a content_hash entry). Nothing was deleted.\n", *entryID, *chainID)
+		return exitOK
+	case err != nil:
+		fmt.Fprintf(stderr, "proof forget: %v\n", err)
+		return exitIOError
+	}
+	fmt.Fprintf(stdout, "forgot the nonce for %s on %s, and rewrote %s so its bytes are not left\n"+
+		"in the file. The chain still verifies.\n"+
+		"Not reached by this: backups and snapshots of that file, the storage device's own\n"+
+		"spare blocks, anyone the entry was disclosed to, and any conversation or log the\n"+
+		"content passed through.\n",
+		*entryID, *chainID, noncePath)
 	return exitOK
 }

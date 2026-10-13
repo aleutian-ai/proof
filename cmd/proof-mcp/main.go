@@ -22,21 +22,33 @@
 // would be a self-inflicted wound.
 //
 // Key generation and decryption live in the human-driven CLI, with no model in
-// the loop. TestNoKeyMaterialTools enforces this — it fails the build if a tool
-// whose name suggests key handling is ever registered.
+// the loop. The guard is the exact allowlist of tool names in
+// TestToolsAreTheExpectedSet and TestToolsAreTheExpectedSet_WithDB: a tool
+// cannot be added without changing those lists. TestNoKeyMaterialTools is a
+// second, coarser check on tool names; it catches a careless addition and can
+// be passed by choosing a different name.
 //
 // # Trust boundary
 //
 // Every argument arrives from a model and must be treated as attacker-controlled
-// under prompt injection. Paths are resolved and checked against a root; reads
-// are size-bounded; nothing is shelled out.
+// under prompt injection.
+//
+//   - A path in a tool call must be inside one directory, --root (default: the
+//     working directory at launch). A relative path is relative to it; an
+//     absolute path must be under it. Files are opened through os.Root, which
+//     refuses a symbolic link that leaves the root. A path outside the root
+//     gets one fixed error whatever is or is not there. See paths.go.
+//   - Reads are size-bounded, and errors never include file contents.
+//   - What a key establishes (platform, provided, self) is never an argument.
+//     A key named in a tool call is "provided"; only --trusted-key, set at
+//     launch, binds a key to another level. See trust.go.
+//   - Nothing is shelled out.
 package main
 
 import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -46,24 +58,38 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/bundle"
 	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/internal/noncestore"
-	"github.com/aleutian-ai/proof/keyfile"
 	"github.com/aleutian-ai/proof/merkle"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
 )
 
-// maxEntriesFileBytes bounds a single read.
-//
-// A model-supplied path could point at anything on disk — /dev/zero, a multi-
-// gigabyte log. The cap turns "the agent hung" into a clear error. 64 MiB is far
-// beyond any plausible export while remaining bounded.
-const maxEntriesFileBytes = 64 << 20
+// defaultMaxDBBytes is the default for --max-db-bytes.
+const defaultMaxDBBytes = 1 << 30
+
+// serverConfig is fixed by the human at launch. No tool call can change it.
+type serverConfig struct {
+	// root is the only directory tree a path in a tool call may name.
+	root fileRoot
+
+	// trusted holds the public keys bound to a trust level with --trusted-key.
+	trusted []trustedKey
+
+	// db is the evidence database the commit tool writes. Empty means the commit
+	// tool is not registered at all.
+	db     string
+	chains map[string]bool // nil means any valid chain: only via an explicit --chains '*'
+
+	// maxDBBytes refuses a commit once the database file has reached this size.
+	// 0 means no limit.
+	maxDBBytes int64
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -95,22 +121,44 @@ func run() error {
 // read-only: the commit tool is not registered at all.
 //
 // Diagnostics go to stderr: stdout carries the JSON-RPC stream.
-func parseFlags(args []string) (commitConfig, error) {
+func parseFlags(args []string) (serverConfig, error) {
 	fs := flag.NewFlagSet("proof-mcp", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	rootDir := fs.String("root", "", "the only directory tool calls may read files from (default: the working directory)")
+	var trusted trustedKeyFlag
+	fs.Var(&trusted, "trusted-key", "LEVEL=PATH: bind a PEM ML-DSA-65 public key to a trust level, platform or self; "+
+		"repeatable. A key named in a tool call is always 'provided'")
 	db := fs.String("db", "", "evidence database the commit tool writes to; omit for a read-only server")
 	chains := fs.String("chains", "", "chains commit may write, comma-separated; required with --db. '*' allows any valid chain id")
+	maxDBBytes := fs.Int64("max-db-bytes", defaultMaxDBBytes, "with --db: refuse commits once the database file "+
+		"has reached this many bytes; 0 means no limit")
 	if err := fs.Parse(args); err != nil {
-		return commitConfig{}, err
+		return serverConfig{}, err
 	}
-	cfg := commitConfig{db: *db}
+	if fs.NArg() > 0 {
+		return serverConfig{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+
+	if *rootDir == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return serverConfig{}, fmt.Errorf("--root: cannot determine the working directory: %w", err)
+		}
+		*rootDir = wd
+	}
+	root, err := newFileRoot(*rootDir)
+	if err != nil {
+		return serverConfig{}, fmt.Errorf("--root: %w", err)
+	}
+
+	cfg := serverConfig{root: root, trusted: trusted.keys, db: *db}
 	if *chains != "" && *db == "" {
-		return commitConfig{}, fmt.Errorf("--chains only applies with --db")
+		return serverConfig{}, fmt.Errorf("--chains only applies with --db")
 	}
 	if *db != "" && *chains == "" {
 		// An explicit choice, not a default: without it, an injected prompt could
 		// append to any chain in the file, including ones the CLI writes.
-		return commitConfig{}, fmt.Errorf("--db requires --chains: name the chains agents may " +
+		return serverConfig{}, fmt.Errorf("--db requires --chains: name the chains agents may " +
 			"write (e.g. --chains agent-actions,payments), or '*' to allow any")
 	}
 	if *chains != "" && *chains != "*" {
@@ -118,28 +166,36 @@ func parseFlags(args []string) (commitConfig, error) {
 		for _, c := range strings.Split(*chains, ",") {
 			c = strings.TrimSpace(c)
 			if !idPattern.MatchString(c) {
-				return commitConfig{}, fmt.Errorf("--chains: %q is not a valid chain id "+
+				return serverConfig{}, fmt.Errorf("--chains: %q is not a valid chain id "+
 					"(lowercase letters, digits, . _ -, max 64)", c)
 			}
 			cfg.chains[c] = true
 		}
+	}
+	if *maxDBBytes < 0 {
+		return serverConfig{}, fmt.Errorf("--max-db-bytes must not be negative; 0 means no limit")
+	}
+	if *db != "" {
+		cfg.maxDBBytes = *maxDBBytes
+	} else if *maxDBBytes != defaultMaxDBBytes {
+		return serverConfig{}, fmt.Errorf("--max-db-bytes only applies with --db")
 	}
 	if cfg.db != "" {
 		// Fail at launch, not on the first tool call: open (creating it if needed)
 		// and close again. Each commit reopens, so the CLI can share the file.
 		st, err := boltstore.Open(cfg.db, boltstore.WithLockTimeout(dbLockTimeout))
 		if err != nil {
-			return commitConfig{}, fmt.Errorf("--db %s: %w", cfg.db, err)
+			return serverConfig{}, fmt.Errorf("--db %s: %w", cfg.db, err)
 		}
 		if err := st.Close(); err != nil {
-			return commitConfig{}, fmt.Errorf("--db %s: %w", cfg.db, err)
+			return serverConfig{}, fmt.Errorf("--db %s: %w", cfg.db, err)
 		}
 		ns, err := noncestore.Open(noncestore.PathFor(cfg.db), dbLockTimeout)
 		if err != nil {
-			return commitConfig{}, fmt.Errorf("--db %s: nonce file: %w", cfg.db, err)
+			return serverConfig{}, fmt.Errorf("--db %s: nonce file: %w", cfg.db, err)
 		}
 		if err := ns.Close(); err != nil {
-			return commitConfig{}, fmt.Errorf("--db %s: nonce file: %w", cfg.db, err)
+			return serverConfig{}, fmt.Errorf("--db %s: nonce file: %w", cfg.db, err)
 		}
 	}
 	return cfg, nil
@@ -148,10 +204,15 @@ func parseFlags(args []string) (commitConfig, error) {
 // registerTools wires every tool.
 //
 // Kept separate from run so tests can enumerate what is registered without
-// starting a server — see TestNoKeyMaterialTools.
-func registerTools(s *mcp.Server, cfg commitConfig) error {
+// starting a server — see TestToolsAreTheExpectedSet.
+func registerTools(s *mcp.Server, cfg serverConfig) error {
 	// readOnly marks every tool except commit. TestExactlyOneToolWrites pins it.
 	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true}
+
+	inclusionSchema, err := verifyInclusionInputSchema()
+	if err != nil {
+		return err
+	}
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "verify_chain",
@@ -159,8 +220,9 @@ func registerTools(s *mcp.Server, cfg commitConfig) error {
 		Description: "Verify an exported audit chain. Reports whether the linkage is " +
 			"intact and, if not, the index of the FIRST break. Note the result " +
 			"distinguishes consistency (nothing was edited) from existence (this is " +
-			"the same chain) — only the first is provable without an anchor.",
-	}, verifyChain)
+			"the same chain) — only the first is provable without an anchor. The file " +
+			"must be inside the directory this server was started with.",
+	}, cfg.verifyChain)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "compute_chain_hash",
@@ -183,6 +245,7 @@ func registerTools(s *mcp.Server, cfg commitConfig) error {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "verify_inclusion",
 		Annotations: readOnly,
+		InputSchema: inclusionSchema,
 		Description: "Verify that a leaf belongs to a Merkle tree with a given root, " +
 			"using an inclusion proof.",
 	}, verifyInclusion)
@@ -194,8 +257,12 @@ func registerTools(s *mcp.Server, cfg commitConfig) error {
 			"TRUNCATION, which chain verification alone cannot: a chain with entries " +
 			"removed from the front and the rest re-linked verifies as intact. Without " +
 			"a public key this binds the chain to the anchor but does NOT establish " +
-			"that the anchor is genuine; supply public_key_path for that.",
-	}, verifyAnchorTool)
+			"that the anchor is genuine; supply public_key_path for that. A key you " +
+			"supply is reported as trust 'provided'. You cannot set the trust level: " +
+			"only a key the server was started with (--trusted-key) is reported as " +
+			"'platform' or 'self'. Files must be inside the directory this server was " +
+			"started with.",
+	}, cfg.verifyAnchor)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "verify_bundle",
@@ -203,8 +270,9 @@ func registerTools(s *mcp.Server, cfg commitConfig) error {
 		Description: "Verify an export bundle directory: recompute the manifest root " +
 			"over the inventory, and re-hash every listed file to confirm the bytes on " +
 			"disk match what the manifest claims. Reports every problem found, not just " +
-			"the first.",
-	}, verifyBundleTool)
+			"the first. The directory must be inside the directory this server was " +
+			"started with.",
+	}, cfg.verifyBundle)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "explain_trust_model",
@@ -223,13 +291,14 @@ func registerTools(s *mcp.Server, cfg commitConfig) error {
 // ---------------------------------------------------------------------------
 
 type verifyChainIn struct {
-	Path string `json:"path" jsonschema:"path to an exported entries file (JSON array or JSONL)"`
+	Path string `json:"path" jsonschema:"path to an exported entries file (JSON array or JSONL), inside the directory this server was started with"`
 }
 
 type verifyChainOut struct {
 	Verdict         string `json:"verdict"`
 	EntriesVerified int    `json:"entries_verified"`
 	TombstonesFound int    `json:"tombstones_found"`
+	LastTombstone   int    `json:"last_tombstone"` // index of the last erased entry, -1 if none
 	FirstBreak      int    `json:"first_break"`
 	Breaks          []brk  `json:"breaks,omitempty"`
 
@@ -246,10 +315,10 @@ type brk struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
-func verifyChain(ctx context.Context, req *mcp.CallToolRequest, in verifyChainIn) (
+func (c serverConfig) verifyChain(ctx context.Context, req *mcp.CallToolRequest, in verifyChainIn) (
 	*mcp.CallToolResult, verifyChainOut, error) {
 
-	entries, err := loadEntries(in.Path)
+	entries, err := c.loadEntries(in.Path)
 	if err != nil {
 		return nil, verifyChainOut{}, err
 	}
@@ -262,24 +331,53 @@ func verifyChain(ctx context.Context, req *mcp.CallToolRequest, in verifyChainIn
 		Verdict:         string(res.Verdict),
 		EntriesVerified: res.EntriesVerified,
 		TombstonesFound: res.TombstonesFound,
+		LastTombstone:   res.LastTombstone,
 		FirstBreak:      res.FirstBreak,
-		Proven:          "Nothing was edited by anyone unable to also rewrite every entry after it.",
-		NotProven: "That this is the whole chain. Entries could have been removed from the " +
-			"front and the rest re-linked; detecting that requires an anchor, which was " +
-			"not checked here.",
 	}
+	out.Proven, out.NotProven = chainClaims(res)
 	for _, b := range res.Breaks {
 		out.Breaks = append(out.Breaks, brk{
 			Position: b.Position, EntryID: b.EntryID,
 			Type: string(b.Type), Detail: b.Detail,
 		})
 	}
-	if res.Verdict == verify.VerdictBroken && len(res.Breaks) > 1 {
-		out.NotProven += " Note: one altered entry breaks every entry after it, so the " +
-			"break count is a blast radius. Entry " + fmt.Sprint(res.FirstBreak) +
-			" is the place to look."
-	}
 	return nil, out, nil
+}
+
+// notWholeChain is what linkage alone can never show.
+const notWholeChain = "that this is the whole chain. Entries could have been removed from the " +
+	"front and the rest re-linked; detecting that requires an anchor, which was " +
+	"not checked here."
+
+// chainClaims words what a verify_chain result proves and does not prove.
+//
+// The claim depends on the verdict. A broken chain proves nothing. An intact
+// chain that holds an erased entry proves something only about the entries
+// after the last erased one: an erased entry's chain hash is taken as stored,
+// so nothing links the entries before it to the entries after it. See
+// docs/verification-model.md, "What a tombstone leaves unverified".
+func chainClaims(res verify.Result) (proven, notProven string) {
+	switch {
+	case res.Verdict == verify.VerdictBroken:
+		proven = "Nothing. The chain does not verify."
+		notProven = fmt.Sprintf("That any entry is unedited: the chain does not verify, and "+
+			"the first break is at entry %d.", res.FirstBreak)
+		if len(res.Breaks) > 1 {
+			notProven += fmt.Sprintf(" Note: one altered entry breaks every entry after it, so "+
+				"the break count is a blast radius. Entry %d is the place to look.", res.FirstBreak)
+		}
+	case res.TombstonesFound > 0:
+		proven = fmt.Sprintf("Nothing after entry %d, the last erased one, was edited by anyone "+
+			"unable to also rewrite every entry after it.", res.LastTombstone)
+		notProven = fmt.Sprintf("That entries 0 to %d are unedited: they are not verified. An "+
+			"erased entry's chain hash is taken as stored, so whoever can write the chain can "+
+			"replace everything up to and including it. Also not proven: ", res.LastTombstone) +
+			notWholeChain
+	default:
+		proven = "Nothing was edited by anyone unable to also rewrite every entry after it."
+		notProven = "T" + notWholeChain[1:]
+	}
+	return proven, notProven
 }
 
 // ---------------------------------------------------------------------------
@@ -453,6 +551,30 @@ type verifyInclusionIn struct {
 	RootHex         string   `json:"root_hex" jsonschema:"the expected Merkle root, hex-encoded"`
 }
 
+// maxInclusionProofNodes bounds verify_inclusion's proof array.
+const maxInclusionProofNodes = 63
+
+// verifyInclusionInputSchema is the inferred schema plus explicit limits, so the
+// SDK rejects an oversized proof before the handler runs and a model is told
+// the limits up front. The handler keeps its own check on the proof length.
+//
+// Every hash is SHA-512, so no hex value is longer than 128 characters.
+func verifyInclusionInputSchema() (*jsonschema.Schema, error) {
+	s, err := jsonschema.For[verifyInclusionIn](nil)
+	if err != nil {
+		return nil, fmt.Errorf("infer verify_inclusion schema: %w", err)
+	}
+	const maxHashHex = 2 * merkle.HashSize
+	s.Properties["leaf_content_hash"].MaxLength = jsonschema.Ptr(maxHashHex)
+	s.Properties["root_hex"].MaxLength = jsonschema.Ptr(maxHashHex)
+	s.Properties["leaf_index"].Minimum = jsonschema.Ptr(0.0)
+	s.Properties["tree_size"].Minimum = jsonschema.Ptr(0.0)
+	proof := s.Properties["proof_hex"]
+	proof.MaxItems = jsonschema.Ptr(maxInclusionProofNodes)
+	proof.Items.MaxLength = jsonschema.Ptr(maxHashHex)
+	return s, nil
+}
+
 type verifyInclusionOut struct {
 	Included bool   `json:"included"`
 	Detail   string `json:"detail"`
@@ -470,6 +592,12 @@ func verifyInclusion(ctx context.Context, req *mcp.CallToolRequest, in verifyInc
 	root, err := hex.DecodeString(in.RootHex)
 	if err != nil {
 		return nil, verifyInclusionOut{}, fmt.Errorf("root_hex is not hex: %w", err)
+	}
+	// A proof has one node per level, and a tree of at most 2^63 leaves has at
+	// most 63 levels. Anything longer cannot verify; refuse it before decoding.
+	if len(in.ProofHex) > maxInclusionProofNodes {
+		return nil, verifyInclusionOut{}, fmt.Errorf("proof_hex has %d elements; an inclusion proof has at most %d",
+			len(in.ProofHex), maxInclusionProofNodes)
 	}
 	proof := make([][]byte, 0, len(in.ProofHex))
 	for i, p := range in.ProofHex {
@@ -498,64 +626,26 @@ func verifyInclusion(ctx context.Context, req *mcp.CallToolRequest, in verifyInc
 //
 // # Trust boundary
 //
-// The path is attacker-controlled under prompt injection. Three defences:
+// The path is attacker-controlled under prompt injection. The file is read by
+// fileRoot.read: inside the root only, a regular file only, and size-bounded
+// (see maxEntriesFileBytes).
 //
-//   - `..` is refused outright, so a crafted path cannot climb out of wherever
-//     the operator pointed the agent
-//   - the read is size-bounded (see maxEntriesFileBytes)
-//   - only regular files are opened, so a path naming a device or a FIFO fails
-//     rather than blocking forever
-//
-// Errors deliberately do not echo file contents; a tool result is transmitted to
-// a model provider, and an error message is an easy way to exfiltrate a byte at
-// a time.
-func loadEntries(path string) ([]verify.Entry, error) {
+// Errors deliberately do not echo file contents, and the JSON decoder's own
+// error is never passed on: a tool result is transmitted to a model provider,
+// and an error message is an easy way to exfiltrate a byte at a time.
+func (c serverConfig) loadEntries(path string) ([]verify.Entry, error) {
 	if path == "" {
-		return nil, fmt.Errorf("path is required")
+		return nil, fmt.Errorf("the path to the entries file is required")
 	}
-	clean := filepath.Clean(path)
-	if strings.Contains(clean, "..") {
-		return nil, fmt.Errorf("path must not contain '..'")
-	}
-
-	info, err := os.Stat(clean)
+	raw, err := c.root.read(path, maxEntriesFileBytes)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read the file at that path")
+		return nil, err
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("path is not a regular file")
-	}
-	if info.Size() > maxEntriesFileBytes {
-		return nil, fmt.Errorf("file exceeds the %d byte limit", int64(maxEntriesFileBytes))
-	}
-
-	raw, err := os.ReadFile(clean)
+	// The same strict decoder the CLI uses: a file that is not entries is an
+	// error, never a chain to report as broken, and its errors quote no value.
+	entries, err := verify.DecodeEntries(raw)
 	if err != nil {
-		return nil, fmt.Errorf("cannot read the file at that path")
-	}
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return nil, fmt.Errorf("the file is empty")
-	}
-
-	if strings.HasPrefix(trimmed, "[") {
-		var entries []verify.Entry
-		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
-			return nil, fmt.Errorf("the file is not a valid JSON array of entries")
-		}
-		return entries, nil
-	}
-	var entries []verify.Entry
-	for i, line := range strings.Split(trimmed, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var e verify.Entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			return nil, fmt.Errorf("line %d is not a valid entry", i+1)
-		}
-		entries = append(entries, e)
+		return nil, fmt.Errorf("the file is not exported entries: %w", err)
 	}
 	return entries, nil
 }
@@ -567,8 +657,7 @@ func loadEntries(path string) ([]verify.Entry, error) {
 type verifyAnchorIn struct {
 	EntriesPath   string `json:"entries_path" jsonschema:"path to an exported entries file (JSON array or JSONL)"`
 	AnchorPath    string `json:"anchor_path" jsonschema:"path to an anchor JSON file"`
-	PublicKeyPath string `json:"public_key_path,omitempty" jsonschema:"optional path to a raw ML-DSA-65 public key (1952 bytes). Without it the anchor's signature is NOT checked."`
-	KeyTrust      string `json:"key_trust,omitempty" jsonschema:"where the key came from: platform, provided, or self. Defaults to provided. This decides what a successful verification actually claims."`
+	PublicKeyPath string `json:"public_key_path,omitempty" jsonschema:"optional path to a PEM-encoded ML-DSA-65 public key, as proof keygen writes it. Without it the signature is checked only against keys the server was started with, if any. The trust level is not an argument: a key supplied here is 'provided' unless the server was started with that same key"`
 
 	// An anchor commits to its predecessor's chain hash, and names its
 	// predecessor only by id — so the hash cannot be recovered from the anchor
@@ -585,25 +674,35 @@ type verifyAnchorOut struct {
 	// anchor was checked as if it were the first in its chain. A reader seeing
 	// a head mismatch alongside this knows to suspect the missing input before
 	// suspecting an attacker.
-	AssumedGenesis    bool   `json:"assumed_genesis,omitempty"`
-	Detail            string `json:"detail,omitempty"`
-	EntriesCovered    int64  `json:"entries_covered"`
-	SignatureVerified bool   `json:"signature_verified"`
-	Trust             string `json:"trust,omitempty"`
-	TrustEstablishes  string `json:"trust_establishes,omitempty"`
+	AssumedGenesis bool   `json:"assumed_genesis,omitempty"`
+	Detail         string `json:"detail,omitempty"`
+	EntriesCovered int64  `json:"entries_covered"`
+
+	// Tombstones is how many erased entries the chain holds. EntriesNotBound is
+	// how many entries, counted from the first, the anchor does not bind: every
+	// entry up to and including the last erased one.
+	Tombstones      int   `json:"tombstones"`
+	EntriesNotBound int64 `json:"entries_not_bound"`
+
+	SignatureVerified bool `json:"signature_verified"`
+
+	// Trust is decided by this server, never by the caller: "provided" for a key
+	// named in the call, or the level a matching key was bound to at launch.
+	Trust            string `json:"trust,omitempty"`
+	TrustEstablishes string `json:"trust_establishes,omitempty"`
 
 	Proven    string `json:"proven"`
 	NotProven string `json:"not_proven"`
 }
 
-func verifyAnchorTool(ctx context.Context, req *mcp.CallToolRequest, in verifyAnchorIn) (
+func (c serverConfig) verifyAnchor(ctx context.Context, req *mcp.CallToolRequest, in verifyAnchorIn) (
 	*mcp.CallToolResult, verifyAnchorOut, error) {
 
-	entries, err := loadEntries(in.EntriesPath)
+	entries, err := c.loadEntries(in.EntriesPath)
 	if err != nil {
 		return nil, verifyAnchorOut{}, err
 	}
-	a, err := loadAnchor(in.AnchorPath)
+	a, err := c.loadAnchor(in.AnchorPath)
 	if err != nil {
 		return nil, verifyAnchorOut{}, err
 	}
@@ -617,15 +716,28 @@ func verifyAnchorTool(ctx context.Context, req *mcp.CallToolRequest, in verifyAn
 		previousAnchorHash = anchor.SeedAnchorHash
 	}
 
-	var res verify.BindResult
-	if in.PublicKeyPath == "" {
-		res, err = verify.BindAnchor(a, entries, previousAnchorHash)
-	} else {
-		var ring *anchor.KeyRing
-		ring, err = loadKeyRing(in.PublicKeyPath, in.KeyTrust, a.SigningKeyID)
+	// Which key, and what it establishes, is decided here and never by the call.
+	// A key named in the call is "provided" unless the human bound those same
+	// bytes to a level at launch. With no key named, the keys bound at launch are
+	// tried; if none verifies the signature, the result is a keyless bind.
+	var ring *anchor.KeyRing
+	if in.PublicKeyPath != "" {
+		pub, err := c.loadPublicKey(in.PublicKeyPath)
 		if err != nil {
 			return nil, verifyAnchorOut{}, err
 		}
+		ring, err = anchor.NewKeyRing(c.trustOf(pub), map[string][]byte{a.SigningKeyID: pub})
+		if err != nil {
+			return nil, verifyAnchorOut{}, err
+		}
+	} else {
+		ring = c.trustedKeyRing(a)
+	}
+
+	var res verify.BindResult
+	if ring == nil {
+		res, err = verify.BindAnchor(a, entries, previousAnchorHash)
+	} else {
 		res, err = verify.VerifyAnchor(a, entries, previousAnchorHash, ring)
 	}
 	if err != nil {
@@ -638,6 +750,8 @@ func verifyAnchorTool(ctx context.Context, req *mcp.CallToolRequest, in verifyAn
 		AssumedGenesis:    in.PreviousAnchorHash == "",
 		Detail:            res.Detail,
 		EntriesCovered:    res.EntriesCovered,
+		Tombstones:        res.Tombstones,
+		EntriesNotBound:   res.EntriesNotBound,
 		SignatureVerified: res.SignatureVerified,
 		Trust:             string(res.Trust),
 		Proven:            res.Proven,
@@ -646,7 +760,32 @@ func verifyAnchorTool(ctx context.Context, req *mcp.CallToolRequest, in verifyAn
 	if res.Trust != "" {
 		out.TrustEstablishes = res.Trust.Establishes()
 	}
+	if ring == nil && len(c.trusted) > 0 {
+		// Say so, or a reader assumes the keys the server holds were not tried.
+		out.NotProven = strings.TrimSpace(out.NotProven + " Note: the signature does not verify " +
+			"under any key this server was started with (--trusted-key).")
+	}
 	return nil, out, nil
+}
+
+// loadAnchor reads an anchor JSON file named in a tool call.
+//
+// A file that does not parse is reported as not valid JSON and nothing more.
+// The decoder's own error quotes the offending bytes, and this error is returned
+// to a model.
+func (c serverConfig) loadAnchor(path string) (anchor.Anchor, error) {
+	if path == "" {
+		return anchor.Anchor{}, fmt.Errorf("anchor_path is required")
+	}
+	raw, err := c.root.read(path, maxEntriesFileBytes)
+	if err != nil {
+		return anchor.Anchor{}, err
+	}
+	var a anchor.Anchor
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return anchor.Anchor{}, fmt.Errorf("%s is not valid JSON for an anchor", path)
+	}
+	return a, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -678,13 +817,22 @@ type bundleManifest struct {
 	Files        []bundle.FileEntry `json:"files"`
 }
 
-func verifyBundleTool(ctx context.Context, req *mcp.CallToolRequest, in verifyBundleIn) (
+// maxBundleManifestFiles caps how many files one verify_bundle call will hash.
+// Each listed file costs an open and a read of up to the bundle package's
+// per-file limit, so the count has to be bounded as well as the manifest's size.
+const maxBundleManifestFiles = 10_000
+
+func (c serverConfig) verifyBundle(ctx context.Context, req *mcp.CallToolRequest, in verifyBundleIn) (
 	*mcp.CallToolResult, verifyBundleOut, error) {
 
-	clean := filepath.Clean(in.Dir)
-	raw, err := readCapped(filepath.Join(clean, "manifest.json"), maxEntriesFileBytes)
+	if in.Dir == "" {
+		return nil, verifyBundleOut{}, fmt.Errorf("dir is required")
+	}
+	// The manifest is read first, through the root: that is what refuses a
+	// directory outside it, or one reached by a symbolic link that leaves it.
+	raw, err := c.root.read(filepath.Join(in.Dir, "manifest.json"), maxEntriesFileBytes)
 	if err != nil {
-		return nil, verifyBundleOut{}, fmt.Errorf("cannot read manifest.json in that directory")
+		return nil, verifyBundleOut{}, err
 	}
 	var m bundleManifest
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -693,8 +841,18 @@ func verifyBundleTool(ctx context.Context, req *mcp.CallToolRequest, in verifyBu
 	if len(m.Files) == 0 {
 		return nil, verifyBundleOut{}, fmt.Errorf("manifest.json lists no files")
 	}
+	if len(m.Files) > maxBundleManifestFiles {
+		return nil, verifyBundleOut{}, fmt.Errorf("manifest.json lists %d files; this tool verifies "+
+			"at most %d", len(m.Files), maxBundleManifestFiles)
+	}
 
-	res, err := bundle.VerifyDir(clean, m.Files, m.ManifestRoot, 0)
+	// VerifyDir takes a path, so it is given the directory's real one, checked to
+	// be inside the root. It opens every listed file through its own os.Root.
+	dir, err := c.root.realDir(in.Dir)
+	if err != nil {
+		return nil, verifyBundleOut{}, err
+	}
+	res, err := bundle.VerifyDir(dir, m.Files, m.ManifestRoot, 0)
 	if err != nil {
 		return nil, verifyBundleOut{}, err
 	}
@@ -743,9 +901,11 @@ func explainTrustModel(ctx context.Context, req *mcp.CallToolRequest, in explain
 	out := explainTrustModelOut{
 		Claims: []claimDoc{
 			{
-				Check:     "verify_chain (linkage only)",
-				Proven:    "Nothing was edited by anyone unable to also rewrite every entry after it.",
-				NotProven: "That this is the whole chain. Front-truncation followed by re-linking is undetectable here.",
+				Check:  "verify_chain (linkage only)",
+				Proven: "Nothing was edited by anyone unable to also rewrite every entry after it.",
+				NotProven: "That this is the whole chain. Front-truncation followed by re-linking is undetectable here. " +
+					"Nor anything about entries up to and including an erased one: its chain hash is taken as stored. " +
+					"A chain that does not verify proves nothing.",
 			},
 			{
 				Check:     "verify_anchor without a key",
@@ -772,140 +932,15 @@ func explainTrustModel(ctx context.Context, req *mcp.CallToolRequest, in explain
 			"build time, whose attestations count — and the premise of an offline verifier is " +
 			"that the person running it need not take anyone's word for that. It would also tie " +
 			"key rotation to a software release: rotate a key, and every user's verification " +
-			"breaks until they upgrade. You supply keys, and you say where they came from.",
+			"breaks until they upgrade. Keys come from two places, and the trust level " +
+			"follows the place, never an argument: a key named in a verify_anchor call is " +
+			"always 'provided'; a key the person who launched this server bound with " +
+			"--trusted-key is 'platform' or 'self', as they declared. A tool call cannot " +
+			"raise a key's level.",
 		AnchorProvenance: "A signature check answers 'was this signed by the holder of key K'. " +
 			"It does not answer 'should I believe K', and it does not say where you got the " +
 			"anchor. An anchor read back from the same store as the chain proves consistency; " +
 			"only a copy the chain's operator cannot rewrite proves external commitment.",
 	}
 	return nil, out, nil
-}
-
-// ---------------------------------------------------------------------------
-// shared loaders
-// ---------------------------------------------------------------------------
-
-// maxPublicKeyPEMBytes bounds a PEM-encoded ML-DSA-65 public key file.
-//
-// An ML-DSA-65 public key is anchor.PublicKeySize (1952) bytes RAW. PEM adds
-// SPKI framing, base64 expansion (4 out per 3 in), line breaks and the BEGIN/END
-// armour: `proof keygen` writes 2726 bytes. 4 KiB leaves room for any reasonable
-// encoder's line width while still refusing a file that is obviously not a key.
-//
-// The previous bound was anchor.PublicKeySize+1 — correct for RAW bytes, and the
-// reason this server could not read a single key `proof keygen` produced
-// (aleutianchain_54).
-const maxPublicKeyPEMBytes = 4 << 10
-
-// Distinguishable read failures. A caller needs to know whether the path was
-// wrong, the file was the wrong KIND, or it was too big — see readCapped.
-var (
-	errNotRegular = errors.New("not a regular file")
-	errTooLarge   = errors.New("file is too large")
-)
-
-// loadAnchor reads an anchor JSON file.
-func loadAnchor(path string) (anchor.Anchor, error) {
-	clean := filepath.Clean(path)
-	raw, err := readCapped(clean, maxEntriesFileBytes)
-	if err != nil {
-		return anchor.Anchor{}, fmt.Errorf("anchor file: %w", err)
-	}
-	var a anchor.Anchor
-	if err := json.Unmarshal(raw, &a); err != nil {
-		return anchor.Anchor{}, fmt.Errorf("%s is not valid JSON: %w", clean, err)
-	}
-	return a, nil
-}
-
-// loadKeyRing reads a PEM-encoded ML-DSA-65 public key and binds it to a trust
-// level.
-//
-// The trust level is the caller's assertion about PROVENANCE, which this process
-// cannot determine for itself. Defaulting to "provided" rather than "platform"
-// is deliberate: the weaker claim is the safe default.
-//
-// Parsing goes through keyfile.ParsePublicKey — the SAME function the CLI's
-// `proof verify --key` uses. It previously read raw bytes instead, so the two
-// surfaces disagreed about what a key file is and only the CLI agreed with
-// `proof keygen` (aleutianchain_54).
-func loadKeyRing(path, trustLabel, keyID string) (*anchor.KeyRing, error) {
-	// The trust label is a pure argument check, so it happens BEFORE any I/O.
-	// Validating it afterwards would report a file problem for a bad argument.
-	trust := anchor.TrustProvided
-	switch trustLabel {
-	case "", string(anchor.TrustProvided):
-	case string(anchor.TrustPlatform):
-		trust = anchor.TrustPlatform
-	case string(anchor.TrustSelf):
-		trust = anchor.TrustSelf
-	default:
-		return nil, fmt.Errorf("key_trust must be one of: platform, provided, self")
-	}
-
-	clean := filepath.Clean(path)
-	pemBytes, err := readCapped(clean, maxPublicKeyPEMBytes)
-	if err != nil {
-		return nil, fmt.Errorf("public key file: %w", err)
-	}
-
-	alg, pub, err := keyfile.ParsePublicKey(pemBytes)
-	if err != nil {
-		return nil, fmt.Errorf("%s is not a PEM-encoded public key "+
-			"(expected one from `proof keygen --alg ml-dsa-65`): %w", clean, err)
-	}
-	if alg != keyfile.MLDSA65 {
-		// Name what was supplied AND what is needed. "wrong algorithm" sends a
-		// reader to check the wrong thing.
-		return nil, fmt.Errorf("%s holds a %s public key, but anchors are signed "+
-			"with ML-DSA-65", clean, alg)
-	}
-
-	return anchor.NewKeyRing(trust, map[string][]byte{keyID: pub})
-}
-
-// readCapped reads a regular file, refusing anything larger than limit.
-//
-// Errors are DISTINGUISHABLE on purpose. Every failure here used to be reported
-// as "cannot read the <X> file at that path", but three of the four causes are
-// not about the path at all — so a caller with a perfectly correct path was told
-// the path was the problem (aleutianchain_55). The original err is wrapped, never
-// dropped.
-//
-// Paths and sizes are safe to report; file CONTENTS are not, and none appear.
-func readCapped(path string, limit int64) ([]byte, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		// os.Lstat's error already names the path and the cause ("no such file or
-		// directory", "permission denied") and wraps the fs sentinels, so callers
-		// can still match on errors.Is.
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is %s: %w", path, describeMode(info.Mode()), errNotRegular)
-	}
-	if info.Size() > limit {
-		return nil, fmt.Errorf("%s is %d bytes, over the %d byte limit: %w",
-			path, info.Size(), limit, errTooLarge)
-	}
-	return os.ReadFile(path)
-}
-
-// describeMode names what a non-regular file actually is.
-//
-// "not a regular file" leaves a reader guessing; "is a directory" does not.
-func describeMode(m os.FileMode) string {
-	switch {
-	case m.IsDir():
-		return "a directory"
-	case m&os.ModeSymlink != 0:
-		return "a symbolic link"
-	case m&os.ModeDevice != 0:
-		return "a device"
-	case m&os.ModeNamedPipe != 0:
-		return "a named pipe"
-	case m&os.ModeSocket != 0:
-		return "a socket"
-	}
-	return "an irregular file"
 }

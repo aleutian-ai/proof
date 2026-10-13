@@ -378,8 +378,9 @@ files read-only, creates no file or folder (a mistyped folder is an error, not a
 new sink), reports a missing secrets file as events whose content is gone, and a
 missing index as chains with no row. Opening a crafted `evidence.db` with bbolt
 is still parsing untrusted input with a library that may panic on corruption:
-to verify a folder from someone else, use an exported bundle (future work,
-ticket `_72`), not the files.
+to verify a folder from someone else, use an exported bundle
+(`proof sink export`, then `proof sink verify-bundle`; see bundle-format.md),
+not the files.
 
 **What verification cannot establish:**
 - that an entry's `entry_type` is what was written (it is bound by neither the
@@ -391,7 +392,15 @@ ticket `_72`), not the files.
 - that an erasure entry made after the last checkpoint is genuine, rather
   than appended by someone with write access: hence `erased-unanchored`
   (checkpoint after erasing), unless its record signature verifies under the
-  record trust given;
+  record trust given. **The checkpoint does not settle it either.** Checkpoint
+  verifies a chain in full before signing, and a forged erasure at the END of
+  a chain, with its index row removed, verifies exactly as a real one does. A
+  checkpoint made after it covers it, and the chain then reads `erased`. Only
+  an erasure in the middle of a chain is caught (nothing follows an erasure);
+- that the checkpoint series was not restarted: with `anchors/<chain>/`
+  removed, the next Checkpoint signs a new `0001.json` over the chain as it
+  stands, and Verify passes. Nothing inside the folder can remember that a
+  longer series existed;
 - which subject a chain belonged to once it is erased, by design.
 
 Steps 2 and 3 need only `evidence.db`, the checkpoints and a public key; step 8

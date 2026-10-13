@@ -134,6 +134,16 @@ var allowedDeps = map[string][]string{
 	// is the one piece a verifier in any language re-implements from the spec.
 	"/commitment": {},
 
+	// The export-bundle verifier (docs/bundle-format.md). What a RECIPIENT of a
+	// bundle runs, so it must not inherit the sink's storage engine: no bbolt.
+	// circl and x/sys arrive with ML-DSA-65 (mldsa, anchor); x/text arrives with
+	// the chain hash (chainformat → canonical). It imports no package sink.
+	"/exportbundle": {
+		"github.com/cloudflare/circl",
+		"golang.org/x/sys",
+		"golang.org/x/text",
+	},
+
 	// An EXAMPLE, not part of the library: it shows encryption (circl's HPKE with
 	// X-Wing) composed with proof from the outside. proof itself encrypts nothing;
 	// circl/hpke is reachable only from here, and it brings x/crypto (HKDF,

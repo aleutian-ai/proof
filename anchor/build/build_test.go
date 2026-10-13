@@ -447,3 +447,39 @@ func TestAnchor_SignedBytesAreStable(t *testing.T) {
 		t.Error("the signature leaked into the canonical form")
 	}
 }
+
+// TestFromWalker_RefusesASegmentAndAForeignPredecessor: an anchor is built
+// over a chain from its first entry, onto a predecessor for the same subject
+// that covers no more than the chain does. A walker over entries 5..9 once
+// produced entry_count=5, and a 3-entry anchor chained onto another subject's
+// 20-entry anchor; both verified.
+func TestFromWalker_RefusesASegmentAndAForeignPredecessor(t *testing.T) {
+	ctx := context.Background()
+	entries := chainOf(t, 10)
+
+	segment := verify.NewWalker(verify.Options{PreviousHash: entries[4].ChainHash})
+	for _, e := range entries[5:] {
+		segment.Add(e)
+	}
+	if res := segment.Result(); res.Verdict != verify.VerdictIntact {
+		t.Fatalf("control failed: the segment is %s", res.Verdict)
+	}
+	if _, err := FromWalker(ctx, testSubject, segment, nil, time.Time{}); err == nil {
+		t.Error("built an anchor over a mid-chain segment")
+	}
+
+	whole, err := Anchor(ctx, Input{Subject: testSubject, Entries: entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Anchor(ctx, Input{Subject: "another-subject", Entries: entries, Previous: &whole}); err == nil {
+		t.Error("chained an anchor onto another subject's anchor")
+	}
+	if _, err := Anchor(ctx, Input{Subject: testSubject, Entries: entries[:3], Previous: &whole}); err == nil {
+		t.Error("chained a 3-entry anchor onto a 10-entry one")
+	}
+	// The same chain anchored again is allowed: nothing new, a later attestation.
+	if _, err := Anchor(ctx, Input{Subject: testSubject, Entries: entries, Previous: &whole}); err != nil {
+		t.Errorf("re-anchoring the same chain: %v", err)
+	}
+}

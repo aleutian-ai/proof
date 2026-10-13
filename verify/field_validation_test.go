@@ -58,16 +58,11 @@ func TestChain_FieldShapesAreChecked(t *testing.T) {
 			true, BreakInvalidField, 1},
 		{"uppercase content hash", func(es []Entry) { es[1].ContentHash = strings.Repeat("AB", 64) },
 			true, BreakInvalidField, 1},
-		{"negative global_seq on the first entry", func(es []Entry) {
+		{"negative global_seq", func(es []Entry) {
 			for i := range es {
 				es[i].GlobalSeq = int64(i) - 7
 			}
-		}, true, BreakSequenceGap, 0},
-		{"a whole chain that does not start at 0", func(es []Entry) {
-			for i := range es {
-				es[i].GlobalSeq = int64(i) + 1
-			}
-		}, true, BreakSequenceGap, 0},
+		}, true, BreakInvalidField, 0},
 		{"chain hash that is not a digest", func(es []Entry) { es[2].ChainHash = "short" },
 			false, BreakInvalidField, 2},
 		{"a tombstone whose chain hash is not a digest", func(es []Entry) {
@@ -118,8 +113,7 @@ func TestChain_TimestampSpellingsHashAlike(t *testing.T) {
 	}
 }
 
-// TestChain_SegmentStart: a segment links from a well-formed predecessor hash
-// and starts after global_seq 0.
+// TestChain_SegmentStart: a segment links from a well-formed predecessor hash.
 func TestChain_SegmentStart(t *testing.T) {
 	entries, _ := buildChain(t, 4)
 	segment, prev := entries[2:], entries[1].ChainHash
@@ -128,14 +122,26 @@ func TestChain_SegmentStart(t *testing.T) {
 	if err != nil || res.Verdict != VerdictIntact {
 		t.Fatalf("a good segment: %s, %v", res.Verdict, err)
 	}
-	if b := firstBreak(t, segment, Options{}); b.Type != BreakSequenceGap || b.Position != 0 {
-		t.Fatalf("a segment verified as a whole chain: %s at %d", b.Type, b.Position)
-	}
 	if b := firstBreak(t, segment, Options{PreviousHash: "abc"}); b.Type != BreakInvalidField {
 		t.Fatalf("a malformed previous hash: %s", b.Type)
 	}
-	if b := firstBreak(t, entries, Options{PreviousHash: prev}); b.Type != BreakSequenceGap {
-		t.Fatalf("a whole chain verified as a segment: %s", b.Type)
+}
+
+// TestChain_FirstSequenceNumberIsNotFixed: the format does not say where a
+// chain starts. This module's linker starts at 0 and the hosted platform's at
+// 1, and both verify. A rule that a chain starts at 0 was added and withdrawn
+// on 2026-10-11: it reported every platform chain as broken.
+func TestChain_FirstSequenceNumberIsNotFixed(t *testing.T) {
+	for _, start := range []int64{0, 1, 1001} {
+		entries, _ := buildChain(t, 4)
+		for i := range entries {
+			entries[i].GlobalSeq = start + int64(i)
+		}
+		relink(t, entries)
+		res, err := Chain(entries, Options{})
+		if err != nil || res.Verdict != VerdictIntact {
+			t.Errorf("a chain starting at global_seq %d: %s, %v", start, res.Verdict, err)
+		}
 	}
 }
 
@@ -213,5 +219,65 @@ func TestBindAnchor_ReportsWhatATombstoneLeavesUnbound(t *testing.T) {
 	}
 	if !strings.Contains(res.Proven, "entries 3 to 4") || !strings.Contains(res.NotProven, "first 3 entries") {
 		t.Fatalf("the claim does not state the unbound range:\n  proven: %s\n  not proven: %s", res.Proven, res.NotProven)
+	}
+}
+
+// TestChain_ATombstoneStillDeclaresAValidFormat: a tombstone's hash is not
+// recomputed, but its format version and field use are checked like any
+// entry's. The tombstone branch once returned before the format dispatch, so a
+// tombstone with format_version 99, or a v3 one carrying run_id, was INTACT.
+func TestChain_ATombstoneStillDeclaresAValidFormat(t *testing.T) {
+	cases := map[string]struct {
+		mutate func(e *Entry)
+		want   BreakType
+	}{
+		"unknown format version": {func(e *Entry) { e.FormatVersion = 99 }, BreakUnknownFormat},
+		"v3 carrying run_id":     {func(e *Entry) { e.RunID = "run-1" }, BreakFormatFieldMisuse},
+		"v3 carrying sequence":   {func(e *Entry) { e.SequenceNum = 4 }, BreakFormatFieldMisuse},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			entries, _ := buildChain(t, 4)
+			entries[2].EntryType = chainformat.TombstoneEntryType
+			entries[2].EntryID = "tomb_00000000-0000-0000-0000-000000000000"
+			entries[2].ContentHash = chainformat.TombstoneContentHashPrefix + strings.Repeat("ab", 32)
+			if res, _ := Chain(entries, Options{}); res.Verdict != VerdictIntact {
+				t.Fatalf("control failed: a well-formed tombstone is %s", res.Verdict)
+			}
+			tc.mutate(&entries[2])
+			if b := firstBreak(t, entries, Options{}); b.Type != tc.want || b.Position != 2 {
+				t.Fatalf("first break = %s at %d, want %s at 2", b.Type, b.Position, tc.want)
+			}
+		})
+	}
+}
+
+// TestVerifyAnchor_ASignatureErrorIsNeverBound: with a signature that does not
+// verify, the result beside the error says so and is not bound. It once carried
+// Bound=true and Outcome "bound" next to the error, for a caller to read after
+// dropping the error.
+func TestVerifyAnchor_ASignatureErrorIsNeverBound(t *testing.T) {
+	entries, _ := buildChain(t, 5)
+	series, ring := series(t, entries, 5)
+	a := series[0]
+
+	good, err := VerifyAnchor(a, entries, anchor.SeedAnchorHash, ring)
+	if err != nil || !good.Bound || !good.SignatureVerified {
+		t.Fatalf("control failed: %+v, %v", good, err)
+	}
+
+	empty, err := anchor.NewKeyRing(anchor.TrustProvided, map[string][]byte{})
+	if err != nil {
+		t.Skipf("an empty key ring cannot be built: %v", err)
+	}
+	res, err := VerifyAnchor(a, entries, anchor.SeedAnchorHash, empty)
+	if err == nil {
+		t.Fatal("an anchor signed by an unknown key verified")
+	}
+	if res.Bound || res.SignatureVerified || res.Outcome != BindSignatureInvalid {
+		t.Fatalf("result beside the error = %+v", res)
+	}
+	if !strings.Contains(res.Detail, "does match") || !strings.HasPrefix(res.Proven, "nothing") {
+		t.Fatalf("detail %q, proven %q", res.Detail, res.Proven)
 	}
 }

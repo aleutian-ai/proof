@@ -45,6 +45,51 @@ and the difference is the whole design.
 | **\+ an anchor, no key**<br>`verify.BindAnchor`<br>`… --anchor a.json` | The chain is the one that anchor committed to — including where it *started*, so **truncation is caught**. | That the anchor is genuine. |
 | **\+ the anchor's signature**<br>`verify.VerifyAnchor`<br>`… --anchor a.json --key pub.pem` | The anchor was signed by the holder of a key you named. | That the anchor reached you by a path its subject could not rewrite. |
 
+### Known limitations of the current formats
+
+These are holes in chain format v3, anchor v6 and the sink as they are today.
+The verifiers report the exposure where they can. None of them detects the
+attack. Read them before relying on a verdict.
+
+1. **An erased entry is an unverified link.** A tombstone keeps the erased
+   entry's chain hash, and a verifier takes that hash as stored, because the
+   content hash it was computed from is gone. So nothing links the entries
+   before a tombstone to the entries after it. Anyone who can write the store
+   can replace every entry before a tombstone, or before an entry they turn
+   into one, and the chain still verifies as `INTACT` and still binds to a
+   valid signed anchor. The result says how many entries are exposed
+   (`last_tombstone`, `entries_not_bound`) and its wording covers only the
+   entries after the last tombstone. A chain with no tombstone is not affected
+   unless an attacker adds one, which they can (see 2).
+2. **`entry_id` and `entry_type` are in no hash.** Either can be changed
+   without a break. `entry_type` and the `tomb_` id prefix are what mark an
+   entry as erased.
+3. **Erasing the first or last entry of an anchored range breaks that
+   anchor.** Erasure replaces the entry's id, and an anchor names its range by
+   the first and last entry ids.
+4. **An anchor series cannot show that it is complete.** Delete the latest
+   anchors and the shorter series verifies. Keep anchors where the chain's
+   writer cannot rewrite them. Anchors are signed with an empty ML-DSA context
+   string, so a signing key must not be used for anything else.
+5. **The sink cannot tell an erasure it made from one written into its
+   folder.** An erasure record carries no key. Someone with write access to the
+   folder can append one at the end of a chain and remove the chain's index
+   row; it verifies as `erased-unanchored`, and the next checkpoint covers it.
+   With `anchors/<chain>/` deleted, the next checkpoint starts a new series and
+   verification passes. Rows written into `.sources` make a later `commit`
+   report new records as duplicates and drop them. Record signatures
+   (`--record-key`, verified with `--record-trust`) close the first of these.
+6. **An operator who controls the evidence store and every signing key the
+   verifier trusts can rewrite history and produce a newly valid one.** Only
+   earlier checkpoints kept or witnessed outside the operator's reach make that
+   rewrite detectable.
+7. **Commands that write crash on a damaged store file** (a Go panic, exit
+   status 2). Commands that only read report it as an error.
+
+A next format version is drafted to close 1 to 3 and tighten 4. It is not
+implemented. Details: [verification-model.md](docs/verification-model.md),
+[sink-format.md §6](docs/sink-format.md).
+
 ### Why linkage alone cannot see truncation
 
 Deleting entries from the front is not an edit-with-the-rest-intact — it is
@@ -87,7 +132,7 @@ See [docs/verification-model.md](docs/verification-model.md) and
 $ go install github.com/aleutian-ai/proof/cmd/proof@latest
 
 $ proof verify entries.json
-INTACT — 5 entries verified, 1 erased
+INTACT — 5 entries verified
 
   Proven:     nothing was edited under you.
   NOT proven: that this is the whole chain. Entries could have been
@@ -96,13 +141,14 @@ INTACT — 5 entries verified, 1 erased
 ```
 
 Exit codes are distinct on purpose: `0` ok · `1` chain broken · `2` usage ·
-`3` I/O error. A script that cannot tell "the chain is broken" from "I could not
+`3` I/O or parse error (a file that is not entries, a store too damaged to read) ·
+`4` the database is busy. A script that cannot tell "the chain is broken" from "I could not
 open the file" will take the wrong action on one of them.
 
 Or without installing anything:
 
 ```console
-$ podman build -t proof .                          # published tag lands with v0.2.0
+$ podman build -t proof .
 $ podman run --rm --network=none -v "$PWD:/data:ro" \
       proof verify /data/entries.json
 ```
@@ -270,6 +316,8 @@ if you allow it, commit evidence of its own actions as it works:
 ```console
 $ go install github.com/aleutian-ai/proof/cmd/proof-mcp@latest
 $ claude mcp add aleutianchain -- proof-mcp                              # read-only
+$ claude mcp add aleutianchain -- proof-mcp --root ./exports \
+      --trusted-key platform=./aleutian-public.pem                        # + a key you vouch for
 $ claude mcp add aleutianchain -- proof-mcp --db ./evidence.db \
       --chains agent-actions,payments                                     # + commit
 ```
@@ -277,6 +325,13 @@ $ claude mcp add aleutianchain -- proof-mcp --db ./evidence.db \
 Seven read-only tools: `verify_chain`, `verify_anchor`, `verify_bundle`,
 `compute_chain_hash`, `canonicalize_leaf`, `verify_inclusion`,
 `explain_trust_model`.
+
+Tools read files only inside `--root` (default: the directory the server was
+started in). What a key establishes is never a tool argument: a key an agent
+supplies is reported as `provided`, and only a key you bind at launch with
+`--trusted-key platform=PATH` or `self=PATH` is reported at that level. With
+`--db`, `--max-db-bytes` (default 1 GiB) stops commits once the database reaches
+that size.
 
 With `--db`, an eighth: **`commit`, the only tool that writes.** `--chains` is
 required with it — name the chains agents may write, or `'*'` for any — so an
@@ -449,9 +504,20 @@ key both verify in Python and JavaScript. Those fixtures must never be
 regenerated by the SDK that checks them — they are evidence precisely because
 another implementation produced them.
 
-> **What this does not yet establish.** The three agree on chain hash v2/v3 and
-> anchor v3/v4/v6. Merkle roots, inclusion proofs, bundles and the adversarial
-> malformed-input cases are not yet under the shared set.
+> **What this does not yet establish.** The three agree on chain hash v2/v3,
+> anchor v3/v4/v6, the verifier verdict vectors and the export-bundle vectors.
+> Not under the shared set: Merkle roots and inclusion proofs, an anchor
+> *series* (the verdict vectors need no key, and a series needs signatures),
+> and the two input forms only the SDKs read (the hosted platform's
+> `{"entries": [...]}` wrapper and camelCase member names).
+>
+> Several vector files were first written by an implementation and not by a
+> script from the spec (`merkle_golden.json`, `v3_golden_capture_request.json`,
+> `anchor_chain_hash_vectors.json`, `chain_vectors.json`,
+> `commitment_vectors.json`); their values have been reproduced independently,
+> but the claim above about expected outputs holds strictly only for the files
+> `scripts/independent-vectors.py`, `scripts/verdict-vectors.py` and
+> `scripts/bundle-vectors.py` write.
 
 ## Dependencies
 
@@ -470,6 +536,7 @@ build if any package gains an import outside its allowlist.
 | `xwing`, `keywrap` | **none** — `crypto/mlkem`, `crypto/sha3`, `crypto/ecdh` are stdlib as of Go 1.24 |
 | `merkle` | **none** |
 | `bundle` | **none** |
+| `exportbundle` | **none directly** — circl through `mldsa`, `golang.org/x/text` through `chainformat`; never bbolt, so verifying a bundle does not compile in the store |
 | `canonical`, `chainformat` | `golang.org/x/text` — Unicode NFC validation needs the Unicode tables |
 | `mldsa` | `github.com/cloudflare/circl` — ML-DSA-65 is not in the standard library |
 | `anchor`, `verify` | **none directly** — ML-DSA-65 reaches circl through `mldsa`, so signing and verification share one primitive |
@@ -503,7 +570,8 @@ verify          the verdicts: Chain, BindAnchor, VerifyAnchor
 anchor          anchor canonical form, anchor-of-anchors hash, ML-DSA-65 sign + verify
 anchor/build    produce an anchor — verifies the chain before describing it
 merkle          roots, inclusion proofs, consistency proofs
-bundle          export-bundle manifest root + directory verification
+bundle          a directory checked against a manifest (unrelated to sink export bundles)
+exportbundle    verifier for a sink export bundle (bundle.json), from docs/bundle-format.md
 store           persistence port + bolt / memory adapters
 fixtures        cross-language conformance vectors + digest manifest
 
@@ -559,27 +627,29 @@ destroy the proof that the data ever existed.
 
 ## Status
 
-Under active development. **v0.2.0** is the first release carrying the whole
-loop — originate, anchor, verify — from a terminal.
+Under active development. The [changelog](CHANGELOG.md) is the record of what
+each release contains; while the major version is 0, a minor release may
+contain a source-incompatible change, and every one is called out there.
+`proof version` prints what a binary was built from.
 
-While the major version is 0, a minor release may contain a source-incompatible
-change; v0.2.0 contains two, both called out in the [changelog](CHANGELOG.md).
-
-**Three implementations now agree on both current formats.** Chain hash v3 and
-anchor v6 are reproduced independently in Go, Python and JavaScript, checked
-against one shared set of conformance vectors — see below. What remains is a
-normative spec: v3 and v6 are implemented, tested and cross-verified, but
-written down only in the Go source and `docs/decisions.md`.
+**Three implementations are held to one set of vectors.** Go (this module),
+Python and JavaScript reproduce chain hash v3 and anchor v6, give the same
+verdict on the verifier verdict vectors (whole chains, entries files, anchor
+text, keyless binds), and give the same result on every export-bundle vector.
+The formats are specified in [docs/format-spec.md](docs/format-spec.md) and
+[docs/bundle-format.md](docs/bundle-format.md); the Go code is one
+implementation of them, not their definition.
 
 | | |
 |---|---|
-| ✅ built | format core · `anchor` (verify, sign **and build**) · `bundle` · `verify` · `linker` · CLI · MCP server (7 read-only tools + `commit` with `--db`) |
-| ⏳ not yet | the monorepo and SDKs consuming this instead of their own copies |
+| ✅ built | format core · `anchor` (verify, sign and build) · `verify` (chains, anchors, anchor series) · `linker` · `sink` (commit, checkpoint, verify, erase, export) · `exportbundle` and `proof sink verify-bundle` · CLI · MCP server (7 read-only tools + `commit` with `--db`) |
+| ⚠️ known limitations | [listed above](#known-limitations-of-the-current-formats), and not softened: read them before relying on a verdict |
+| ⏳ not yet | the next chain and anchor format versions (drafted, not implemented) · the monorepo and SDKs consuming this instead of their own copies |
 
-**475 tests** across the library and MCP module, plus 645 in the Python SDK and 663 in the JavaScript SDK — all three held to the same conformance vectors. Every guard here has been
-**mutation-tested** — the protection is deliberately broken and the test
-confirmed to fail — because a guard that has never failed is not a guard. That
-discipline has repeatedly caught tests which passed for the wrong reason.
+`scripts/release-check.sh` is the gate a tree passes before it is tagged:
+formatting, `go vet` and the tests for both modules, the vectors regenerated
+byte for byte from their scripts, and `go vet` plus `go test -race` on Linux in
+a container.
 
 ---
 
@@ -639,6 +709,8 @@ module cannot answer and does not pretend to.
 | Document | For |
 |---|---|
 | [docs/format-spec.md](docs/format-spec.md) | Implementing a verifier in another language |
+| [docs/bundle-format.md](docs/bundle-format.md) | The export bundle a recipient verifies without the sink |
+| [docs/sink-format.md](docs/sink-format.md) | What a sink folder holds, and what its verification covers |
 | [docs/verification-model.md](docs/verification-model.md) | Understanding what a verdict means |
 | [docs/anchor-model.md](docs/anchor-model.md) | What an anchor proves, and what its provenance must be |
 | [docs/decisions.md](docs/decisions.md) | Why the design is the way it is |

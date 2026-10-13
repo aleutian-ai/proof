@@ -329,7 +329,7 @@ func openSubjectsReadOnly(path string, lockTimeout time.Duration) (*subjectsStor
 	}
 	if err := db.View(func(tx *bolt.Tx) error {
 		if tx.Bucket(forwardBucket) == nil || tx.Bucket(reverseBucket) == nil {
-			return fmt.Errorf("sink: %s is not a subject index", path)
+			return fmt.Errorf("sink: %s is not a subject index: %w", path, ErrCorrupt)
 		}
 		return nil
 	}); err != nil {

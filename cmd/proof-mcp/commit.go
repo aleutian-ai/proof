@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"sync"
@@ -33,6 +34,8 @@ import (
 //
 //   - The database is fixed at launch (--db), never an argument, and so is the
 //     set of chains it may write (--chains, required with --db).
+//   - The database file has a size limit (--max-db-bytes), so a model calling
+//     commit in a loop cannot fill the disk.
 //   - The model supplies only content (or a content hash), an optional label,
 //     and which chain. EVERYTHING that is hashed into position — entry id,
 //     timestamp, global_seq, previous hash, chain hash — is assigned here.
@@ -80,13 +83,6 @@ var labelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,47}$`)
 
 // contentHashPattern is a SHA-512 digest in lowercase hex.
 var contentHashPattern = regexp.MustCompile(`^[0-9a-f]{128}$`)
-
-// commitConfig is fixed by the human at launch. The zero value (no database)
-// means the commit tool is not registered at all.
-type commitConfig struct {
-	db     string
-	chains map[string]bool // nil means any valid chain: only via an explicit --chains '*'
-}
 
 type commitEntryIn struct {
 	Content     *string `json:"content,omitempty" jsonschema:"the evidence as text. NOTE: it passes through this conversation, so it is visible to the model provider. The server stores only a salted commitment and keeps the nonce locally. Exactly one of content or content_hash"`
@@ -140,7 +136,7 @@ func commitInputSchema() (*jsonschema.Schema, error) {
 }
 
 // registerCommit adds the commit tool, and only when a database was configured.
-func registerCommit(s *mcp.Server, cfg commitConfig) error {
+func registerCommit(s *mcp.Server, cfg serverConfig) error {
 	if cfg.db == "" {
 		return nil
 	}
@@ -181,7 +177,7 @@ type prepared struct {
 //
 // All validation happens BEFORE any file is opened, so a rejected call cannot
 // touch the store.
-func commitTool(ctx context.Context, cfg commitConfig, in commitIn) (*mcp.CallToolResult, commitOut, error) {
+func commitTool(ctx context.Context, cfg serverConfig, in commitIn) (*mcp.CallToolResult, commitOut, error) {
 	if !idPattern.MatchString(in.Chain) {
 		return nil, commitOut{}, fmt.Errorf("chain must be lowercase letters, digits, . _ - " +
 			"(max 64), starting with a letter or digit; use a topic or a pseudonym, never an email")
@@ -205,6 +201,10 @@ func commitTool(ctx context.Context, cfg commitConfig, in commitIn) (*mcp.CallTo
 
 	commitMu.Lock()
 	defer commitMu.Unlock()
+
+	if err := checkDBQuota(cfg); err != nil {
+		return nil, commitOut{}, err
+	}
 
 	st, err := boltstore.Open(cfg.db, boltstore.WithLockTimeout(dbLockTimeout))
 	if err != nil {
@@ -275,6 +275,29 @@ func commitTool(ctx context.Context, cfg commitConfig, in commitIn) (*mcp.CallTo
 		})
 	}
 	return nil, out, nil
+}
+
+// checkDBQuota refuses a commit once the database file has reached
+// --max-db-bytes.
+//
+// One call is capped (maxCommitEntries entries of maxCommitContentBytes each),
+// but nothing else stops a model calling commit in a loop until the disk is
+// full. The size is checked BEFORE the write, so the file can pass the limit by
+// what one call adds: growth is bounded to the limit plus one call.
+func checkDBQuota(cfg serverConfig) error {
+	if cfg.maxDBBytes <= 0 {
+		return nil
+	}
+	info, err := os.Stat(cfg.db)
+	if err != nil {
+		return fmt.Errorf("check the evidence database size: %w; nothing was committed", err)
+	}
+	if info.Size() >= cfg.maxDBBytes {
+		return fmt.Errorf("the evidence database has reached the size limit this server was "+
+			"started with (--max-db-bytes %d); nothing was committed, and retrying will not help",
+			cfg.maxDBBytes)
+	}
+	return nil
 }
 
 // prepare validates one entry and computes what will be committed. It touches

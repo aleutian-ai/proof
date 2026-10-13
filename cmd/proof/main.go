@@ -36,7 +36,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/internal/fault"
@@ -126,6 +125,8 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 		return cmdForget(args[1:], stdout, stderr)
 	case "sink":
 		return cmdSink(args[1:], stdout, stderr)
+	case "version", "--version":
+		return cmdVersion(stdout)
 	case "-h", "--help", "help":
 		usage(stdout)
 		return exitOK
@@ -154,6 +155,7 @@ usage:
   proof anchor --db <path> --chain <id> --subject <s> --key <private.pem>
                [--previous <anchor.json>] [--out <path>]
   proof sink commit|checkpoint|verify|erase [--dir D] …   (proof sink help)
+  proof version
 
 exit: 0 ok · 1 chain broken · 2 usage · 3 io error · 4 chain busy
 
@@ -390,32 +392,13 @@ func loadEntriesFrom(r io.Reader) ([]verify.Entry, error) {
 	return parseEntries(raw, "stdin")
 }
 
-// parseEntries decodes a JSON array or JSONL, whichever it was handed.
+// parseEntries decodes a JSON array or JSONL, whichever it was handed. Input
+// that is not entries (an anchor, an export bundle, `{}`) is an error here, so
+// it is never verified and reported as a broken chain.
 func parseEntries(raw []byte, path string) ([]verify.Entry, error) {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return nil, fmt.Errorf("%s is empty", path)
-	}
-
-	if strings.HasPrefix(trimmed, "[") {
-		var entries []verify.Entry
-		if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
-			return nil, fmt.Errorf("parse %s as a JSON array: %w", path, err)
-		}
-		return entries, nil
-	}
-
-	var entries []verify.Entry
-	for i, line := range strings.Split(trimmed, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var e verify.Entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			return nil, fmt.Errorf("parse %s line %d: %w", path, i+1, err)
-		}
-		entries = append(entries, e)
+	entries, err := verify.DecodeEntries(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return entries, nil
 }

@@ -537,7 +537,9 @@ func TestConcurrentAppendsDoNotForkTheChain(t *testing.T) {
 }
 
 // TestTombstoneEntriesLink covers the rule that three published SDKs got wrong:
-// a tombstone is a normal chain member, not a break.
+// a tombstone is a normal chain member, not a break. The entry is erased the
+// way erasure works: appended as an ordinary entry, then rewritten in the store
+// in place, keeping its chain hash.
 func TestTombstoneEntriesLink(t *testing.T) {
 	tombHash, err := chainformat.GenerateTombstoneContentHash()
 	if err != nil {
@@ -545,20 +547,22 @@ func TestTombstoneEntriesLink(t *testing.T) {
 	}
 	s := memory.New()
 	l, _ := linker.New(s)
+	ctx := context.Background()
 
-	batch := []linker.Input{
-		input("e00", 0),
-		{
-			EntryID:     chainformat.TombstoneEntryIDPrefix + "e01",
-			EntryType:   chainformat.TombstoneEntryType,
-			Timestamp:   time.Date(2026, 9, 14, 12, 0, 1, 0, time.UTC),
-			ContentHash: tombHash,
-			IngestedAt:  time.Date(2026, 9, 14, 12, 0, 1, 0, time.UTC),
-		},
-		input("e02", 2*time.Second),
+	batch := []linker.Input{input("e00", 0), input("e01", time.Second), input("e02", 2*time.Second)}
+	if _, err := l.Append(ctx, chainID, batch); err != nil {
+		t.Fatalf("append: %v", err)
 	}
-	if _, err := l.Append(context.Background(), chainID, batch); err != nil {
-		t.Fatalf("append with tombstone: %v", err)
+	rows, err := s.Range(ctx, chainID, 0, 100, 0)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("range: %d rows, %v", len(rows), err)
+	}
+	erased := rows[1]
+	erased.EntryType = chainformat.TombstoneEntryType
+	erased.EntryID = chainformat.TombstoneEntryIDPrefix + "e01"
+	erased.ContentHash = tombHash
+	if err := s.WriteBatch(ctx, []store.Entry{erased}); err != nil {
+		t.Fatalf("rewrite as a tombstone: %v", err)
 	}
 
 	got, err := verify.Chain(exported(t, s), verify.Options{})
@@ -570,6 +574,44 @@ func TestTombstoneEntriesLink(t *testing.T) {
 	}
 	if got.TombstonesFound != 1 {
 		t.Errorf("TombstonesFound = %d, want 1", got.TombstonesFound)
+	}
+}
+
+// TestAppendRefusesTombstoneShapedEntries: an entry that uses any of the three
+// markers reserved for erased entries is refused, and nothing is written. One
+// with the tombstone type and id and an ordinary content hash was once
+// appended, and the chain then verified as BROKEN (invalid_tombstone) for good.
+func TestAppendRefusesTombstoneShapedEntries(t *testing.T) {
+	tombHash, err := chainformat.GenerateTombstoneContentHash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]func(in *linker.Input){
+		"tombstone type and id, ordinary content hash": func(in *linker.Input) {
+			in.EntryType, in.EntryID = chainformat.TombstoneEntryType, chainformat.TombstoneEntryIDPrefix+"x"
+		},
+		"tombstone type alone":   func(in *linker.Input) { in.EntryType = chainformat.TombstoneEntryType },
+		"tomb_ id alone":         func(in *linker.Input) { in.EntryID = chainformat.TombstoneEntryIDPrefix + "x" },
+		"tombstone content hash": func(in *linker.Input) { in.ContentHash = tombHash },
+		"a fully shaped tombstone": func(in *linker.Input) {
+			in.EntryType, in.EntryID = chainformat.TombstoneEntryType, chainformat.TombstoneEntryIDPrefix+"x"
+			in.ContentHash = tombHash
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			s := memory.New()
+			l, _ := linker.New(s)
+			bad := input("e01", time.Second)
+			mutate(&bad)
+			_, err := l.Append(context.Background(), chainID, []linker.Input{input("e00", 0), bad})
+			if err == nil || !strings.Contains(err.Error(), "reserved for erased") {
+				t.Fatalf("err = %v, want a refusal naming the reserved markers", err)
+			}
+			if rows, _ := s.Range(context.Background(), chainID, 0, 100, 0); len(rows) != 0 {
+				t.Fatalf("%d entries were written by a refused batch", len(rows))
+			}
+		})
 	}
 }
 

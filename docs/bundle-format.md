@@ -598,7 +598,7 @@ bundle `format`, never a negotiation inside v1.
 | Erasure decided by label and hash | by hash, whatever the label; a relabelled erasure is `erasure-invalid` | the label is the attacker's to choose |
 | Checkpoint series: first problem stops it | the same | |
 | A checkpoint key is always required | checkpoints are checked structurally without one (steps a–e), and counted; their signatures are not, and nothing is authenticated by them | a bundle may be checked under record trust alone |
-| Events after the last erasure are judged like any event | `after-erasure` | the sink never writes after an erasure (U3) |
+| Any entry after an erasure is a problem ("entries FOLLOW an erasure record") | `after-erasure` | the sink never writes after an erasure (U3); the folder verifier judged such events like any other until 2026-10-11, which let a forged mid-chain erasure read as a lawful one |
 | `erased` means content and nonce are absent from the folder | `erased` means not disclosed in the bundle | a bundle cannot show absence elsewhere (§1) |
 | Checkpoint files are parsed leniently (Go's case folding, last duplicate key wins) | checkpoint text is held to §3 and §4.4 (exact names, no duplicates) | one grammar for every implementation |
 | An entry of another chain format, or a timestamp outside years 0001–9999, is judged in the folder | `proof sink export` refuses to export it (unrepresentable) | a bundle verifier could only call it a hash mismatch or a shape problem |

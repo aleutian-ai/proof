@@ -202,7 +202,7 @@ func TestCheckpoint_RefusesUnverifiedSeries(t *testing.T) {
 	}
 	other, _ := newSigner(t)
 	done, err := s.Checkpoint(context.Background(), other, nil)
-	if err != nil || !strings.Contains(problemFor(done, cid(t, s, "u-81")), "do not verify under the trusted keys") {
+	if err != nil || !strings.Contains(problemFor(done, cid(t, s, "u-81")), "checked against the trusted keys), so it was not signed: checkpoint 0001") {
 		t.Fatalf("Checkpoint with another key = %+v, %v", done, err)
 	}
 	if _, err := os.Stat(filepath.Join(s.anchorDir(cid(t, s, "u-81")), "0002.json")); !errors.Is(err, os.ErrNotExist) {

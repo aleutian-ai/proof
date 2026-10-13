@@ -214,6 +214,23 @@ func FromWalker(ctx context.Context, subject string, w *verify.Walker, previous 
 	}
 
 	// 2. Establish the claim BEFORE making it: the walk already did.
+	if w.Segment() {
+		// entry_count is counted from the chain's first entry (format-spec
+		// §9.1). An anchor built over entries 5..9 said entry_count=5 and
+		// verified as an anchor over a five-entry chain.
+		return anchor.Anchor{}, errors.New("build: the walker started from a predecessor hash, so it " +
+			"saw a segment; an anchor covers a chain from its first entry")
+	}
+	if previous != nil {
+		if previous.Subject != subject {
+			return anchor.Anchor{}, errors.New("build: the previous anchor is for another subject")
+		}
+		if previous.EntryCount > int64(w.Count()) {
+			return anchor.Anchor{}, fmt.Errorf("build: the previous anchor covers %d entries and the chain "+
+				"has %d: an anchor cannot follow one that covers more", previous.EntryCount, w.Count())
+		}
+	}
+
 	res := w.Result()
 	if res.Verdict == verify.VerdictBroken {
 		detail := "unknown"

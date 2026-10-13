@@ -4,9 +4,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,5 +135,127 @@ func TestForget_ErasesTheOnlyWayToOpenTheEntry(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Fatalf("forget changed the chain: %d entries", len(entries))
+	}
+}
+
+// TestForget_LeavesNoNonceBytesInTheFile: after forget, the nonce's bytes are
+// not in the nonce file. Deleting the key alone left them in a bbolt free page,
+// while the README said forget makes the entry unopenable from this machine.
+//
+// Many nonces are stored first so the deleted one sits on a page of its own
+// neighbours, the case where the review found it left behind.
+func TestForget_LeavesNoNonceBytesInTheFile(t *testing.T) {
+	db, _ := saltedFixture(t)
+	path := noncestore.PathFor(db)
+	ns, err := noncestore.Open(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := ns.Get("c", "salted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	others := map[string][]byte{}
+	for i := 0; i < 500; i++ {
+		others[fmt.Sprintf("other-%03d", i)] = bytes.Repeat([]byte{byte(i), byte(i >> 8), 0x5c}, 11)[:32]
+	}
+	if err := ns.PutBatch("c", others); err != nil {
+		t.Fatal(err)
+	}
+	ns.Close()
+	if raw, _ := os.ReadFile(path); !bytes.Contains(raw, secret) {
+		t.Fatal("control failed: the nonce is not in the file before forget")
+	}
+
+	if code, _, stderr := runWithStdin(t, "", cmdForget, "--db", db, "--chain", "c", "--entry", "salted"); code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, secret) {
+		t.Fatal("the forgotten nonce's bytes are still in the nonce file")
+	}
+	// The other nonces survived the rewrite, and no copy of the file is left.
+	ns, err = noncestore.OpenReadOnly(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ns.Close()
+	if got, err := ns.Get("c", "other-499"); err != nil || !bytes.Equal(got, others["other-499"]) {
+		t.Fatalf("another entry's nonce did not survive the rewrite: %v", err)
+	}
+	left, _ := filepath.Glob(path + ".compact-*")
+	if len(left) != 0 {
+		t.Fatalf("a temporary copy of the nonce file was left behind: %v", left)
+	}
+}
+
+// TestForget_RefusesWhatDoesNotExist: forget reports success only for an entry
+// that is on the chain. A missing entry or chain is an error, and a mistyped
+// --db is an error that creates nothing; each once printed "forgot the nonce"
+// and exited 0, the last after creating an empty database and nonce file.
+func TestForget_RefusesWhatDoesNotExist(t *testing.T) {
+	db, _ := saltedFixture(t)
+	typo := filepath.Join(filepath.Dir(db), "typo.db")
+	for name, args := range map[string][]string{
+		"no such entry":    {"--db", db, "--chain", "c", "--entry", "nope"},
+		"no such chain":    {"--db", db, "--chain", "nope", "--entry", "salted"},
+		"no such database": {"--db", typo, "--chain", "c", "--entry", "salted"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, out, _ := runWithStdin(t, "", cmdForget, args...)
+			if code == exitOK || code == exitUsage {
+				t.Fatalf("exit %d, want an error that is not a usage error", code)
+			}
+			if strings.Contains(out, "forgot the nonce") {
+				t.Fatalf("reported success:\n%s", out)
+			}
+		})
+	}
+	for _, p := range []string{typo, noncestore.PathFor(typo)} {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("forget created %s", p)
+		}
+	}
+	// The nonce it was not asked about is untouched.
+	ns, err := noncestore.OpenReadOnly(noncestore.PathFor(db), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ns.Close()
+	if _, err := ns.Get("c", "salted"); err != nil {
+		t.Fatalf("a refused forget removed a nonce: %v", err)
+	}
+}
+
+// TestForget_AnEntryWithNoNonce: an entry that is on the chain and has no nonce
+// (forgotten already, or a plain digest) is not an error, and is not reported
+// as a nonce forgotten.
+func TestForget_AnEntryWithNoNonce(t *testing.T) {
+	db, _ := saltedFixture(t)
+	code, out, stderr := runWithStdin(t, "", cmdForget, "--db", db, "--chain", "c", "--entry", "digest")
+	if code != exitOK {
+		t.Fatalf("exit %d: %s", code, stderr)
+	}
+	if strings.Contains(out, "forgot the nonce") || !strings.Contains(out, "no nonce is stored") {
+		t.Fatalf("output:\n%s", out)
+	}
+}
+
+// TestDisclose_CreatesNothing: disclose against a mistyped --db fails without
+// creating a database or a nonce file.
+func TestDisclose_CreatesNothing(t *testing.T) {
+	db, content := saltedFixture(t)
+	typo := filepath.Join(filepath.Dir(db), "typo.db")
+	code, _, _ := runWithStdin(t, "", cmdDisclose, "--db", typo, "--chain", "c", "--entry", "salted", "--content", content)
+	if code == exitOK {
+		t.Fatal("disclosed from a database that does not exist")
+	}
+	for _, p := range []string{typo, noncestore.PathFor(typo)} {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("disclose created %s", p)
+		}
 	}
 }

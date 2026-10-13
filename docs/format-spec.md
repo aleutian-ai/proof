@@ -285,9 +285,9 @@ report a break (`invalid_field`, or `invalid_timestamp` for the timestamp) when:
 A hash recomputed over malformed fields can equal the stored one, so the shape
 is checked on its own and not left to the comparison.
 
-A whole chain starts at `global_seq` 0. A verifier given entries that start
-later is verifying a segment and needs the predecessor's chain hash; without it
-the first entry is a break (`sequence_gap`).
+The format does not fix the first `global_seq`: this module's linker starts a
+chain at 0 and the hosted platform's at 1. A verifier MUST NOT treat either as
+a break. `global_seq` must still rise by one from each entry to the next.
 
 **The limitation.** A tombstone's chain hash is taken as stored, so nothing
 links the entries before a tombstone to the entries after it. Whoever can write
@@ -538,6 +538,8 @@ chain_hash = SHA-512(
   context string**, over the canonical bytes of §9.2.
 - The signature is 3309 bytes, written as standard base64 with padding. The
   public key is 1952 bytes.
+- A verifier MUST refuse any other spelling of the signature: a line break
+  inside it, missing padding, or non-zero trailing bits.
 
 ### 9.6 Key ids
 
@@ -563,6 +565,43 @@ To **bind** an anchor to a chain, recompute §9.4 over the entries it covered, a
 the chain was when it was signed: entries `0 … entry_count−1`, not entries added
 since. Use the previous anchor's `chain_hash`, or the seed hash for the first
 anchor.
+
+### 9.8 What a verifier refuses
+
+**Parsing.** An anchor is read strictly: only the member names of §9.1, spelled
+exactly, each at most once; `range` likewise. The subject is under the name its
+version uses (`subject` from v6, `company_id` before), and an anchor carrying
+the other name, or both, is refused. A lenient parser accepts members the
+signature does not cover and lets two readers see two different anchors.
+
+**Counts** (v4 and v6). `entry_count ≥ 1`, `0 < verified_through ≤ entry_count`,
+`created_at_ms ≥ 0`.
+
+**Key id.** An anchor with an empty `signing_key_id` is refused, and a key
+source holds no key under the empty id. A key id is otherwise whatever the key's
+holder assigned (§9.6): a verifier looks it up and does not derive it.
+
+**The predecessor, named twice.** `previous_anchor_id` is the seed id exactly
+when the predecessor hash used in §9.4 is the seed hash. Disagreement is
+`predecessor_mismatch`, not a bind.
+
+**A segment.** `entry_count` is counted from the chain's first entry. A verifier
+MUST NOT bind an anchor to entries it verified from a predecessor hash, and a
+producer MUST NOT build one over them.
+
+**A series.** Several anchors over one chain are a series, oldest first, and a
+verifier given more than one checks all of:
+
+- every anchor is for the same subject;
+- the first names the seed id; each later one names the `anchor_id` of the one
+  before and binds with that anchor's `chain_hash`;
+- `entry_count` strictly rises;
+- `created_at_ms` does not fall;
+- each binds to the prefix of its own length and its signature verifies.
+
+The first failure ends the check: later anchors are not judged against a
+predecessor that did not verify. A series cannot show that it is complete; an
+anchor deleted from its end leaves a shorter series that verifies.
 
 ---
 
@@ -606,8 +645,11 @@ byte-for-byte, you agree with every other implementation.
 - [ ] `previous_hash` validated as empty-or-128-hex **before** hashing (§3)
 - [ ] Timestamps formatted to exactly six fractional digits, truncated (§4)
 - [ ] A stored timestamp in any other spelling is a break (§4)
-- [ ] Field shapes checked before recomputing; a whole chain starts at `global_seq` 0 (§5.5)
+- [ ] Field shapes checked before recomputing; no rule on the first `global_seq` (§5.5)
 - [ ] One tombstone rule in every path; the entries a tombstone leaves unbound are reported (§5.5)
+- [ ] Anchors parsed strictly; counts, key id, predecessor and segment rules enforced (§9.8)
+- [ ] An anchor series checked as a series (§9.8)
+- [ ] An entries file that is not entries is an error, never a broken chain
 - [ ] Tombstones: format validated, hash **NOT** recomputed (§5.1)
 - [ ] A chain containing a tombstone verifies as **intact**
 - [ ] Erased entries' original ids do not resolve (§5.4)

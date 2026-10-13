@@ -116,7 +116,7 @@ func TestCommit_NotRegisteredWithoutDB(t *testing.T) {
 // read-only, and no import tool exists. Importing trusts hashes from the input,
 // which over MCP means trusting a prompt.
 func TestExactlyOneToolWrites(t *testing.T) {
-	tools := toolNames(t, connectWith(t, commitConfig{db: newCommitDB(t)}))
+	tools := toolNames(t, connectWith(t, serverConfig{db: newCommitDB(t)}))
 	var writers []string
 	for name, tool := range tools {
 		if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
@@ -140,7 +140,7 @@ func TestExactlyOneToolWrites(t *testing.T) {
 
 func TestCommit_ContentRoundTrip(t *testing.T) {
 	db := newCommitDB(t)
-	cs := connectWith(t, commitConfig{db: db})
+	cs := connectWith(t, serverConfig{db: db})
 
 	before := time.Now().UTC().Add(-time.Second)
 	out, errText := commitCall(t, cs, map[string]any{"chain": "agent-7", "entries": contents(3)})
@@ -198,7 +198,7 @@ func TestCommit_ContentRoundTrip(t *testing.T) {
 
 func TestCommit_ContentHashIsStoredAsGiven(t *testing.T) {
 	db := newCommitDB(t)
-	cs := connectWith(t, commitConfig{db: db})
+	cs := connectWith(t, serverConfig{db: db})
 	h := strings.Repeat("ab", 64)
 	out, errText := commitCall(t, cs, map[string]any{
 		"chain": "artifacts", "entries": []any{map[string]any{"content_hash": h}},
@@ -218,7 +218,7 @@ func TestCommit_ContentHashIsStoredAsGiven(t *testing.T) {
 // TestCommit_ChainsAreIndependent: topics and users are separate chains.
 func TestCommit_ChainsAreIndependent(t *testing.T) {
 	db := newCommitDB(t)
-	cs := connectWith(t, commitConfig{db: db})
+	cs := connectWith(t, serverConfig{db: db})
 	for _, c := range []string{"payments", "auth", "payments"} {
 		if _, e := commitCall(t, cs, map[string]any{"chain": c, "entries": contents(1)}); e != "" {
 			t.Fatal(e)
@@ -238,7 +238,7 @@ func TestCommit_ChainsAreIndependent(t *testing.T) {
 
 func TestCommit_Refusals(t *testing.T) {
 	db := newCommitDB(t)
-	cs := connectWith(t, commitConfig{db: db, chains: map[string]bool{"allowed": true, "other": true}})
+	cs := connectWith(t, serverConfig{db: db, chains: map[string]bool{"allowed": true, "other": true}})
 	// Give the file real content, so "unchanged" is a meaningful assertion.
 	if _, e := commitCall(t, cs, map[string]any{"chain": "allowed", "entries": contents(2)}); e != "" {
 		t.Fatal(e)
@@ -310,7 +310,7 @@ func TestCommit_Refusals(t *testing.T) {
 
 // TestCommit_Boundaries: exactly at each cap is accepted.
 func TestCommit_Boundaries(t *testing.T) {
-	cs := connectWith(t, commitConfig{db: newCommitDB(t)})
+	cs := connectWith(t, serverConfig{db: newCommitDB(t)})
 	if _, e := commitCall(t, cs, map[string]any{"chain": "c", "entries": contents(maxCommitEntries)}); e != "" {
 		t.Errorf("exactly %d entries refused: %s", maxCommitEntries, e)
 	}
@@ -323,6 +323,39 @@ func TestCommit_Boundaries(t *testing.T) {
 	}
 }
 
+// TestCommit_RefusedOnceTheDatabaseReachesItsLimit: --max-db-bytes stops a
+// model that calls commit in a loop from filling the disk. The check is made
+// before the write, so a file just under the limit still takes one more call.
+func TestCommit_RefusedOnceTheDatabaseReachesItsLimit(t *testing.T) {
+	db := newCommitDB(t)
+	info, err := os.Stat(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := os.ReadFile(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	atLimit := connectWith(t, serverConfig{db: db, maxDBBytes: info.Size()})
+	_, errText := commitCall(t, atLimit, map[string]any{"chain": "c", "entries": contents(1)})
+	if !strings.Contains(errText, "--max-db-bytes") || !strings.Contains(errText, "nothing was committed") {
+		t.Fatalf("want a refusal naming --max-db-bytes and saying nothing was committed, got %q", errText)
+	}
+	now, err := os.ReadFile(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(now, snapshot) {
+		t.Fatal("a commit refused for size changed the database")
+	}
+
+	underLimit := connectWith(t, serverConfig{db: db, maxDBBytes: info.Size() + 1})
+	if _, errText := commitCall(t, underLimit, map[string]any{"chain": "c", "entries": contents(1)}); errText != "" {
+		t.Fatalf("a commit under the limit was refused: %s", errText)
+	}
+}
+
 // TestCommit_BusyDatabaseCommitsNothing: another process holding the file gets a
 // clear, retryable error, and nothing is written.
 func TestCommit_BusyDatabaseCommitsNothing(t *testing.T) {
@@ -331,7 +364,7 @@ func TestCommit_BusyDatabaseCommitsNothing(t *testing.T) {
 	t.Cleanup(func() { dbLockTimeout = old })
 
 	db := newCommitDB(t)
-	cs := connectWith(t, commitConfig{db: db})
+	cs := connectWith(t, serverConfig{db: db})
 	holder, err := boltstore.Open(db)
 	if err != nil {
 		t.Fatal(err)
@@ -352,6 +385,10 @@ func TestCommit_BusyDatabaseCommitsNothing(t *testing.T) {
 
 func TestParseFlags(t *testing.T) {
 	dir := t.TempDir()
+	notADir := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(notADir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name    string
 		args    []string
@@ -364,6 +401,14 @@ func TestParseFlags(t *testing.T) {
 		{"chains without db", []string{"--chains", "x"}, "only applies with --db"},
 		{"bad chain id", []string{"--db", filepath.Join(dir, "c.db"), "--chains", "ok,Not-Ok"}, "not a valid chain id"},
 		{"unopenable db", []string{"--db", filepath.Join(dir, "missing", "d.db"), "--chains", "*"}, "--db"},
+		{"root", []string{"--root", dir}, ""},
+		{"root that does not exist", []string{"--root", filepath.Join(dir, "missing")}, "--root"},
+		{"root that is a file", []string{"--root", notADir}, "is not a directory"},
+		{"db size limit", []string{"--db", filepath.Join(dir, "e.db"), "--chains", "*", "--max-db-bytes", "4096"}, ""},
+		{"no db size limit", []string{"--db", filepath.Join(dir, "f.db"), "--chains", "*", "--max-db-bytes", "0"}, ""},
+		{"negative db size limit", []string{"--db", filepath.Join(dir, "g.db"), "--chains", "*", "--max-db-bytes", "-1"}, "must not be negative"},
+		{"db size limit without db", []string{"--max-db-bytes", "4096"}, "only applies with --db"},
+		{"stray argument", []string{"extra"}, "unexpected argument"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -378,6 +423,27 @@ func TestParseFlags(t *testing.T) {
 				if tc.name == "db with any chain" && cfg.chains != nil {
 					t.Errorf("'*' must mean any chain, got allowlist %v", cfg.chains)
 				}
+				if tc.name == "db with any chain" && cfg.maxDBBytes != defaultMaxDBBytes {
+					t.Errorf("max-db-bytes defaults to %d, want %d", cfg.maxDBBytes, defaultMaxDBBytes)
+				}
+				if tc.name == "db size limit" && cfg.maxDBBytes != 4096 {
+					t.Errorf("max-db-bytes = %d, want 4096", cfg.maxDBBytes)
+				}
+				if tc.name == "no db size limit" && cfg.maxDBBytes != 0 {
+					t.Errorf("max-db-bytes = %d, want 0 (no limit)", cfg.maxDBBytes)
+				}
+				if tc.name == "root" && cfg.root != testRoot(t, dir) {
+					t.Errorf("root = %+v, want %s", cfg.root, dir)
+				}
+				if tc.name == "no flags: read-only" {
+					wd, err := os.Getwd()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if cfg.root != testRoot(t, wd) {
+						t.Errorf("root = %+v, want the working directory %s", cfg.root, wd)
+					}
+				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
@@ -389,7 +455,7 @@ func TestParseFlags(t *testing.T) {
 
 // TestToolsAreTheExpectedSet_WithDB: --db adds commit and nothing else.
 func TestToolsAreTheExpectedSet_WithDB(t *testing.T) {
-	got := toolNames(t, connectWith(t, commitConfig{db: newCommitDB(t)}))
+	got := toolNames(t, connectWith(t, serverConfig{db: newCommitDB(t)}))
 	want := []string{"verify_chain", "compute_chain_hash", "canonicalize_leaf", "verify_inclusion",
 		"verify_anchor", "verify_bundle", "explain_trust_model", "commit"}
 	if len(got) != len(want) {
@@ -420,7 +486,7 @@ func storedNonce(t *testing.T, db, chain, entryID string) []byte {
 // its type, so it cannot mimic another writer's types.
 func TestCommit_LabelIsNamespaced(t *testing.T) {
 	db := newCommitDB(t)
-	cs := connectWith(t, commitConfig{db: db})
+	cs := connectWith(t, serverConfig{db: db})
 	out, e := commitCall(t, cs, map[string]any{"chain": "c", "entries": []any{
 		map[string]any{"content": "x", "label": "agent-action"},
 	}})
@@ -442,7 +508,7 @@ func TestCommit_ParallelCallsBothSucceed(t *testing.T) {
 	t.Cleanup(func() { dbLockTimeout = old })
 
 	db := newCommitDB(t)
-	cs := connectWith(t, commitConfig{db: db})
+	cs := connectWith(t, serverConfig{db: db})
 	errs := make(chan string, 4)
 	for i := 0; i < 4; i++ {
 		go func() {
@@ -477,7 +543,7 @@ func TestCommit_SurvivesALeaseLeftByACrash(t *testing.T) {
 	}
 	st.Close() // no Release: the writer "crashed"
 
-	cs := connectWith(t, commitConfig{db: db})
+	cs := connectWith(t, serverConfig{db: db})
 	if _, e := commitCall(t, cs, map[string]any{"chain": "c", "entries": contents(1)}); e != "" {
 		t.Fatalf("the chain is still locked by a dead writer: %s", e)
 	}

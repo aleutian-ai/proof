@@ -30,8 +30,8 @@ Fixes from an external review of `6a77fa3` (2026-10-10).
 - **The verifier checks field shapes.** *(Breaking.)* A chain or content hash
   that is not a digest, a negative sequence number or a v2 entry with no run id
   is a break, new type `invalid_field`, even when the entry hashes to its stored
-  chain hash. A whole chain starts at `global_seq` 0; entries that start later
-  are a segment and need `Options.PreviousHash`.
+  chain hash. The first `global_seq` is not constrained: proof's linker starts
+  at 0 and the hosted platform's at 1.
 - **A stored timestamp has one spelling.** *(Breaking.)* It must be exactly
   `YYYY-MM-DDTHH:MM:SS.ffffffZ` (new constant `verify.TimestampLayout`). Another
   offset, no fraction or more than six digits is `invalid_timestamp`: each
@@ -61,6 +61,130 @@ Fixes from an external review of `6a77fa3` (2026-10-10).
   code, from the Go runtime. *(Not fixed: the paths that write still panic on a
   damaged file. Recovering there hangs, because bbolt's close waits on a lock
   the failed transaction holds.)*
+
+- **A Merkle tree size above 2^62 no longer loops forever.** The split
+  computation doubled past the integer range, so `merkle.VerifyInclusion` and
+  `VerifyConsistency` never returned for such a size. The MCP
+  `verify_inclusion` tool takes the size from its caller: one call pinned a CPU
+  core. That tool also refuses a proof of more than 63 nodes.
+- **Anchors are parsed strictly.** *(Breaking.)* Only the member names an
+  anchor has, spelled exactly, each once; the subject under the name its
+  version uses. An anchor with unknown members, upper-case member names, a
+  repeated member or a v6 `company_id` parsed and verified with `Bound=true`.
+- **Anchor rules that were signed and never checked.** *(Breaking.)*
+  `verified_through` above `entry_count`, `entry_count` below 1 and a negative
+  `created_at_ms` are refused (v4, v6). A signature with a line break in its
+  base64, an anchor with no `signing_key_id` and a key ring entry under the
+  empty id are refused. `previous_anchor_id` and the predecessor hash must
+  agree about whether an anchor is the first: new outcome
+  `predecessor_mismatch`.
+- **An anchor is never built over, or bound to, a mid-chain segment.**
+  `build.FromWalker` and `Walker.VerifyAnchor` refuse a walker that started
+  from a predecessor hash (new `Walker.Segment`). A walker over entries 5..9
+  produced `entry_count=5` and verified as an anchor over a five-entry chain.
+  `build` also refuses a previous anchor for another subject or one that covers
+  more entries than the chain.
+- **`verify.Series` and `verify.VerifyAnchorSeries`.** The rules that make
+  several anchors a series (same subject, seed then predecessor ids, rising
+  counts, time not going back) were enforced by the sink alone. They are now
+  exported, and the sink uses them.
+- **`verify.DecodeEntries`; `proof verify` on a file that is not entries is
+  exit 3.** *(Breaking.)* An export bundle, `{}` or `null` was read as one
+  entry with empty fields and reported `BROKEN`. Entries with a repeated member
+  or one spelled in another case are refused. The MCP server uses the same
+  decoder.
+- **`proof sink verify-bundle` and package `exportbundle`: the Go reference
+  verifier for export bundles** (`docs/bundle-format.md` rev 3.2).
+  `proof sink verify-bundle <bundle.json> [--key F]… [--record-trust F]… [--json]`
+  verifies a bundle without the sink. Exit 0 ok · 1 failed · 2 usage or a bad
+  bundle or key file · 3 unreadable bundle · 4 unauthenticated · 5 internal
+  error. Its output says it is the writer's own implementation, not an
+  independent one. It was documented and did not exist; `proof verify
+  bundle.json` printed a false `BROKEN`. Written from the specification, not
+  from folder verification: a strict one-pass reader in place of
+  `encoding/json`, every §5 limit enforced while reading, and no import of
+  `sink`, so a recipient does not compile in bbolt. It reproduces all 114 cases
+  of `bundle_v1_vectors.json` as whole results, which no Go test judged before.
+- **proof-mcp reads files only inside `--root`.** *(Breaking.)* New launch
+  flag `--root DIR`, default the working directory. Relative paths are relative
+  to it, absolute paths must be under it, and a symbolic link that leaves it is
+  refused. A path outside it gets one fixed error whatever is there. Any path
+  on the machine was accepted before, and the error text said whether it
+  existed and what it was. Errors no longer carry anything from the JSON or key
+  parser: `verify_anchor` on a non-JSON file returned the file's first byte.
+- **proof-mcp: what a key establishes is set at launch, never by a tool
+  call.** *(Breaking.)* `verify_anchor` no longer takes `key_trust`; a call
+  that sends it is rejected. A key named in a call is always `provided`. New
+  repeatable flag `--trusted-key LEVEL=PATH` (`platform` or `self`) binds a key
+  to a level. The argument alone used to turn any key into "a third party
+  attests to this chain".
+- **proof-mcp: `verify_chain` proves nothing about a broken chain.**
+  *(Breaking.)* `proven` said "Nothing was edited…" beside `"verdict":"BROKEN"`.
+  With an erased entry, `proven` covers only the entries after the last one.
+  New output fields `last_tombstone` (`verify_chain`), `tombstones` and
+  `entries_not_bound` (`verify_anchor`).
+- **proof-mcp: bounds.** Files are opened once and read through a hard byte
+  limit; `verify_bundle` refuses a manifest of more than 10,000 files;
+  `verify_inclusion` declares its bounds in its schema; new flag
+  `--max-db-bytes N` (default 1 GiB, 0 for none) refuses `commit` once the
+  database reaches it. A stray positional argument now fails the launch.
+- **The linker refuses entries shaped like erased ones.** *(Breaking.)* An
+  input with entry type `tombstone`, an id starting `tomb_` or a `TOMBSTONE:`
+  content hash is refused by `linker.Append` and `AppendChains`, so by
+  `proof commit` too. One with the type and id and an ordinary content hash was
+  appended, and the chain then verified as `BROKEN` (`invalid_tombstone`) for
+  good. A tombstone replaces an entry in the store; it is never appended.
+- **Sink: an entry after an erasure record is a verification problem.** An
+  erasure record is keyless. Someone with write access to `evidence.db` and
+  `.secrets` could append one, add an ordinary event after it and delete the
+  content before it; `Verify` counted from the last erasure and reported the
+  destroyed evidence as lawfully erased, with no problem. An erasure anywhere
+  but the end of a chain now fails, and so does any erasure on a chain the
+  subject index still binds.
+- **Sink: `Checkpoint` signs nothing that does not verify.** It ran the hash
+  walk and the existing series check only, so it signed over content that had
+  been modified or deleted and over the forged erasure above. It now runs the
+  whole per-chain verification first and reports a failing chain in
+  `Checkpointed.Problem`. *(Not fixed, needs a design decision: a forged
+  erasure at the end of a chain with its index row removed still verifies and
+  is then covered by a checkpoint; and a deleted `anchors/<chain>/` is silently
+  restarted at `0001.json`. Both are now stated in sink-format.md §6.)*
+- **Sink: export checks disclosed content against its commitment.** Modified
+  content was exported and counted as disclosed; it is now
+  `ErrExportUnrepresentable`.
+- **Sink: a secrets file or subject index without its buckets is
+  `ErrCorrupt`.** `proof sink verify` exits 1; it was a plain error, exit 3.
+- **Sink: checkpoint files are synced.** The file, its directory and a newly
+  made `anchors/<chain>/` are fsynced before `Checkpoint` reports success. A
+  power loss could leave an empty `000N.json`, which fails Verify and blocks
+  every later checkpoint of that chain.
+- **`proof forget` takes the nonce out of the nonce file.** *(Breaking: exit
+  codes.)* It deleted the key and left the 32 bytes in a bbolt free page. It
+  now rewrites the file after the delete, under the evidence database's lock. A
+  missing entry, chain or database is exit 3 and creates nothing; each printed
+  "forgot the nonce" and exited 0, and a mistyped `--db` created an empty
+  database and nonce file. `proof disclose` creates nothing either.
+
+### Added
+
+- **Verifier verdict vectors** (`fixtures/testdata/verify_verdict_vectors.json`,
+  `fixtures.VerifyVerdictVectors`). 77 cases written by
+  `scripts/verdict-vectors.py` from `docs/format-spec.md` alone: what a
+  verifier concludes about whole chains, entries files, anchor text and keyless
+  binds, where the other vectors pin single hashes. Each is a valid chain with
+  one stated defect. Go, the Python SDK and the JavaScript SDK each pass all 77.
+  They include the tombstone limitation as a pinned case: a tampered chain that
+  verifies, with the count a verifier must report.
+- **`proof version`** (and `--version`): the release and commit a binary was
+  built from. The image build passes the release in, since its build context
+  has no `.git`.
+- **`scripts/release-check.sh`**: the gate before a tag. gofmt, `go vet` and the
+  tests for both modules; the vectors regenerated byte for byte from their
+  scripts; vendored vector copies against the manifest; then `go vet` and
+  `go test -race` on Linux in a container, with the tree copied into the
+  container's own filesystem.
+- **README: "Known limitations of the current formats"**, seven items, stated
+  as holes and not as caveats.
 
 ### Fixed
 

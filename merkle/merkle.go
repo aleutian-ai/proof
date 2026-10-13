@@ -153,8 +153,11 @@ func RootFromLeaves(leaves [][]byte) []byte {
 //
 //   - int: the split index k (1 <= k < n).
 func largestPowerOfTwoLessThan(n int) int {
+	// Written as k <= (n-1)/2, not k*2 < n: for n above 2^62 the doubling
+	// overflows to a negative number and then to zero, and the loop never ends.
+	// A tree size comes from a caller (the MCP verify_inclusion tool takes one).
 	k := 1
-	for k<<1 < n {
+	for k <= (n-1)>>1 {
 		k <<= 1
 	}
 	return k

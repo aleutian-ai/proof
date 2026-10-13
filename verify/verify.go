@@ -236,10 +236,14 @@ type Options struct {
 	// PreviousHash is the chain hash the FIRST supplied entry links from.
 	//
 	// Empty — the zero value, and the usual case — means these entries begin a
-	// chain, and the first must be at global_seq 0. Set it to verify a SEGMENT:
-	// entries taken from the middle of a chain link from their predecessor, not
-	// from nothing, and the first is at global_seq 1 or later.
-	// [store.Reader.Predecessor] exists to supply it.
+	// chain. Set it to verify a SEGMENT: entries taken from the middle of a
+	// chain link from their predecessor, not from nothing, so verifying them
+	// against an empty previous hash reports a break on the first entry of a
+	// perfectly good segment. [store.Reader.Predecessor] exists to supply it.
+	//
+	// The first entry's global_seq is NOT checked against either case. The
+	// format does not fix where a chain starts: this module's linker starts at
+	// 0 and the hosted platform's at 1.
 	//
 	// This does NOT establish that the predecessor is genuine. It says "these
 	// entries link, given that one", which is the most a segment can support.
@@ -325,6 +329,11 @@ func NewWalker(opts Options) *Walker {
 		previousHash: opts.PreviousHash}
 }
 
+// Segment reports whether the walk started from a predecessor hash
+// (Options.PreviousHash): it is verifying a segment, not a chain from its
+// first entry.
+func (w *Walker) Segment() bool { return w.opts.PreviousHash != "" }
+
 // Count is how many entries have been added.
 func (w *Walker) Count() int { return w.res.EntriesVerified }
 
@@ -382,6 +391,31 @@ func (w *Walker) Add(e Entry) {
 	if chainformat.IsTombstone(e.EntryType, e.EntryID) {
 		w.res.TombstonesFound++
 		w.res.LastTombstone = i
+		// Its hash is not recomputed, but what it declares is still checked:
+		// a tombstone naming a format this build does not implement, or a v3
+		// one carrying v2's fields, once passed because this branch returned
+		// before the format dispatch below.
+		switch chainformat.NormalizeFormatVersion(e.FormatVersion) {
+		case chainformat.FormatV2:
+		case chainformat.FormatV3:
+			if e.RunID != "" || e.SequenceNum != 0 {
+				w.addBreak(Break{
+					Position: i, EntryID: e.EntryID, Type: BreakFormatFieldMisuse,
+					Detail: "a v3 entry must not carry run_id or sequence_num; neither is bound into its hash",
+				})
+			}
+		default:
+			w.addBreak(Break{
+				Position: i, EntryID: e.EntryID, Type: BreakUnknownFormat,
+				Detail: fmt.Sprintf("chain hash format version %d is not implemented by this build", e.FormatVersion),
+			})
+		}
+		if e.GlobalSeq < 0 {
+			w.addBreak(Break{
+				Position: i, EntryID: e.EntryID, Type: BreakInvalidField,
+				Detail: fmt.Sprintf("globalSeq must be non-negative, got %d", e.GlobalSeq),
+			})
+		}
 		if !chainformat.ValidateTombstoneContentHash(e.ContentHash) {
 			w.addBreak(Break{
 				Position: i, EntryID: e.EntryID, Type: BreakInvalidTombstone,
@@ -473,31 +507,13 @@ func (w *Walker) Add(e Entry) {
 	w.previousHash = expected
 }
 
-// checkStart checks where the walk begins: a whole chain starts at global_seq 0
-// and links from nothing; a segment starts later and links from a well-formed
+// checkStart checks what the walk links from: nothing, or a well-formed
 // predecessor hash.
 func (w *Walker) checkStart(e Entry) {
-	if w.opts.PreviousHash == "" {
-		if e.GlobalSeq != 0 {
-			w.addBreak(Break{
-				Position: 0, EntryID: e.EntryID, Type: BreakSequenceGap,
-				Detail: fmt.Sprintf("a chain starts at global_seq 0, and the first entry is at %d; "+
-					"to verify a segment, supply its predecessor's chain hash", e.GlobalSeq),
-			})
-		}
-		return
-	}
-	if !chainHashPattern.MatchString(w.opts.PreviousHash) {
+	if w.opts.PreviousHash != "" && !chainHashPattern.MatchString(w.opts.PreviousHash) {
 		w.addBreak(Break{
 			Position: 0, EntryID: e.EntryID, Type: BreakInvalidField,
 			Detail: "the supplied previous hash is not 128 lowercase hex characters",
-		})
-	}
-	if e.GlobalSeq < 1 {
-		w.addBreak(Break{
-			Position: 0, EntryID: e.EntryID, Type: BreakSequenceGap,
-			Detail: fmt.Sprintf("a segment has a predecessor, so its first entry is at global_seq 1 "+
-				"or later; got %d", e.GlobalSeq),
 		})
 	}
 }

@@ -44,6 +44,10 @@
     "v3_golden_capture_request.json": {
       "sha256": "8c3d7add4cf6fe7c764d963ef59d764b8a314b9d708a22ddc48b9faab7bfedea",
       "bytes": 8554
+    },
+    "verify_verdict_vectors.json": {
+      "sha256": "5a28a7cac4c452ec35854c8535aeb67b108d5ecdf859031d6113be7536342448",
+      "bytes": 166360
     }
   }
 }

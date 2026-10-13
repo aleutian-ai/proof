@@ -21,6 +21,7 @@ import (
 
 	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/commitment"
+	"github.com/aleutian-ai/proof/linker"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 )
@@ -591,12 +592,29 @@ func TestExport_AmbiguousListedID(t *testing.T) {
 	id := "sink-" + strings.Repeat("e", 32)
 	for _, subj := range []string{"u-81", "u-90"} {
 		chain := cid(t, s, subj)
-		appendRaw(t, s, chain, id)
+		// A real commitment: export checks that disclosed content opens it, and
+		// this test is about the id, not the content.
+		c, nonce, err := commitment.Salted([]byte("x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := s.openStore(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, _ := linker.New(st)
+		now := time.Now().UTC()
+		_, err = l.Append(context.Background(), chain, []linker.Input{{EntryID: id,
+			EntryType: EntryTypeEvent, Timestamp: now, IngestedAt: now, ContentHash: c}})
+		st.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := withSecrets(s, func(tx *bolt.Tx) error {
 			if err := tx.Bucket(contentBucket).Put(rowKey(chain, id), []byte("x")); err != nil {
 				return err
 			}
-			return tx.Bucket(noncesBucket).Put(rowKey(chain, id), bytes.Repeat([]byte{2}, 32))
+			return tx.Bucket(noncesBucket).Put(rowKey(chain, id), nonce)
 		}); err != nil {
 			t.Fatal(err)
 		}

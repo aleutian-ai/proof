@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/aleutian-ai/proof/chainformat"
+	"github.com/aleutian-ai/proof/commitment"
 	"github.com/aleutian-ai/proof/internal/fault"
 	"github.com/aleutian-ai/proof/store"
 )
@@ -653,6 +654,11 @@ func (ex *exporter) disclosure(p *pageFiles, pos int, chain string, r store.Entr
 		return disclosed{}, fmt.Errorf("%w: chain #%d: a live event's content or nonce is missing", ErrExportUnrepresentable, pos)
 	case len(nonce) != commitmentNonceSize:
 		return disclosed{}, fmt.Errorf("%w: chain #%d: a live event's stored nonce is damaged", ErrExportUnrepresentable, pos)
+	case !commitment.Verify(r.ContentHash, nonce, content):
+		// Disclosing it would hand a recipient content the chain does not
+		// commit to, in a bundle whose summary counts it as disclosed.
+		return disclosed{}, fmt.Errorf("%w: chain #%d: a live event's stored content does not open its "+
+			"commitment (it was modified)", ErrExportUnrepresentable, pos)
 	}
 	ex.cw.str(`,"disclosed":{"content":`)
 	ex.cw.json(base64.StdEncoding.EncodeToString(content))

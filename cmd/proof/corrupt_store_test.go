@@ -87,3 +87,46 @@ func TestCorruptStore_ExportIsAnIOError(t *testing.T) {
 		t.Fatalf("exit %d, want %d\nstderr: %s", code, exitIOError, errOut)
 	}
 }
+
+// TestVerify_AFileThatIsNotEntriesIsNotABrokenChain: `proof verify` on a file
+// that is some other JSON exits 3, could not read it. It printed "BROKEN —
+// first break at entry 0" and exited 1 for an export bundle, `{}` and `null`:
+// a tamper verdict about a file that was never a chain.
+func TestVerify_AFileThatIsNotEntriesIsNotABrokenChain(t *testing.T) {
+	for name, body := range map[string]string{
+		"an export bundle": `{"format":"aleutian.proof.bundle.v1","chains":[]}`,
+		"an empty object":  `{}`,
+		"null":             `null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "input.json")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			code, out, errOut := runMain(t, "verify", path)
+			if code != exitIOError {
+				t.Fatalf("exit %d, want %d\nstdout: %s\nstderr: %s", code, exitIOError, out, errOut)
+			}
+			if strings.Contains(out, "BROKEN") {
+				t.Fatalf("reported a verdict:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestVersion: the binary says what it is, and exits 0. `proof version` and
+// `--version` were unknown commands, exit 2.
+func TestVersion(t *testing.T) {
+	for _, arg := range []string{"version", "--version"} {
+		code, out, _ := runMain(t, arg)
+		if code != exitOK || !strings.HasPrefix(out, "proof ") {
+			t.Fatalf("%s: exit %d, output %q", arg, code, out)
+		}
+	}
+	old := version
+	version = "v9.9.9"
+	defer func() { version = old }()
+	if got := versionString(); !strings.HasPrefix(got, "proof v9.9.9") {
+		t.Fatalf("versionString() = %q", got)
+	}
+}

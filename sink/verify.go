@@ -680,7 +680,7 @@ const (
 	indexInconsistent = "the subject index is inconsistent for this chain (a row that disagrees with " +
 		"the rest of the index); repair it by hand. Restoring an older copy is no fix: it re-links " +
 		"every subject erased since"
-	indexRelinked = "the subject index binds a subject to this chain, which ends with its erasure: the " +
+	indexRelinked = "the subject index binds a subject to this chain, which holds an erasure record: the " +
 		"index was restored from before an erasure, or edited, and re-links an erased subject; run " +
 		"`proof sink erase --resume` to forget it again"
 )
@@ -734,8 +734,20 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		return cr, err
 	}
 	cr.Entries = total
+	// Nothing follows an erasure: the sink never writes to a chain after
+	// erasing it. An erasure record is keyless, so anyone who can write the
+	// folder can append one, add an entry after it, and delete the content
+	// before it; counted from the last erasure, that read as a lawful erasure
+	// of everything before. An erasure anywhere but the end is a problem.
+	if lastErasure >= 0 && !endsErased {
+		cr.Problems = append(cr.Problems, fmt.Sprintf("entries FOLLOW an erasure record (entry %d of %d): "+
+			"the sink never writes to a chain after erasing it, so the erasure was written into the "+
+			"folder by something else, or entries were added after a real one", lastErasure, total))
+	}
 	switch {
-	case row == IndexLive && endsErased:
+	case row == IndexLive && lastErasure >= 0:
+		// Wherever the erasure sits: a chain the index still binds to a subject
+		// holds no erasure at all.
 		cr.Index = IndexRelinked
 		cr.Problems = append(cr.Problems, indexRelinked)
 	case row == IndexLive:
@@ -786,7 +798,7 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 
 	// Pass 2: walk, bind checkpoints, check content (and record signatures).
 	w := verify.NewWalker(verify.Options{MaxBreaks: 1})
-	var series *seriesCheck
+	var series *verify.Series
 	if problem != "" {
 		cr.Problems = append(cr.Problems, problem)
 	} else {
@@ -819,7 +831,7 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		ve := toVerifyEntry(e)
 		w.Add(ve)
 		if series != nil {
-			series.reached(w)
+			series.Reached(w)
 		}
 		if contentErr == nil {
 			contentErr = s.checkEntry(&cr, sec, ve, i, lastErasure, prevSeq, unmatched)
@@ -849,12 +861,12 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 	}
 	covered := int64(0)
 	if series != nil {
-		series.finish(total)
-		cr.Problems = append(cr.Problems, series.problems...)
-		cr.Checkpoints, covered = series.verified, series.covered
+		series.Finish(total)
+		cr.Problems = append(cr.Problems, series.Problems()...)
+		cr.Checkpoints, covered = series.Verified(), series.Covered()
 	}
 	cr.Unanchored = total - int(covered)
-	if cr.Index == IndexErasedUnanchored && series != nil && len(series.problems) == 0 && int(covered) == total {
+	if cr.Index == IndexErasedUnanchored && series != nil && len(series.Problems()) == 0 && int(covered) == total {
 		cr.Index = IndexErased
 	}
 
@@ -1055,85 +1067,12 @@ func (t signatureTally) report(cr *ChainReport) {
 	line(t.bad, "a BAD record signature: the stored entry is not what was signed", t.firstBad)
 }
 
-// seriesCheck verifies a chain's checkpoint series during a single walk: each
-// checkpoint is bound when the walk reaches its last entry. The first problem
-// stops the series; later checkpoints are not reported as verified.
-type seriesCheck struct {
-	chain    string
-	anchors  []anchor.Anchor
-	keys     anchor.KeySource
-	next     int
-	prevHash string
-	prevID   string
-	covered  int64
-	verified int
-	problems []string
-	stopped  bool
-}
-
-func newSeriesCheck(chain string, anchors []anchor.Anchor, keys anchor.KeySource) *seriesCheck {
-	c := &seriesCheck{chain: chain, anchors: anchors, keys: keys,
-		prevHash: anchor.SeedAnchorHash, prevID: anchor.SeedAnchorID}
-	c.checkNext()
-	return c
-}
-
-func (c *seriesCheck) fail(format string, args ...any) {
-	c.problems = append(c.problems, fmt.Sprintf(format, args...))
-	c.stopped = true
-}
-
-// checkNext applies the series rules that need no entries to the next
-// checkpoint, as soon as it becomes the next.
-func (c *seriesCheck) checkNext() {
-	if c.stopped || c.next >= len(c.anchors) {
-		return
-	}
-	a, n := c.anchors[c.next], c.next+1
-	switch {
-	case a.Subject != c.chain:
-		c.fail("checkpoint %04d is for another chain", n)
-	case a.PreviousAnchorID != c.prevID:
-		// The hash already binds the predecessor; checking the id too keeps
-		// this verifier in step with one following format-spec §9.7 literally.
-		c.fail("checkpoint %04d does not name checkpoint %04d as its predecessor", n, n-1)
-	case a.EntryCount <= c.covered:
-		c.fail("checkpoint %04d covers %d entries, no more than checkpoint %04d did: a series must grow",
-			n, a.EntryCount, n-1)
-	}
-}
-
-// reached binds the next checkpoint if the walk has just reached its last entry.
-func (c *seriesCheck) reached(w *verify.Walker) {
-	if c.stopped || c.next >= len(c.anchors) || int64(w.Count()) != c.anchors[c.next].EntryCount {
-		return
-	}
-	a, n := c.anchors[c.next], c.next+1
-	// A checkpoint commits to the chain as it was when signed: it is bound to
-	// exactly the entries it covered, which is what the walker holds now.
-	br, err := w.VerifyAnchor(a, c.prevHash, c.keys)
-	switch {
-	case err != nil:
-		c.fail("checkpoint %04d: %v", n, err)
-		return
-	case !br.Bound || !br.SignatureVerified:
-		c.fail("checkpoint %04d does NOT verify: %s", n, br.Detail)
-		return
-	}
-	c.verified++
-	c.covered = a.EntryCount
-	c.prevHash, c.prevID = a.ChainHash, a.AnchorID
-	c.next++
-	c.checkNext()
-}
-
-// finish reports a checkpoint the walk never reached: it claims more entries
-// than the chain holds.
-func (c *seriesCheck) finish(total int) {
-	if !c.stopped && c.next < len(c.anchors) {
-		c.fail("checkpoint %04d claims %d entries; the chain has %d",
-			c.next+1, c.anchors[c.next].EntryCount, total)
-	}
+// newSeriesCheck checks a chain's checkpoints as a series while the chain is
+// walked: verify.Series, with the sink's file numbering in its problems.
+func newSeriesCheck(chain string, anchors []anchor.Anchor, keys anchor.KeySource) *verify.Series {
+	s := verify.NewSeries(chain, anchors, keys)
+	s.Label = func(n int) string { return fmt.Sprintf("checkpoint %04d", n) }
+	return s
 }
 
 // checkEntry checks one entry's content against the rules of

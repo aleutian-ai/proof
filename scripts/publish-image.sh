@@ -96,6 +96,7 @@ podman manifest rm "proof-mcp:$VERSION" 2>/dev/null || true
 # invalidate podman's layer cache, so a second build with a different commit
 # keeps the FIRST commit's label. --label is applied at commit time.
 podman build --platform "$PLATFORMS" --manifest "proof:$VERSION" \
+    --build-arg "VERSION=$VERSION" \
     --label "org.opencontainers.image.revision=$COMMIT" \
     --label "org.opencontainers.image.version=$VERSION" .
 podman build --platform "$PLATFORMS" --manifest "proof-mcp:$VERSION" --target proof-mcp \

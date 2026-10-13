@@ -104,6 +104,11 @@ func (f *folder) mkdirAll(name string, perm os.FileMode) error {
 		if err := f.root.Mkdir(built, perm); err != nil && !errors.Is(err, os.ErrExist) {
 			return err
 		}
+		// A new directory's name lives in its parent: sync that, or a power
+		// loss can take the directory and the checkpoint written into it.
+		if err := f.syncDir(filepath.Dir(built)); err != nil {
+			return err
+		}
 		if ok, err := f.realDir(built); err != nil || !ok {
 			return fmt.Errorf("%s: %w", built, errNotRealDir)
 		}
@@ -139,7 +144,12 @@ func (f *folder) list(name string) ([]os.DirEntry, error) {
 }
 
 // writeNew creates a file that must not already exist (O_EXCL also refuses a
-// symlink in its place). Checkpoints are written with it.
+// symlink in its place), and makes it durable before returning: the file is
+// synced, then the directory that names it. Checkpoints are written with it.
+//
+// Without the syncs a power loss after "checkpoint signed" could leave the
+// name with no bytes behind it: an empty 000N.json, which Verify fails and
+// Checkpoint refuses to add to, with no way out but deleting the file by hand.
 func (f *folder) writeNew(name string, data []byte, mode os.FileMode) error {
 	w, err := f.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
@@ -150,11 +160,30 @@ func (f *folder) writeNew(name string, data []byte, mode os.FileMode) error {
 		_ = f.root.Remove(name)
 		return fmt.Errorf("sink: write %s: %w", name, err)
 	}
+	if err := w.Sync(); err != nil {
+		w.Close()
+		_ = f.root.Remove(name)
+		return fmt.Errorf("sink: sync %s: %w", name, err)
+	}
 	if err := w.Close(); err != nil {
 		_ = f.root.Remove(name)
 		return fmt.Errorf("sink: close %s: %w", name, err)
 	}
+	if err := f.syncDir(filepath.Dir(name)); err != nil {
+		return fmt.Errorf("sink: sync the directory of %s: %w", name, err)
+	}
 	return nil
+}
+
+// syncDir fsyncs a directory inside the folder, so the names created in it
+// survive a power loss.
+func (f *folder) syncDir(name string) error {
+	d, err := f.root.Open(name)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // readSmall reads a small regular file.

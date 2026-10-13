@@ -260,3 +260,18 @@ var bundleV1Vectors []byte
 //
 //   - None.
 func BundleV1Vectors() []byte { return bundleV1Vectors }
+
+// verifyVerdictVectors was written by scripts/verdict-vectors.py from
+// docs/format-spec.md alone (§4, §5.5, §9.4, §9.8).
+//
+//go:embed testdata/verify_verdict_vectors.json
+var verifyVerdictVectors []byte
+
+// VerifyVerdictVectors returns the verifier verdict vectors as raw JSON: what a
+// verifier concludes about whole chains, entries files, anchor text and keyless
+// binds, where the other vectors pin single hashes.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+func VerifyVerdictVectors() []byte { return verifyVerdictVectors }

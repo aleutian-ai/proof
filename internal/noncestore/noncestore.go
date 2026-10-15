@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -60,8 +61,12 @@ var ErrCorrupt = fault.ErrCorrupt
 var checked safebolt.Checker
 
 // Store is an open nonce file. Not safe for use by more than one process at a
-// time: bbolt's file lock enforces that.
-type Store struct{ db *safebolt.DB }
+// time: bbolt's file lock enforces that. It also holds the nonce file's lock
+// file (see lockFile) until Close.
+type Store struct {
+	db   *safebolt.DB
+	lock *os.File
+}
 
 // PathFor names the nonce file that belongs to an evidence database.
 func PathFor(dbPath string) string { return dbPath + ".nonces" }
@@ -71,12 +76,18 @@ func PathFor(dbPath string) string { return dbPath + ".nonces" }
 // file it is read through once, read-only, and refused with ErrCorrupt if it
 // is damaged, before anything is written.
 func Open(path string, lockTimeout time.Duration) (*Store, error) {
+	lock, err := lockFile(path, syscall.LOCK_EX, lockTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
+	}
 	opts := &bolt.Options{Timeout: lockTimeout}
 	if err := checked.Once(path, opts); err != nil {
+		unlockFile(lock)
 		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
 	}
 	db, err := safebolt.Open(path, 0o600, opts)
 	if err != nil {
+		unlockFile(lock)
 		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
@@ -84,17 +95,23 @@ func Open(path string, lockTimeout time.Duration) (*Store, error) {
 		return err
 	}); err != nil {
 		db.Close()
+		unlockFile(lock)
 		return nil, fmt.Errorf("noncestore: initialise %s: %w", path, err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, lock: lock}, nil
 }
 
 // OpenReadOnly opens an existing nonce file for reading only, under a shared
 // lock. Nothing is created or changed. A file without the nonce bucket is
 // refused rather than read.
 func OpenReadOnly(path string, lockTimeout time.Duration) (*Store, error) {
+	lock, err := lockFile(path, syscall.LOCK_SH, lockTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
+	}
 	db, err := safebolt.Open(path, 0o600, &bolt.Options{Timeout: lockTimeout, ReadOnly: true})
 	if err != nil {
+		unlockFile(lock)
 		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
 	}
 	if err := db.View(func(tx *bolt.Tx) error {
@@ -104,14 +121,74 @@ func OpenReadOnly(path string, lockTimeout time.Duration) (*Store, error) {
 		return nil
 	}); err != nil {
 		db.Close()
+		unlockFile(lock)
 		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, lock: lock}, nil
 }
 
 // Close releases the file. A Store that returned ErrCorrupt is abandoned, not
 // closed (see ErrCorrupt), and Close then returns an error wrapping it.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	err := s.db.Close()
+	unlockFile(s.lock)
+	return err
+}
+
+// lockFile takes the nonce file's lock: a separate file, path + ".lock", that is
+// never renamed or replaced.
+//
+// The nonce file itself cannot carry the lock that Compact needs. Compact
+// writes a fresh copy and renames it over the original, and bbolt's own lock is
+// on the original's inode: a writer that opened the file during the copy would
+// write its nonce into the inode the rename then discards, and the entry it
+// belongs to could never be disclosed. Every Open takes this lock exclusively,
+// every OpenReadOnly shared, and Compact exclusively from before the copy until
+// after the rename, so nothing can open the nonce file while it is replaced.
+//
+// how is syscall.LOCK_EX or LOCK_SH. It waits up to timeout (forever when
+// timeout is zero, as bbolt's own lock does) for the lock.
+func lockFile(path string, how int, timeout time.Duration) (*os.File, error) {
+	f, err := os.OpenFile(path+lockSuffix, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open the lock file: %w", err)
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
+		if err == nil {
+			return f, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			f.Close()
+			return nil, fmt.Errorf("lock the nonce file: %w", err)
+		}
+		if timeout > 0 && time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("lock the nonce file: %w", ErrLocked)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// unlockFile releases and closes a lock taken by lockFile. nil is a no-op.
+func unlockFile(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
+}
+
+// afterCopy, when set, runs between the copy and the rename. Tests only: it is
+// how a writer is made to arrive in that window.
+var afterCopy func()
+
+// lockSuffix names the lock file beside a nonce file.
+const lockSuffix = ".lock"
+
+// ErrLocked means another process held the nonce file past the lock timeout.
+var ErrLocked = errors.New("noncestore: the nonce file is in use by another process")
 
 func key(chainID, entryID string) []byte {
 	k := make([]byte, 0, len(chainID)+1+len(entryID))
@@ -254,9 +331,9 @@ func (s *Store) DeleteChain(chainID string) (int, error) {
 //
 // # Assumptions
 //
-//   - The caller holds whatever serializes writers of this file (the evidence
-//     database's lock): the rewrite replaces the file, and a writer that opened
-//     the old one meanwhile would write to a file that no longer has a name.
+//   - Nothing else need be held: Open, OpenReadOnly and the rewrite all take
+//     the nonce file's lock file, so no writer can open the file while it is
+//     replaced (see lockFile).
 func Forget(path, chainID, entryID string, lockTimeout time.Duration) error {
 	if _, err := os.Lstat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -322,6 +399,12 @@ const compactSuffix = ".compact-"
 //
 //   - As [Forget]'s.
 func Compact(path string, lockTimeout time.Duration) error {
+	// Held from before the copy until after the rename: see lockFile.
+	lock, err := lockFile(path, syscall.LOCK_EX, lockTimeout)
+	if err != nil {
+		return fmt.Errorf("noncestore: compact %s: %w", path, err)
+	}
+	defer unlockFile(lock)
 	dir, base := filepath.Split(path)
 	if dir == "" {
 		dir = "."
@@ -331,6 +414,9 @@ func Compact(path string, lockTimeout time.Duration) error {
 		return err
 	}
 	for _, e := range leftovers {
+		if e.Name() == base+lockSuffix {
+			continue
+		}
 		if strings.HasPrefix(e.Name(), base+compactSuffix) {
 			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove an earlier rewrite's leftover: %w", err)
@@ -365,6 +451,9 @@ func Compact(path string, lockTimeout time.Duration) error {
 	}
 	if err == nil {
 		err = syncPath(tmp)
+	}
+	if err == nil && afterCopy != nil {
+		afterCopy()
 	}
 	if err == nil {
 		err = os.Rename(tmp, path)

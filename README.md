@@ -229,7 +229,7 @@ See [docs/verification-model.md](docs/verification-model.md) and
 $ go install github.com/aleutian-ai/proof/cmd/proof@latest
 ```
 
-The outputs shown here are from v0.4.0. `proof version` prints what your
+The outputs shown here are from v0.4.1. `proof version` prints what your
 binary was built from; in a clone, `go install ./cmd/proof` builds the tree.
 
 `testdata/demo/entries.json` is a five-entry chain that ships with the
@@ -463,11 +463,141 @@ Three things are deliberate:
 - **The private key is never printed.** Not on stdout, not on stderr, not with
   a flag. It exists in one place: the `0600` file you asked for.
 
-`--op-vault <vault>` additionally stores the pair in 1Password through the `op`
-CLI, passing the files by reference so the secret never appears in the process
-list, then reads both stored key files back and checks that each is the key it
-generated. If that fails, the command says so and leaves you the valid files on
-disk.
+`--op-vault <vault>` also stores the pair in 1Password: see the next section.
+
+### Keeping keys in 1Password
+
+`proof` can put a key in 1Password as it creates it, so the private key need
+not live on disk. It does this through the 1Password CLI, `op`, and nothing
+else: no 1Password SDK is compiled in.
+
+**You need:** the `op` CLI on your `PATH`, signed in (`op whoami` prints your
+account), and a vault you can write to. `proof` never handles your 1Password
+credentials; `op` does.
+
+#### Storing a key: `keygen --op-vault`
+
+```console
+$ proof keygen --alg ml-dsa-65 --out-dir ./keys --name optest --op-vault proof-test
+
+ML-DSA-65
+  private  keys/ml-dsa-65-private.pem   (0600 — this is the secret)
+  public   keys/ml-dsa-65-public.pem
+  …
+  1Password  proof-ml-dsa-65-optest (vault proof-test) — stored keys read back and verified
+```
+
+It creates one Secure Note per key, titled `proof-<algorithm>[-<name>][-<slot>]`,
+holding:
+
+| Field | Holds |
+|---|---|
+| `privkey_pem` | the private key file, attached |
+| `pubkey_pem` | the public key file, attached |
+| `fingerprint` | the public key's SHA-512, as text |
+
+The files are passed to `op` by path, so the private key never appears in the
+process list. Then `proof` **reads both attachments back, by item id, and checks
+that each is the key it just generated**: the public key's fingerprint, and the
+fingerprint of the public key derived from the stored private key. It does not
+trust the `fingerprint` text field it wrote itself. If the read-back fails, it
+says so and leaves the key files on disk.
+
+`keygen` keeps its files on disk either way. Delete them yourself once you are
+satisfied, or use `sink init` (below), which removes the one it stores.
+
+#### Checking it yourself
+
+The read-back is proof checking its own work. To check independently:
+
+```console
+$ op item list --vault proof-test
+ID                            TITLE                     VAULT        EDITED
+3xr3xumyu4cta2bhvuok4pirry    proof-ml-dsa-65-optest    proof-test   6 minutes ago
+
+$ diff <(op read "op://proof-test/3xr3xumyu4cta2bhvuok4pirry/pubkey_pem")  keys/ml-dsa-65-public.pem
+$ diff <(op read "op://proof-test/3xr3xumyu4cta2bhvuok4pirry/privkey_pem") keys/ml-dsa-65-private.pem
+```
+
+Both `diff`s print nothing: the stored keys are the files, byte for byte. Use
+the item **id** in the path rather than the title. `keygen --force` with the
+same name creates a second item with the same title, and a read by title is
+then ambiguous.
+
+#### A sink whose checkpoint key lives only in 1Password: `sink init --op-vault`
+
+A sink has two keys (see [sink/README.md](sink/README.md)): the record key signs
+every commit and must be online; the checkpoint key signs checkpoints and is
+best kept elsewhere. `--op-vault` stores the **checkpoint** key in 1Password and
+removes its private file from disk. The record key stays on disk.
+
+```console
+$ proof sink init --dir sink --keys-dir sinkkeys --op-vault proof-test
+…
+ML-DSA-65 (checkpoint)
+  …
+  1Password  proof-ml-dsa-65-checkpoint (vault proof-test) — stored keys read back and verified
+  removed  sinkkeys/ml-dsa-65-checkpoint-private.pem from disk (unlinked, not wiped: SSD and journal copies may remain)
+
+sink now signs its records: a commit or erase without --record-key is refused.
+
+next:
+  proof sink commit     --dir sink … --record-key sinkkeys/ml-dsa-65-record-private.pem
+  proof sink erase      --dir sink … --record-key sinkkeys/ml-dsa-65-record-private.pem
+  proof sink checkpoint --dir sink --key <(op read op://proof-test/proof-ml-dsa-65-checkpoint/privkey_pem) --record-trust sinkkeys/ml-dsa-65-record-public.pem
+  proof sink verify     --dir sink --key sinkkeys/ml-dsa-65-checkpoint-public.pem --record-trust sinkkeys/ml-dsa-65-record-public.pem
+
+$ ls sinkkeys
+ml-dsa-65-checkpoint-public.pem    ml-dsa-65-record-private.pem    ml-dsa-65-record-public.pem
+```
+
+The private file is removed only **after** the read-back succeeds, so a failed
+store never costs you the key. "Unlinked, not wiped" is literal: the file is
+deleted, not overwritten, and an SSD or a filesystem journal may still hold a
+copy. If that matters, generate the key on a machine whose disk you control.
+
+`sink init --op-vault` refuses to run if the vault already holds an item named
+`proof-ml-dsa-65-checkpoint`, since a second would make the printed `op read`
+ambiguous. Remove or rename the old one first.
+
+#### Using the stored key
+
+The printed `checkpoint` command reads the key straight from 1Password with
+`<(op read …)`, so no copy is written to disk. That syntax needs bash or zsh, and
+each command must be on one line (a line break pasted into the middle runs the
+rest as a separate command). A full round trip:
+
+```console
+$ echo '{"user":"u-1","n":1}' | proof sink commit --dir sink --class events --subject-field user --record-key sinkkeys/ml-dsa-65-record-private.pem
+committed 1 entry on 1 chain (0 duplicates)
+
+$ proof sink checkpoint --dir sink --key <(op read op://proof-test/proof-ml-dsa-65-checkpoint/privkey_pem) --record-trust sinkkeys/ml-dsa-65-record-public.pem
+checkpoint anchors/events.fe5cd86e5e94160eec4ff98b2fcd4b46/0001.json signed over 1 entry
+
+$ proof sink verify --dir sink --key sinkkeys/ml-dsa-65-checkpoint-public.pem --record-trust sinkkeys/ml-dsa-65-record-public.pem
+chain events.fe5cd86e5e94160eec4ff98b2fcd4b46 verifies 1 entry: 1 opened, 0 erased · 1 checkpoint, 0 unanchored · 1 signed
+Record signatures: checked against --record-trust
+all 1 chains verify
+```
+
+A commit without `--record-key` is refused (`this sink signs its records`): the
+sink was put in signing mode when it was created.
+
+#### What this does and does not protect
+
+- **It keeps the checkpoint key off the machine that writes the sink.** Someone
+  who can write the sink folder and read the record key still cannot sign a
+  checkpoint.
+- **It does not make 1Password part of verification.** Verifying needs only the
+  public keys, which stay on disk and are meant to be handed out.
+- **Anyone who can read the vault can sign checkpoints.** Who can read it is set
+  in 1Password, not here.
+- **The `fingerprint` text field is informational.** `proof` never trusts it;
+  it checks the attached keys.
+
+All of the above was run against a real vault with v0.4.0, including the
+`diff` check and the round trip. To clean up a test vault:
+`op vault delete <vault>`.
 
 ### As a library
 
@@ -901,6 +1031,7 @@ module cannot answer and does not pretend to.
 | [docs/anchor-model.md](docs/anchor-model.md) | What an anchor proves, and what its provenance must be |
 | [docs/decisions.md](docs/decisions.md) | Why the design is the way it is |
 | [docs/runbook.md](docs/runbook.md) | Working on this repository |
+| [SECURITY.md](SECURITY.md) | Reporting a vulnerability |
 
 ---
 

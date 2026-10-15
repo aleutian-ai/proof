@@ -107,32 +107,42 @@ func DecodeEntries(raw []byte) ([]Entry, error) {
 	return entries, nil
 }
 
-// decodeEntry reads one entry object, refusing repeated and wrong-case members
-// and an object that lacks what every entry has.
+// decodeEntry reads one entry object, refusing repeated members, a member
+// that is another spelling of one of the format's, and an object that lacks
+// what every entry has.
+//
+// Values are taken by EXACT member name and never through encoding/json's own
+// name matching, which folds case and Unicode (it reads "timeſtamp", with
+// U+017F, as "timestamp"). Checking names with strings.ToLower and then
+// decoding the whole object let such a second spelling through, and its value
+// won. A member whose name folds to one of the format's without being it is
+// now refused, and the fields are filled from the exact names alone.
 func decodeEntry(doc []byte) (Entry, error) {
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return Entry{}, errors.New("it is not a JSON object")
 	}
-	seen := map[string]bool{}
+	values := map[string]json.RawMessage{}
 	for dec.More() {
 		tok, err := dec.Token()
 		name, ok := tok.(string)
 		if err != nil || !ok {
 			return Entry{}, errors.New("it is not valid JSON")
 		}
-		if !entryMembers[name] && entryMembers[strings.ToLower(name)] {
-			return Entry{}, fmt.Errorf("the member %q is spelled in another case", strings.ToLower(name))
+		if !entryMembers[name] {
+			if known, folds := foldsToMember(name); folds {
+				return Entry{}, fmt.Errorf("a member is another spelling of %q", known)
+			}
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return Entry{}, errors.New("it is not valid JSON")
 		}
 		if entryMembers[name] {
-			if seen[name] {
+			if _, dup := values[name]; dup {
 				return Entry{}, fmt.Errorf("the member %q appears twice", name)
 			}
-			seen[name] = true
-		}
-		var skip json.RawMessage
-		if err := dec.Decode(&skip); err != nil {
-			return Entry{}, errors.New("it is not valid JSON")
+			values[name] = value
 		}
 	}
 	if _, err := dec.Token(); err != nil {
@@ -142,15 +152,55 @@ func decodeEntry(doc []byte) (Entry, error) {
 		return Entry{}, errors.New("it is followed by more data")
 	}
 	for _, name := range requiredEntryMembers {
-		if !seen[name] {
+		if _, ok := values[name]; !ok {
 			return Entry{}, fmt.Errorf("it has no %q", name)
 		}
 	}
 	var e Entry
-	if err := json.Unmarshal(doc, &e); err != nil {
-		return Entry{}, errors.New("a member has the wrong JSON type")
+	for name, value := range values {
+		if err := unmarshalMember(&e, name, value); err != nil {
+			return Entry{}, fmt.Errorf("the member %q has the wrong JSON type", name)
+		}
 	}
 	return e, nil
+}
+
+// unmarshalMember decodes one member's value into the entry field it names.
+// name is one of entryMembers, exactly.
+func unmarshalMember(e *Entry, name string, value json.RawMessage) error {
+	switch name {
+	case "entry_id":
+		return json.Unmarshal(value, &e.EntryID)
+	case "entry_type":
+		return json.Unmarshal(value, &e.EntryType)
+	case "timestamp":
+		return json.Unmarshal(value, &e.Timestamp)
+	case "format_version":
+		return json.Unmarshal(value, &e.FormatVersion)
+	case "run_id":
+		return json.Unmarshal(value, &e.RunID)
+	case "sequence_num":
+		return json.Unmarshal(value, &e.SequenceNum)
+	case "global_seq":
+		return json.Unmarshal(value, &e.GlobalSeq)
+	case "content_hash":
+		return json.Unmarshal(value, &e.ContentHash)
+	case "chain_hash":
+		return json.Unmarshal(value, &e.ChainHash)
+	}
+	return fmt.Errorf("no member %q", name)
+}
+
+// foldsToMember reports whether name is one of the format's member names under
+// Unicode case folding, and which. Called only for a name that is not one
+// exactly.
+func foldsToMember(name string) (string, bool) {
+	for known := range entryMembers {
+		if strings.EqualFold(name, known) {
+			return known, true
+		}
+	}
+	return "", false
 }
 
 // MaxEntryLineBytes is the longest JSONL line an [EntryReader] reads. An entry

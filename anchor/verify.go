@@ -185,6 +185,11 @@ func NewKeyRing(trust Trust, keys map[string][]byte) (*KeyRing, error) {
 
 // PublicKey implements KeySource.
 func (r *KeyRing) PublicKey(keyID string) ([]byte, Trust, error) {
+	if r == nil {
+		// A nil *KeyRing in a KeySource is not a nil interface, so
+		// VerifySignature's nil check does not catch it.
+		return nil, "", errors.New("anchor: the key ring is nil")
+	}
 	k, ok := r.keys[keyID]
 	if !ok {
 		return nil, "", fmt.Errorf("%w: %s", ErrUnknownKeyID, keyID)

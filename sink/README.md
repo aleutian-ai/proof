@@ -37,7 +37,8 @@ the sink folder. It also puts the sink in signing mode, so a first commit that
 forgets `--record-key` is refused instead of making the sink unsigned for good.
 It prints the commands to use. `--op-vault VAULT` puts the
 checkpoint key in 1Password only (the checkpoint command then reads it with
-`op read`); `--one-key` uses one key for both, which is weaker and warned about.
+`op read`; see "Keeping keys in 1Password" in the [main README](../README.md));
+`--one-key` uses one key for both, which is weaker and warned about.
 
 `events.jsonl`:
 

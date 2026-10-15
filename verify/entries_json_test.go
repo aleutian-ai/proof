@@ -395,3 +395,41 @@ func TestWalkerBindAnchor_AgreesWithBindAnchor(t *testing.T) {
 		t.Errorf("a walker with no entries: error = %v, want ErrNoEntries", err)
 	}
 }
+
+// TestDecodeEntries_NoSecondSpellingThroughUnicodeFolding: a member whose name
+// folds to one of the format's (U+017F "ſ" folds to "s")
+// is refused, and no value ever reaches a field through encoding/json's own
+// folding name match. The decoder once checked names with strings.ToLower and
+// then decoded the whole object: {"timestamp": A, "timeſtamp": B} was accepted
+// and the entry carried B.
+func TestDecodeEntries_NoSecondSpellingThroughUnicodeFolding(t *testing.T) {
+	entries, _ := buildChain(t, 1)
+	good, err := json.Marshal(entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := string(good)
+	for name, raw := range map[string]string{
+		"long s beside the real name": strings.Replace(g, `"timestamp":`, `"timestamp":"2026-01-01T00:00:00.000000Z","timeſtamp":`, 1),
+		"long s in place of the name": strings.Replace(g, `"timestamp":`, `"timeſtamp":`, 1),
+		"long s in another member":    strings.Replace(g, `"content_hash":`, `"content_hash":"`+entries[0].ContentHash+`","content_ha\u017fh":`, 1),
+		"upper case beside the name":  strings.Replace(g, `"entry_id":`, `"entry_id":"x","ENTRY_ID":`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, text := range []string{raw, "[" + raw + "]"} {
+				if got, err := DecodeEntries([]byte(text)); err == nil {
+					t.Fatalf("decoded %+v", got)
+				}
+				r := NewEntryReader(strings.NewReader(text))
+				if _, err := r.Next(); err == nil {
+					t.Fatal("the streaming reader accepted it")
+				}
+			}
+		})
+	}
+	// Control: the exact names decode, and to the values under those names.
+	got, err := DecodeEntries(good)
+	if err != nil || got[0] != entries[0] {
+		t.Fatalf("control: %+v, %v", got, err)
+	}
+}

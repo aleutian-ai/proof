@@ -588,9 +588,12 @@ func TestExportAndVerify_MemoryDoesNotGrowWithTheChain(t *testing.T) {
 	t.Logf("%d entries, %d bytes exported: held at most %d bytes in export, %d in anchor, %d in verify",
 		n, size, exportPeak, anchorPeak, verifyPeak)
 	// Holding the chain costs more than its size; streaming costs a few
-	// megabytes whatever its size. A twentieth of the data separates the two
-	// with room on both sides.
-	if limit := size / 20; exportPeak > limit || anchorPeak > limit || verifyPeak > limit {
+	// megabytes whatever its size. The bound is a fifth of the data: five times
+	// below what holding the chain costs, and several times above the streaming
+	// plateau. A twentieth (about 2.3 MB here) sat inside the plateau's own
+	// variation from GC timing and failed about one run in four on Linux, with
+	// nothing held.
+	if limit := size / 5; exportPeak > limit || anchorPeak > limit || verifyPeak > limit {
 		t.Errorf("held %d bytes (export), %d (anchor) and %d (verify) over %d bytes of data; "+
 			"want each under %d", exportPeak, anchorPeak, verifyPeak, size, limit)
 	}

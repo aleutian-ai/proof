@@ -328,3 +328,26 @@ func mustBind(t *testing.T, a anchor.Anchor, entries []Entry) BindResult {
 	}
 	return res
 }
+
+// TestVerifyAnchor_NoKeySourceIsAnError: a nil key source, or a nil *KeyRing
+// passed as one, is an error from both VerifyAnchor functions. A nil key ring
+// panicked once the signature came to be checked even when the bind failed.
+func TestVerifyAnchor_NoKeySourceIsAnError(t *testing.T) {
+	entries, head := buildChain(t, 3)
+	a := anchorOver(t, entries, head, anchor.SeedAnchorHash)
+	var nilRing *anchor.KeyRing
+	for name, src := range map[string]anchor.KeySource{"nil interface": nil, "nil *KeyRing": nilRing} {
+		t.Run(name, func(t *testing.T) {
+			if res, err := VerifyAnchor(a, entries, anchor.SeedAnchorHash, src); err == nil || res.Bound {
+				t.Fatalf("VerifyAnchor: %+v, %v", res, err)
+			}
+			w := NewWalker(Options{})
+			for _, e := range entries {
+				w.Add(e)
+			}
+			if res, err := w.VerifyAnchor(a, anchor.SeedAnchorHash, src); err == nil || res.Bound {
+				t.Fatalf("Walker.VerifyAnchor: %+v, %v", res, err)
+			}
+		})
+	}
+}

@@ -7,6 +7,48 @@ change is called out here.
 
 ## Unreleased
 
+## v0.4.1 — 2026-10-15
+
+A patch for defects found in a review of v0.4.0. No new features and no format
+change.
+
+### Security
+
+- **The strict entry decoder accepted a second spelling of a member through
+  Unicode folding.** It refused a name whose lower case matched a known member,
+  then decoded the whole object with `encoding/json`, which also folds Unicode:
+  `{"timestamp": A, "timeſtamp": B}` (U+017F) was accepted and the entry
+  carried B. A name that folds to one of the format's without being it is now
+  refused, and every field is filled from its exact member name only. This
+  reached `proof verify` and the MCP server's `verify_chain`.
+- **Compacting the nonce file could drop a nonce written during the copy.**
+  The rewrite held bbolt's lock on the original file and released it before
+  renaming the copy over it; a writer arriving in between wrote into the file
+  the rename discarded, and that entry could never be disclosed. The nonce file
+  now has a separate lock file (`<nonce file>.lock`) that every open takes and
+  the rewrite holds until after the rename. The two callers that ship (`proof
+  forget` and the MCP `commit`) already serialized on the evidence database's
+  lock, so neither could reach the window; any other caller could.
+
+### Fixed
+
+- `verify.VerifyAnchor` and `Walker.VerifyAnchor` return an error for a nil key
+  source, including a nil `*anchor.KeyRing`; they panicked.
+- `TestExportAndVerify_MemoryDoesNotGrowWithTheChain` failed about one run in
+  four on Linux: its bound sat inside the streaming plateau's own variation. It
+  is now a fifth of the data, which still fails any verb that holds the chain.
+
+### Changed
+
+- **`.review/` is no longer in the repository.** v0.4.0 shipped the external
+  review's findings and reproduction tests in its module zip; that zip cannot
+  be changed. The folder is now ignored.
+- `fixtures/MANIFEST.json` records that two vector files were corrected in
+  v0.4.0, and that the v2 values the JavaScript verifier once produced are gone.
+- New `SECURITY.md`: how to report a vulnerability (GitHub private reporting,
+  or security@aleutian.ai), and what is in scope.
+- README: "Keeping keys in 1Password", from a run against a real vault.
+
 ## v0.4.0 — 2026-10-13
 
 ### Security

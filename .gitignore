@@ -54,3 +54,7 @@ node_modules/
 /examples/integrations/otel/otel-sink
 /examples/integrations/redis/redis
 /examples/integrations/redis/redis-sink
+
+# Review findings and reproductions from external reviews. They are kept
+# locally and never published: they describe open items in attack terms.
+/.review/

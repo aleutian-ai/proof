@@ -93,10 +93,13 @@ func TestCorrupt_NothingCrashesOrHangs(t *testing.T) {
 				case <-time.After(30 * time.Second):
 					t.Fatal("it did not return")
 				}
-				// No temporary copy of the nonce file is left beside it.
+				// No temporary copy of the nonce file is left beside it. The
+				// lock file is not a copy: it is there for good (see lockFile).
 				ents, _ := os.ReadDir(filepath.Dir(path))
-				if len(ents) != 1 {
-					t.Fatalf("%d files beside the nonce file, want none", len(ents)-1)
+				for _, e := range ents {
+					if n := e.Name(); n != filepath.Base(path) && n != filepath.Base(path)+lockSuffix {
+						t.Fatalf("%s was left beside the nonce file", n)
+					}
 				}
 			})
 		}

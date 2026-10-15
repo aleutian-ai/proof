@@ -55,6 +55,12 @@ const (
 	BindSignatureInvalid BindOutcome = "signature_invalid"
 )
 
+// errNoKeySource is returned by the VerifyAnchor functions when given no key
+// source. It was a documented precondition, and a nil one panicked; use
+// BindAnchor to bind without a signature.
+var errNoKeySource = errors.New("verify: a key source is required to verify an anchor's signature; " +
+	"use BindAnchor to bind without one")
+
 // ErrNoEntries is returned when there is nothing to bind an anchor to.
 var ErrNoEntries = errors.New("verify: no entries to bind")
 
@@ -329,6 +335,9 @@ func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, e
 //
 //   - src is safe for concurrent use
 func VerifyAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string, src anchor.KeySource) (BindResult, error) {
+	if src == nil {
+		return BindResult{}, errNoKeySource
+	}
 	res, err := BindAnchor(a, entries, previousAnchorHash)
 	if err != nil {
 		return res, err
@@ -484,6 +493,9 @@ func validatePreviousAnchorHash(previousAnchorHash string) error {
 func (w *Walker) VerifyAnchor(a anchor.Anchor, previousAnchorHash string, src anchor.KeySource) (BindResult, error) {
 	if w.Count() == 0 {
 		return BindResult{}, ErrNoEntries
+	}
+	if src == nil {
+		return BindResult{}, errNoKeySource
 	}
 	if err := validatePreviousAnchorHash(previousAnchorHash); err != nil {
 		return BindResult{}, err

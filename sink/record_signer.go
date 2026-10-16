@@ -30,7 +30,7 @@ import (
 //
 // Where the private key lives (in memory from a key file, Cloud KMS, an HSM,
 // another secret manager) is the implementation's business. This package
-// provides [MLDSA65RecordSigner]; a Cloud KMS example is planned.
+// provides [MLDSA65RecordSigner].
 //
 // There is no KeyID method: the key id is DERIVED from Public(), so a
 // signature can never name a key that did not make it.

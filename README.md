@@ -622,6 +622,9 @@ contents. v3 binds the entry's position in the chain instead. See
 An agent can check a chain during a conversation — and, if you allow it, commit
 evidence of its own actions as it works:
 
+`go install` puts the binary in `$(go env GOPATH)/bin`, which must be on your
+`PATH` for the client to start it (or give the client the full path).
+
 ```console
 $ go install github.com/aleutian-ai/proof/cmd/proof-mcp@latest
 $ claude mcp add aleutianchain -- proof-mcp                              # read-only
@@ -633,7 +636,9 @@ $ claude mcp add aleutianchain -- proof-mcp --db ./evidence.db \
 
 Seven read-only tools: `verify_chain`, `verify_anchor`, `verify_bundle`,
 `compute_chain_hash`, `canonicalize_leaf`, `verify_inclusion`,
-`explain_trust_model`.
+`explain_trust_model`. (`verify_bundle` checks a directory against a
+`manifest.json`; it is not the export-bundle verifier, which is
+`proof sink verify-bundle` in the CLI.)
 
 Tools read files only inside `--root` (default: the directory the server was
 started in). What a key establishes is never a tool argument: a key an agent
@@ -681,10 +686,13 @@ and retained. A seed or a plaintext returned from a tool would cross that
 boundary — quietly falsifying the one claim the whole system rests on, that the
 operator never holds the customer's key.
 
-`TestNoKeyMaterialTools` fails the build if a tool whose name suggests key
-handling is ever registered. The check is on *names*: coarse, occasionally
-annoying, and it fails closed. Key operations belong in the human-driven CLI,
-where `proof keygen` lives and no result crosses a provider boundary.
+The guard is an exact allowlist: `TestToolsAreTheExpectedSet` (and its `--db`
+twin) fails the build if the registered tools are anything other than the
+eight listed above, so a tool that returns key material cannot be added without
+editing that list and arguing for it, whatever the tool is called.
+`TestNoKeyMaterialTools` is a second, coarser check on names. Key operations
+belong in the human-driven CLI, where `proof keygen` lives and no result
+crosses a provider boundary.
 
 ---
 

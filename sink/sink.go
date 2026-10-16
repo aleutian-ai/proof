@@ -76,8 +76,9 @@
 //     their heads are kept outside it: CheckpointHeads), and an erasure made
 //     after the last checkpoint is only as trustworthy as the folder until a
 //     checkpoint covers it. Checkpoint signs over such an erasure only when
-//     the caller confirms it made it (ConfirmErasures) or its record signature
-//     verifies.
+//     the caller confirms it made it (ConfirmErasures), its record signature
+//     verifies (CheckpointRecordTrust), or the operator vouches for the chain
+//     (ConfirmErasedChains).
 //   - The bolt store only.
 package sink
 
@@ -169,8 +170,9 @@ const DefaultRecordSigningConcurrency = 16
 //
 // # Limitations
 //
-//   - Only Verify with WithRecordTrust checks the signatures; the folder's
-//     mode never makes them required.
+//   - Only Verify with WithRecordTrust, and Checkpoint with
+//     CheckpointRecordTrust, check the signatures; the folder's mode never
+//     makes them required.
 //
 // # Assumptions
 //

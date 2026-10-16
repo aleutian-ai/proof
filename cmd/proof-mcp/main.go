@@ -1,8 +1,8 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Command proof-mcp exposes AleutianChain verification over the Model Context
-// Protocol.
+// Command proof-mcp exposes AleutianChain verification, and with --db a commit
+// tool, over the Model Context Protocol.
 //
 // # Description
 //
@@ -267,7 +267,8 @@ func registerTools(s *mcp.Server, cfg serverConfig) error {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "verify_bundle",
 		Annotations: readOnly,
-		Description: "Verify an export bundle directory: recompute the manifest root " +
+		Description: "Verify a directory bundle (a manifest.json plus the files it lists; " +
+			"not a sink export bundle.json, which `proof sink verify-bundle` checks): recompute the manifest root " +
 			"over the inventory, and re-hash every listed file to confirm the bytes on " +
 			"disk match what the manifest claims. Reports every problem found, not just " +
 			"the first. The directory must be inside the directory this server was " +

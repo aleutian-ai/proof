@@ -74,8 +74,8 @@ const keySep = 0x00
 //
 // # Limitations
 //
-//   - One process at a time. bbolt takes an exclusive file lock on Open, so a
-//     second process blocks rather than corrupting.
+//   - One writer at a time. Open takes an exclusive file lock (a shared one
+//     with WithReadOnly), so a second process blocks rather than corrupting.
 type Store struct {
 	db *safebolt.DB
 }

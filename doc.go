@@ -17,14 +17,19 @@
 // examples/encrypted-artifact.
 //
 // This module contains the format and the math — the parts a third party needs
-// in order to check the work — and nothing operational. The subpackages are:
+// in order to check the work — and the tools that produce it: a linker, a bbolt
+// store, the sink, and the proof CLI. The subpackages are:
 //
 //   - [chainformat], [canonical]:     hash linkage and deterministic encoding
 //   - [commitment]:                   salted commitments for unencrypted content
 //   - [linker]:                       commit entries to a chain
 //   - [anchor], [anchor/build]:       sign and check chain checkpoints (ML-DSA-65)
 //   - [verify]:                       the verdicts
-//   - [merkle], [bundle]:             inclusion proofs and export bundles
+//   - [merkle]:                       Merkle roots and inclusion proofs
+//   - [bundle]:                       directory bundles with a manifest root
+//   - [sink], [exportbundle]:         per-subject evidence folders; verifying
+//     a sink export bundle
+//   - [fixtures]:                     the cross-language conformance vectors
 //   - [store]:                        the persistence port and its adapters
 //   - [keyfile], [mldsa]:             standard key files; ML-DSA signatures
 //   - [xwing], [mlkem], [keywrap]:    post-quantum KEM primitives and the

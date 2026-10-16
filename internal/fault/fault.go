@@ -1,8 +1,8 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Package fault turns a panic raised while reading a damaged store file into an
-// error.
+// Package fault turns a panic or memory fault raised inside the storage layer
+// on a damaged store file, reading or writing, into an error.
 //
 // # Description
 //

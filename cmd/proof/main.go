@@ -1,20 +1,22 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Command proof verifies and inspects AleutianChain audit chains.
+// Command proof commits evidence to AleutianChain audit chains, anchors them and
+// verifies them.
 //
 // # Description
 //
-// A single static binary with no network access, no credentials, and no cloud
-// dependencies. It reads local files the caller points it at and nothing else.
-// Those constraints are the product: an agent or auditor can check a chain
-// without an account and without trusting the party that produced it.
+// A single static binary. It reads and writes only the local files the caller
+// names; the one exception is --op-vault (keygen, sink init), which runs the
+// 1Password op CLI. Verifying needs only the files you name: no network, no
+// credentials, no account, and no trust in the party that produced them.
 //
 // # Subcommands
 //
-//	proof verify <entries.json>   check a chain's linkage
-//	proof export --db <path>      dump a chain to portable JSON
-//	proof init --db <path>        create an empty chain database
+// `proof help` lists every verb and its flags, and `proof sink help` the sink's:
+// verify, export, init, commit, import, disclose, forget, keygen, anchor,
+// version, and sink init, commit, checkpoint, verify, erase, repair, export and
+// verify-bundle.
 //
 // # Exit codes
 //
@@ -134,19 +136,19 @@ func usage(w *os.File) {
 
 usage:
   proof verify <entries.json> [--json] [--max-breaks N]
-               [--anchor <anchor.json>] [--previous <prev.json>]
+               [--anchor <anchor.json>] [--previous <prev.json> | --previous-hash <hash>]
                [--key <public.pem>] [--key-trust platform|provided|self]
   proof export --db <path> --chain <id> [--out <path>] [--jsonl] [--force]
   proof init   --db <path>
   proof commit --db <path> --chain <id> [--format-v2]   < entries.jsonl
-  proof import --db <path> --chain <id>                 < exported.jsonl
+  proof import --db <path> --chain <id> [--previous-hash <hash>]  < exported.jsonl
   proof disclose --db <path> --chain <id> --entry <id> --content <file>
   proof forget   --db <path> --chain <id> --entry <id>
   proof keygen [--alg x-wing] [--out-dir .] [--slot primary|backup|dual]
                [--name LABEL] [--op-vault VAULT] [--force]
   proof anchor --db <path> --chain <id> --subject <s> --key <private.pem>
                [--previous <anchor.json>] [--out <path>] [--force]
-  proof sink commit|checkpoint|verify|erase|repair|export [--dir D] …   (proof sink help)
+  proof sink init|commit|checkpoint|verify|erase|repair|export|verify-bundle …   (proof sink help)
   proof version
 
 exit: 0 ok · 1 chain broken · 2 usage · 3 io error · 4 chain busy

@@ -38,8 +38,7 @@ const TombstoneEntryIDPrefix = "tomb_"
 
 // TombstoneEntryType is the entry_type value for tombstone entries.
 //
-// This is the canonical value stored in the entry_type column of audit_entries
-// for tombstone entries.
+// This is the canonical value of a stored tombstone entry's entry_type.
 const TombstoneEntryType = "tombstone"
 
 // tombstoneContentHashLen is the total length of a valid tombstone content hash.
@@ -59,8 +58,7 @@ const tombstoneRandomBytesLen = 32
 //
 // # Description
 //
-// Performs a fast check using two fields that are always present in audit_entries
-// rows. Both conditions must be true for the entry to be identified as a tombstone:
+// Performs a fast check using two fields that every stored entry carries. Both conditions must be true for the entry to be identified as a tombstone:
 //   - entryType must equal "tombstone" (exact match, case-sensitive)
 //   - entryID must start with "tomb_" prefix
 //
@@ -70,8 +68,8 @@ const tombstoneRandomBytesLen = 32
 //
 // # Inputs
 //
-//   - entryType: The entry_type column value from audit_entries
-//   - entryID: The entry_id column value from audit_entries
+//   - entryType: the stored entry's entry_type
+//   - entryID: the stored entry's entry_id
 //
 // # Outputs
 //
@@ -115,7 +113,7 @@ func IsTombstone(entryType, entryID string) bool {
 //
 // # Inputs
 //
-//   - contentHash: The content_hash column value from audit_entries
+//   - contentHash: the stored entry's content_hash
 //
 // # Outputs
 //
@@ -381,7 +379,7 @@ func truncateForError(s string, maxLen int) string {
 //
 // NOTE ON SHAPE: unlike the hard-delete TombstoneContentHashPrefix, this value
 // is NOT prepended to the stored hash. Hard-delete tombstones are DML-inserted
-// straight into audit_entries and never traverse the linker; orphan tombstones
+// straight into the platform's entry table and never traverse the linker; orphan tombstones
 // go through the reference platform's linker, whose content_hash allowlist
 // admits only ^[a-f0-9]{128}$ or ^TOMBSTONE:[a-f0-9]{64}$ and dead-letters
 // everything else. A prefixed orphan hash would therefore never link. The domain

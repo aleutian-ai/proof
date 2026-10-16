@@ -1,8 +1,9 @@
 // Copyright 2026 Aleutian AI
 // SPDX-License-Identifier: Apache-2.0
 
-// Package bundle verifies export bundles — the form in which evidence leaves
-// the system.
+// Package bundle verifies directory bundles: a manifest.json listing every
+// file's SHA-512 under a manifest root. It is not the sink's export bundle; see
+// package exportbundle.
 //
 // # Description
 //
@@ -23,8 +24,8 @@
 //
 // # Limitations
 //
-//   - Verifies structure and content addressing. Whether the SIGNATURE over the
-//     root is trustworthy is anchor.VerifySignature's question.
+//   - Verifies structure and content addressing only. Checking a signature over
+//     the root is the caller's job; this module has no verifier for it.
 package bundle
 
 import (

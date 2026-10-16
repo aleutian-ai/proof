@@ -15,7 +15,8 @@ import (
 )
 
 // entryMembers are the members of an exported entry, by their exact names.
-// Lower-cased, they are how a member spelled in another case is recognised.
+// Under Unicode case folding, they are how another spelling of a member is
+// recognised.
 var entryMembers = map[string]bool{
 	"entry_id": true, "entry_type": true, "timestamp": true, "format_version": true,
 	"run_id": true, "sequence_num": true, "global_seq": true, "content_hash": true,
@@ -38,8 +39,8 @@ var requiredEntryMembers = []string{"entry_id", "timestamp", "content_hash", "ch
 // chain.
 //
 // Each entry is an object that carries entry_id, timestamp, content_hash and
-// chain_hash, has no member twice, and has no member whose name is one of the
-// format's in another case. encoding/json alone would take the last of a
+// chain_hash, has no member twice, and has no member whose name folds (Unicode
+// case folding) to one of the format's without being it. encoding/json alone would take the last of a
 // repeated member and match names without regard to case, so two readers could
 // see two different entries in one file. Members the format does not define
 // are ignored: none of them is hashed, and exports from other producers carry

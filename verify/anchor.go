@@ -14,7 +14,8 @@ import (
 type BindOutcome string
 
 const (
-	// BindOK: the chain is exactly what the anchor committed to.
+	// BindOK: the chain matches what the anchor committed to, except the
+	// entries up to and including its last tombstone (BindResult.EntriesNotBound).
 	BindOK BindOutcome = "bound"
 
 	// BindChainBroken: linkage failed before the anchor could be considered.
@@ -307,17 +308,19 @@ func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, e
 //
 //   - a: the anchor
 //   - entries: the chain, ascending
-//   - src: key source; must not be nil
+//   - previousAnchorHash: as for BindAnchor
+//   - src: key source; nil is an error
 //
 // # Outputs
 //
-//   - BindResult: with SignatureVerified set and Trust populated
-//   - error: binding errors, or anchor.ErrUnknownKeyID / ErrInvalidSignature /
-//     ErrVerificationUnsupported
+//   - BindResult: SignatureVerified and Trust set when the signature verifies;
+//     Outcome BindSignatureInvalid, nothing bound, when it does not
+//   - error: binding errors, no key source, or anchor.ErrUnknownKeyID /
+//     ErrInvalidSignature / ErrVerificationUnsupported
 //
 // # Example
 //
-//	res, err := verify.VerifyAnchor(a, entries, ring)
+//	res, err := verify.VerifyAnchor(a, entries, prev.ChainHash, ring)
 //	if err != nil { return err }
 //	fmt.Printf("%s — %s\n", res.Outcome, res.Trust.Establishes())
 //

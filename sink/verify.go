@@ -96,9 +96,10 @@ import (
 //
 // # Limitations
 //
-//   - Opens every file read-only, but parses them with bbolt, which may panic
-//     on a crafted file: verify a folder from someone else as an exported
-//     bundle (docs/bundle-format.md), not the files.
+//   - Opens every file read-only. Damage is reported as ErrCorrupt, but a
+//     crafted file whose pages point back at each other is followed without
+//     end: verify a folder from someone else as an exported bundle
+//     (docs/bundle-format.md), not the files.
 //   - Reads a page at a time (VerifyEach): not one snapshot of the folder.
 //     Memory holds every report (VerifyEach streams them instead).
 //   - Front truncation of a chain without record signatures is caught only

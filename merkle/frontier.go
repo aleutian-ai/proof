@@ -15,9 +15,9 @@ import (
 // incrementally (Append is amortized O(1)) instead of recomputing from all leaves, and it
 // serializes compactly for persistence alongside chain_states.
 //
-// The frontier is NOT independently trusted: the anchor generator re-derives the root from
-// audit_entries before signing, and the frontier is fully recoverable from
-// audit_entries by FrontierFromLeaves. It is an accelerator, never the source of truth.
+// The frontier is NOT independently trusted: a signer should re-derive the root from the
+// stored entries before signing, and the frontier is fully recoverable from the stored
+// entries by FrontierFromLeaves. It is an accelerator, never the source of truth.
 //
 // Not safe for concurrent use; callers serialize appends per tenant (single-writer).
 type Frontier struct {
@@ -80,7 +80,7 @@ func (f *Frontier) Root() []byte {
 }
 
 // FrontierFromLeaves deterministically rebuilds a frontier from ordered leaf DATA
-// (raw content_hash bytes in global_seq order) — the crash-recovery / from-audit_entries
+// (raw content_hash bytes in global_seq order) — the crash-recovery / from-stored-entries
 // path. Each datum is leaf-hashed then appended.
 //
 // # Assumptions
@@ -119,7 +119,7 @@ const maxFrontierLevel = 62
 
 // UnmarshalFrontier parses Marshal output. Validates that the occupied levels match the
 // popcount/bit positions of size (a corrupt persisted frontier is rejected, forcing a
-// rebuild from audit_entries rather than trusting bad state).
+// rebuild from the stored entries rather than trusting bad state).
 func UnmarshalFrontier(s string) (*Frontier, error) {
 	parts := strings.Split(s, "|")
 	size, err := strconv.ParseInt(parts[0], 10, 64)

@@ -20,14 +20,19 @@
 // Only the first is provable from entries alone. Callers reporting results to a
 // human MUST keep them apart — see docs/verification-model.md.
 //
-// # Two chain formats, and why the version is never guessed
+// # Three chain formats, and why the version is never guessed
 //
-// An entry names the preimage that produced its hash. v3 binds the chain-wide
-// global_seq; v2 binds a run id and a batch-local sequence number. The two
-// cannot be distinguished by looking at a digest, so this package dispatches on
-// the DECLARED version and refuses what it does not recognise
-// ([BreakUnknownFormat]) rather than trying the other one. Guessing would turn
-// an unreadable entry into a reported forgery.
+// An entry names the preimage that produced its hash. v4 links through a
+// salted leaf hash over the entry's id, type and content hash; v3 binds the
+// chain-wide global_seq and the content hash; v2 binds a run id and a
+// batch-local sequence number. They cannot be distinguished by looking at a
+// digest, so this package dispatches on the DECLARED version and refuses what
+// it does not recognise ([BreakUnknownFormat]) rather than trying another one.
+// Guessing would turn an unreadable entry into a reported forgery.
+//
+// A chain may hold v2 and v3 entries and continue in v4, and never goes back:
+// a v2 or v3 entry after a v4 entry is [BreakFormatFieldMisuse], because a v3
+// tombstone there would unlink everything before it (docs/format-spec.md §2.5).
 //
 // An absent format_version decodes as zero and means v2 — every entry written
 // before v3 existed has no such field. A v3 entry carrying v2's run_id or
@@ -42,17 +47,21 @@
 //   - Reports THAT a chain was altered, never who altered it.
 //   - One altered entry breaks every entry after it, so a break count is a blast
 //     radius. [Result.FirstBreak] is the signal.
-//   - Skips hash recomputation for tombstones and validates their format only.
-//     A tombstone keeps the original entry's chain hash, which is not
-//     reproducible from its remaining fields. THE CONSEQUENCE: a tombstone's
-//     chain hash is taken as stored, so nothing links the entries BEFORE a
-//     tombstone to the entries after it. Whoever can write the store can
-//     replace every entry before a tombstone (or before an entry they turn
+//   - v2 and v3 only: skips hash recomputation for tombstones and validates
+//     their format only. A tombstone keeps the original entry's chain hash,
+//     which is not reproducible from its remaining fields. THE CONSEQUENCE: a
+//     tombstone's chain hash is taken as stored, so nothing links the entries
+//     BEFORE a tombstone to the entries after it. Whoever can write the store
+//     can replace every entry before a tombstone (or before an entry they turn
 //     into one) and the walk still reports INTACT, under a signed anchor too.
 //     [Result.TombstonesFound] and [Result.LastTombstone] say whether, and up
-//     to where, a result is exposed to this. Closing it needs a format change.
-//   - entry_id and entry_type are in no hash. Either can be changed without a
-//     break; entry_type decides whether an entry is read as a tombstone.
+//     to where, a result is exposed to this. v2 and v3 are frozen, so this is
+//     permanent for them; v4 has no tombstones and recomputes every entry.
+//   - v2 and v3 only: entry_id and entry_type are in no hash. Either can be
+//     changed without a break. v4 hashes both into the leaf hash.
+//   - v4: an erased entry proves an entry existed at its position, not that
+//     whoever erased it was allowed to. Anyone who can write the store can
+//     produce the erased shape (docs/verification-model.md, "Who may erase").
 //
 // # Assumptions
 //
@@ -63,8 +72,11 @@
 package verify
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/aleutian-ai/proof/chainformat"
@@ -148,14 +160,19 @@ const (
 // versa. Timestamp is a STRING in the exact form it was hashed
 // (RFC3339 microseconds) — re-deriving it from a lower-precision value would
 // change the hash.
+//
+// A v4 entry has two shapes (docs/format-spec.md §2.0). Live: every field but
+// RunID and SequenceNum, with Salt and LeafHash. Erased: Erased true, and
+// EntryID, EntryType, ContentHash and Salt empty. [Entry.MarshalJSON] writes
+// each shape with exactly its members.
 type Entry struct {
 	EntryID   string `json:"entry_id"`
 	EntryType string `json:"entry_type"`
 	Timestamp string `json:"timestamp"`
 
-	// FormatVersion selects the preimage: 3 for v3, 2 or ABSENT for v2. It is
-	// omitted from v2 output so that exports written before the field existed
-	// remain byte-identical.
+	// FormatVersion selects the preimage: 4 for v4, 3 for v3, 2 or ABSENT for
+	// v2. It is omitted from v2 output so that exports written before the field
+	// existed remain byte-identical.
 	FormatVersion int `json:"format_version,omitempty"`
 
 	// RunID and SequenceNum are v2 hash inputs. A v3 entry must leave both at
@@ -171,6 +188,123 @@ type Entry struct {
 	GlobalSeq   int64  `json:"global_seq"`
 	ContentHash string `json:"content_hash"`
 	ChainHash   string `json:"chain_hash"`
+
+	// Salt, LeafHash and Erased are v4's (format-spec §2.0). A v2 or v3 entry
+	// carrying any of them is a break.
+	Salt     string `json:"salt,omitempty"`
+	LeafHash string `json:"leaf_hash,omitempty"`
+	Erased   bool   `json:"erased,omitempty"`
+
+	// members records the members an entry read by [DecodeEntries] or an
+	// [EntryReader] carried WITH THEIR ZERO VALUE, where that is a break in
+	// its format: a v4 entry with "run_id": "", an erased one with
+	// "entry_id": "", a v3 one with "salt": "". Every other member is judged
+	// by its value, so an ordinary entry decodes with this zero and equals the
+	// same entry built in Go.
+	members memberSet
+}
+
+// memberSet is a set of entry member names, one bit each.
+type memberSet uint16
+
+const (
+	memberEntryID memberSet = 1 << iota
+	memberEntryType
+	memberRunID
+	memberSequenceNum
+	memberContentHash
+	memberSalt
+	memberLeafHash
+	memberErased
+)
+
+// has reports whether the entry carries the member: present in what was
+// decoded, or, for an entry built in Go, not its zero value.
+func (e Entry) has(m memberSet) bool {
+	if e.members&m != 0 {
+		return true
+	}
+	switch m {
+	case memberEntryID:
+		return e.EntryID != ""
+	case memberEntryType:
+		return e.EntryType != ""
+	case memberRunID:
+		return e.RunID != ""
+	case memberSequenceNum:
+		return e.SequenceNum != 0
+	case memberContentHash:
+		return e.ContentHash != ""
+	case memberSalt:
+		return e.Salt != ""
+	case memberLeafHash:
+		return e.LeafHash != ""
+	case memberErased:
+		return e.Erased
+	}
+	return false
+}
+
+// entryV4Live and entryV4Erased are the two v4 shapes as JSON, members in the
+// order an export writes them.
+type entryV4Live struct {
+	EntryID       string `json:"entry_id"`
+	EntryType     string `json:"entry_type"`
+	Timestamp     string `json:"timestamp"`
+	FormatVersion int    `json:"format_version"`
+	GlobalSeq     int64  `json:"global_seq"`
+	ContentHash   string `json:"content_hash"`
+	Salt          string `json:"salt"`
+	LeafHash      string `json:"leaf_hash"`
+	ChainHash     string `json:"chain_hash"`
+}
+
+type entryV4Erased struct {
+	Timestamp     string `json:"timestamp"`
+	FormatVersion int    `json:"format_version"`
+	GlobalSeq     int64  `json:"global_seq"`
+	Erased        bool   `json:"erased"`
+	LeafHash      string `json:"leaf_hash"`
+	ChainHash     string `json:"chain_hash"`
+}
+
+// MarshalJSON writes an entry with exactly the members its format has.
+//
+// # Description
+//
+// A v2 or v3 entry is written as it always was: every member of the struct,
+// run_id and sequence_num included, format_version omitted for v2. A v4 entry
+// is written in its live or erased shape (format-spec §2.0): no run fields,
+// and an erased entry without its id, type, content hash or salt, which are
+// absent rather than empty.
+//
+// # Outputs
+//
+//   - []byte: the entry as JSON
+//   - error: from encoding/json
+//
+// # Example
+//
+//	raw, err := json.Marshal(entry)
+//
+// # Limitations
+//
+//   - A v4 entry's fields are written as they are, valid or not; a v4 entry
+//     with Erased set is written in the erased shape whatever else it holds.
+//
+// # Assumptions
+//
+//   - None.
+func (e Entry) MarshalJSON() ([]byte, error) {
+	if e.FormatVersion == chainformat.FormatV4 {
+		if e.Erased {
+			return json.Marshal(entryV4Erased{e.Timestamp, e.FormatVersion, e.GlobalSeq, true, e.LeafHash, e.ChainHash})
+		}
+		return json.Marshal(entryV4Live{e.EntryID, e.EntryType, e.Timestamp, e.FormatVersion, e.GlobalSeq,
+			e.ContentHash, e.Salt, e.LeafHash, e.ChainHash})
+	}
+	type plain Entry // drops this method, so the struct tags apply as before
+	return json.Marshal(plain(e))
 }
 
 // Break is one detected failure.
@@ -196,9 +330,14 @@ type Result struct {
 	// EntriesVerified is how many entries were walked.
 	EntriesVerified int `json:"entries_verified"`
 
-	// TombstonesFound counts erased entries. Their presence is normal and never
-	// a break; see the note on Breaks.
+	// TombstonesFound counts v2 and v3 tombstones. Their presence is normal
+	// and never a break; see the note on Breaks.
 	TombstonesFound int `json:"tombstones_found"`
+
+	// ErasedFound counts erased v4 entries. Each is recomputed from its leaf
+	// hash like any other entry, so, unlike a tombstone, it leaves nothing
+	// unlinked.
+	ErasedFound int `json:"erased_found"`
 
 	// LastTombstone is the index of the last erased entry, or -1. A tombstone's
 	// chain hash is taken as stored, so the entries up to and including this
@@ -321,6 +460,7 @@ type Walker struct {
 	previousHash string
 	previousSeq  int64
 	first, last  Entry
+	sawV4        bool // a v4 entry was added; no v2 or v3 entry may follow
 }
 
 // NewWalker starts a walk. opts is as for Chain.
@@ -368,6 +508,12 @@ func (w *Walker) Add(e Entry) {
 	}
 	w.last = e
 
+	// Never back from v4 (format-spec §2.5) goes by the declared format, so a
+	// v4 entry counts as seen even if a check below breaks it.
+	if e.FormatVersion == chainformat.FormatV4 {
+		defer func() { w.sawV4 = true }()
+	}
+
 	if i > 0 && e.GlobalSeq != w.previousSeq+1 {
 		w.addBreak(Break{
 			Position: i, EntryID: e.EntryID, Type: BreakSequenceGap,
@@ -382,6 +528,30 @@ func (w *Walker) Add(e Entry) {
 		w.addBreak(Break{
 			Position: i, EntryID: e.EntryID, Type: BreakInvalidField,
 			Detail: "chain_hash is not 128 lowercase hex characters",
+		})
+		w.previousHash = e.ChainHash
+		return
+	}
+
+	// Never back from v4 (format-spec §2.5). Checked before the tombstone
+	// rule, because a v3 tombstone here is exactly what this prevents.
+	if e.FormatVersion == chainformat.FormatV4 {
+		w.addV4(i, e)
+		return
+	}
+	if w.sawV4 {
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakFormatFieldMisuse,
+			Detail: "a v2 or v3 entry follows a v4 entry; a chain never goes back from v4",
+		})
+		w.previousHash = e.ChainHash
+		return
+	}
+
+	if e.has(memberSalt) || e.has(memberLeafHash) || e.has(memberErased) {
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakFormatFieldMisuse,
+			Detail: "salt, leaf_hash and erased are v4 members; a v2 or v3 entry carries none",
 		})
 		w.previousHash = e.ChainHash
 		return
@@ -426,26 +596,9 @@ func (w *Walker) Add(e Entry) {
 		return
 	}
 
-	ts, err := time.Parse(time.RFC3339Nano, e.Timestamp)
-	if err != nil {
-		w.addBreak(Break{
-			Position: i, EntryID: e.EntryID, Type: BreakInvalidTimestamp,
-			Detail: "timestamp is not RFC3339; the chain hash cannot be recomputed",
-		})
-		// Advance on the stored hash: the entry cannot be checked, but the
-		// entries after it still can, and linking from a hash we could not
-		// derive would report breaks for them too.
-		w.previousHash = e.ChainHash
+	ts, ok := w.timestamp(i, e)
+	if !ok {
 		return
-	}
-	if ts.UTC().Format(TimestampLayout) != e.Timestamp {
-		// The hash covers the instant in one spelling. A stored string in any
-		// other spelling (an offset, fewer or more digits) would hash the same
-		// and read differently, so it is refused rather than normalised.
-		w.addBreak(Break{
-			Position: i, EntryID: e.EntryID, Type: BreakInvalidTimestamp,
-			Detail: "timestamp is not in the form YYYY-MM-DDTHH:MM:SS.ffffffZ",
-		})
 	}
 
 	// The two formats cannot be told apart by looking at a digest, so the
@@ -505,6 +658,120 @@ func (w *Walker) Add(e Entry) {
 		})
 	}
 	w.previousHash = expected
+}
+
+// addV4 walks one v4 entry (format-spec §2.0, §5.0): every entry, erased or
+// not, is recomputed. The chain hash shape and the sequence were checked by
+// Add.
+func (w *Walker) addV4(i int, e Entry) {
+	brk := func(t BreakType, detail string) {
+		w.addBreak(Break{Position: i, EntryID: e.EntryID, Type: t, Detail: detail})
+		w.previousHash = e.ChainHash
+	}
+	// Counted whatever else is wrong with it, as a malformed tombstone is.
+	if e.Erased {
+		w.res.ErasedFound++
+	}
+
+	// Members that belong to another format, or to a tombstone, are misuse:
+	// they look protected and are not, or they invite the tombstone rule.
+	if e.has(memberRunID) || e.has(memberSequenceNum) {
+		brk(BreakFormatFieldMisuse, "a v4 entry carries no run_id or sequence_num")
+		return
+	}
+	if !e.Erased && (e.EntryType == chainformat.TombstoneEntryType ||
+		strings.HasPrefix(e.EntryID, chainformat.TombstoneEntryIDPrefix) ||
+		strings.HasPrefix(e.ContentHash, chainformat.TombstoneContentHashPrefix)) {
+		brk(BreakFormatFieldMisuse, chainformat.ErrTombstoneInV4.Error())
+		return
+	}
+
+	ts, ok := w.timestamp(i, e)
+	if !ok {
+		return
+	}
+
+	// The two shapes, then the field shapes within them.
+	var shapeErr error
+	switch {
+	case e.Erased:
+		if e.has(memberEntryID) || e.has(memberEntryType) || e.has(memberContentHash) || e.has(memberSalt) {
+			shapeErr = errors.New("an erased v4 entry carries no entry_id, entry_type, content_hash or salt")
+		} else if !chainHashPattern.MatchString(e.LeafHash) {
+			shapeErr = errors.New("leaf_hash is not 128 lowercase hex characters")
+		}
+	case e.has(memberErased):
+		shapeErr = errors.New("a live v4 entry carries no erased member")
+	case !e.has(memberSalt) || !e.has(memberLeafHash):
+		shapeErr = errors.New("a live v4 entry carries its salt and leaf_hash")
+	default:
+		shapeErr = chainformat.ValidateLeafInputsV4(e.EntryID, e.EntryType, e.ContentHash, e.Salt)
+		if shapeErr == nil && !chainHashPattern.MatchString(e.LeafHash) {
+			shapeErr = errors.New("leaf_hash is not 128 lowercase hex characters")
+		}
+	}
+	if shapeErr == nil {
+		shapeErr = chainformat.ValidateChainHashInputsV4(w.previousHash, e.GlobalSeq, e.LeafHash)
+	}
+	if shapeErr != nil {
+		brk(BreakInvalidField, shapeErr.Error())
+		return
+	}
+
+	leaf := e.LeafHash
+	if !e.Erased {
+		leaf = chainformat.ComputeLeafHashV4Unchecked(e.EntryID, e.EntryType, e.ContentHash, e.Salt)
+		if leaf != e.LeafHash {
+			w.addBreak(Break{
+				Position: i, EntryID: e.EntryID, Type: BreakHashMismatch,
+				Expected: leaf, Actual: e.LeafHash,
+				Detail: "leaf_hash does not match the entry's id, type, content hash and salt",
+			})
+			// Advance on the chain hash the true leaf gives, as a v3 mismatch
+			// advances on the expected hash.
+			w.previousHash = chainformat.ComputeChainHashV4Unchecked(w.previousHash, e.GlobalSeq, ts, leaf)
+			return
+		}
+	}
+
+	expected := chainformat.ComputeChainHashV4Unchecked(w.previousHash, e.GlobalSeq, ts, leaf)
+	if expected != e.ChainHash {
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakHashMismatch,
+			Expected: expected, Actual: e.ChainHash,
+		})
+	}
+	w.previousHash = expected
+}
+
+// timestamp parses an entry's stored timestamp and checks it is in the one
+// spelling the hash covers (format-spec §4). It reports false, having recorded
+// the break and advanced on the stored hash, when the timestamp does not parse.
+// A timestamp that parses in another spelling is recorded as a break and
+// still returned, so the hash is checked too.
+func (w *Walker) timestamp(i int, e Entry) (time.Time, bool) {
+	ts, err := time.Parse(time.RFC3339Nano, e.Timestamp)
+	if err != nil {
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakInvalidTimestamp,
+			Detail: "timestamp is not RFC3339; the chain hash cannot be recomputed",
+		})
+		// Advance on the stored hash: the entry cannot be checked, but the
+		// entries after it still can, and linking from a hash we could not
+		// derive would report breaks for them too.
+		w.previousHash = e.ChainHash
+		return time.Time{}, false
+	}
+	if ts.UTC().Format(TimestampLayout) != e.Timestamp {
+		// The hash covers the instant in one spelling. A stored string in any
+		// other spelling (an offset, fewer or more digits) would hash the same
+		// and read differently, so it is refused rather than normalised.
+		w.addBreak(Break{
+			Position: i, EntryID: e.EntryID, Type: BreakInvalidTimestamp,
+			Detail: "timestamp is not in the form YYYY-MM-DDTHH:MM:SS.ffffffZ",
+		})
+	}
+	return ts, true
 }
 
 // checkStart checks what the walk links from: nothing, or a well-formed

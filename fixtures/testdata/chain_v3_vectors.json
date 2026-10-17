@@ -1,5 +1,5 @@
 {
-  "_comment": "Chain hash v3: SHA-512(\"aleutian.chain.v3:\" || previous_hash || \"|\" || global_seq || \"|\" || timestamp || \"|\" || content_hash). global_seq is decimal ASCII, carried here as a STRING because JSON numbers lose precision above 2^53. Expected values computed in Python (scripts/independent-vectors.py), independently of any implementation under test. 'vectors' MUST reproduce; every 'reject' case MUST be refused. See docs/format-spec.md section 2.",
+  "_comment": "FROZEN: this format is verified forever and never written after v0.5.0 (docs/format-spec.md §2.6, bundle-format.md §16); these cases will never change. Chain hash v3: SHA-512(\"aleutian.chain.v3:\" || previous_hash || \"|\" || global_seq || \"|\" || timestamp || \"|\" || content_hash). global_seq is decimal ASCII, carried here as a STRING because JSON numbers lose precision above 2^53. Expected values computed in Python (scripts/independent-vectors.py), independently of any implementation under test. 'vectors' MUST reproduce; every 'reject' case MUST be refused. See docs/format-spec.md section 2.",
   "domain": "aleutian.chain.v3:",
   "vectors": [
     {

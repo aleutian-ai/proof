@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,8 +97,8 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// TestChecker_OncePerFile: a file that passed is not read again; one that
-// failed is.
+// TestChecker_OncePerFile: a file that passed is not read again, and neither
+// is one that failed: it is refused until it is replaced.
 func TestChecker_OncePerFile(t *testing.T) {
 	var c Checker
 	path := newFile(t)
@@ -109,13 +110,26 @@ func TestChecker_OncePerFile(t *testing.T) {
 	if err := c.Once(path, nil); err != nil {
 		t.Fatalf("a file that had passed was checked again: %v", err)
 	}
-	// A file that fails keeps failing.
+	// A file that fails keeps failing, and from the second call without being
+	// read again: a check that faults abandons a handle and its memory map.
 	bad := newFile(t)
 	overwrite(t, bad, 2)
-	for i := 0; i < 2; i++ {
-		if err := c.Once(bad, nil); !errors.Is(err, ErrCorrupt) {
+	for i := 0; i < 3; i++ {
+		err := c.Once(bad, nil)
+		if !errors.Is(err, ErrCorrupt) {
 			t.Fatalf("call %d on a damaged file: %v; want ErrCorrupt", i, err)
 		}
+		if read := !strings.Contains(err.Error(), "already failed"); read != (i == 0) {
+			t.Fatalf("call %d: read the file again = %v (%v)", i, read, err)
+		}
+	}
+	// Replaced (another inode) by a sound file, it is checked, and passes.
+	fresh := newFile(t)
+	if err := os.Rename(fresh, bad); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Once(bad, nil); err != nil {
+		t.Fatalf("a sound file replacing a failed one: %v", err)
 	}
 	// A missing or empty file has nothing to check.
 	if err := c.Once(filepath.Join(t.TempDir(), "absent.db"), nil); err != nil {

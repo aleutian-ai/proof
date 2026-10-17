@@ -165,39 +165,57 @@ problems.
 | `sequence_gap` | `global_seq` is not contiguous — entries missing or reordered |
 | `invalid_tombstone` | an entry claims to be a tombstone but its content hash is malformed |
 | `invalid_timestamp` | the stored timestamp is not in the form `YYYY-MM-DDTHH:MM:SS.ffffffZ` |
-| `invalid_field` | a hash, sequence number or run id is not in the shape its format requires |
+| `invalid_field` | a hash, salt, sequence number, id or run id is not in the shape its format requires, or a v4 entry is neither the live nor the erased shape |
+| `format_field_misuse` | an entry carries a field its format does not have (a v3 run id, a v4 tombstone), or a v2 or v3 entry follows a v4 entry |
+| `unknown_format` | `format_version` names no format this verifier knows |
 | `anchor_mismatch` | the chain does not match the anchor covering it |
 
-### A tombstone must never produce a break
+### An erased entry must never produce a break
 
-An erased entry is a **normal, lawful** state. If your verifier reports a break
-on a chain containing a tombstone, it is recomputing a hash it should be reading
-— see [format-spec.md §5](format-spec.md). Three shipped SDKs had this bug.
+An erased entry is a **normal, lawful** state. In v2 and v3, a verifier that
+reports a break on a tombstone is recomputing a hash it should be reading
+(format-spec.md §5; three shipped SDKs had this bug). In v4 the opposite holds:
+an erased entry is recomputed from its stored leaf hash like any other, and a
+verifier that skips it has left a link unchecked (§5.0).
 
 ---
 
 ## Threat model, briefly
 
-| Adversary | Detected? |
-|---|---|
-| edits one entry, no other access | ✅ |
-| edits one entry, can rewrite everything after it | ✅ — only if you hold an anchor |
-| deletes entries from the front, re-links the rest | ❌ without an anchor · ✅ with one |
-| reorders entries | ✅ |
-| inserts a forged entry | ✅ |
-| replays an existing entry as a new one | ✅ |
-| destroys the payload but leaves the chain | ✅ — the commitment survives; the content is gone |
-| erases an entry through the tombstone path | not an attack — verifies as intact, by design |
-| rewrites the entries **before a tombstone** (or before an entry they turn into one) | ❌ — with or without an anchor; see below |
-| changes an entry's `entry_id` or `entry_type` | ❌ — neither is in any hash; see below |
+| Adversary | v4 | v2 / v3 |
+|---|---|---|
+| edits one entry, no other access | ✅ | ✅ |
+| edits one entry, can rewrite everything after it | ✅ with an anchor | ✅ with an anchor |
+| deletes entries from the front, re-links the rest | ✅ with an anchor | ✅ with an anchor |
+| reorders entries | ✅ | ✅ |
+| inserts a forged entry | ✅ | ✅ |
+| replays an existing entry as a new one | ✅ | ✅ |
+| destroys the payload but leaves the chain | ✅ — the commitment survives; the content is gone | ✅ |
+| erases an entry lawfully | not an attack — verifies as intact, anchors still bind | not an attack — verifies as intact |
+| rewrites the entries **before an erased entry** | ✅ with an anchor | ❌ — with or without an anchor; see below |
+| changes an entry's `entry_id` or `entry_type` | ✅ — both are in the leaf hash | ❌ — neither is in any hash |
+| appends a v3 tombstone after v4 entries | ✅ — refused, `format_field_misuse` | — |
+| erases a live entry without the right to | ❌ — erasure is not authenticated by the chain; see below | ❌ |
 
-Every ✅ row assumes the edited entry comes **after the chain's last tombstone**.
+"With an anchor" means an anchor the adversary cannot rewrite
+(anchor-model.md §4). In a v2 or v3 chain, every ✅ row assumes the edited entry
+comes **after the chain's last tombstone**. A v3 chain continued in v4
+(format-spec §2.5) has the v4 column for every entry after its last tombstone.
 
 Every row above is exercised by the integration tests in this repository, including
 the truncation and tombstone rows, which assert the failure *is* undetectable — so
 that if a defence is ever added, the documentation claiming otherwise fails loudly.
 
-### What a tombstone leaves unverified
+### Who may erase
+
+A v4 erased entry proves that an entry existed at its position and was linked
+like every other; it does not prove that whoever erased it was allowed to. The
+erased shape (format-spec §2.0) is something anyone who can write the store can
+produce. Authorization to erase is recorded outside the chain: the sink signs
+its erasure records, and its checkpoint refuses an erasure that was neither
+signed nor confirmed (sink-format.md).
+
+### What a tombstone leaves unverified (v2 and v3)
 
 A tombstone keeps the erased entry's original chain hash, and a verifier takes
 that hash as stored: it cannot be recomputed, because the content hash it was
@@ -225,7 +243,8 @@ The verifier reports the exposure and does not hide it:
   `proven` / `not_proven` text names the entries the anchor does not bind.
 - `proof verify` prints the same.
 
-Closing it needs a format change: a tombstone has to retain something the
-original chain hash can be checked against. That is planned for the next chain
-format version. The sink (`docs/sink-format.md`) is not affected: it erases by
+Closing it needed a format change, and v4 is that change: an erased v4 entry
+keeps its leaf hash, so every link is recomputed (format-spec §5.0). v2 and v3
+are frozen, so this stays a property of every v2 or v3 entry up to a chain's
+last tombstone; a chain continued in v4 stops adding to it. The sink (`docs/sink-format.md`) is not affected: it erases by
 destroying a nonce and keeps the content hash, so every entry stays recomputable.

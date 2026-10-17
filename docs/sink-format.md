@@ -111,9 +111,10 @@ SHA-512, of its 115-byte preimage. If an erasure record were checked by plain
 SHA-512, a writer could relabel event *k* as an erasure and present *k*'s
 preimage as the "record": the events before *k* would then verify as erased
 under a valid checkpoint. With the `aleutian.sink.erasure.v1:` prefix, no record
-can hash to a commitment. This closes the confusion **without changing
-AleutianChain v3**. A future chain format may bind the entry type into the
-chain preimage directly.
+can hash to a commitment. In chain format v4, which the sink writes from
+v0.5.0, the entry type is in the leaf hash (format-spec §2.0), so relabelling
+an entry breaks its chain hash too; the domain separation stays, so the rule
+does not depend on the chain format.
 
 The genuine-erasure hash depends only on public data (the fixed record and a
 position). It proves the entry is an erasure record for its position, not who
@@ -276,11 +277,13 @@ the subject any more.
   `^\d{4,}\.json$`, are ordered by **number** (so `10000.json` follows
   `9999.json`), and MUST run 1..*n* with no gaps. Nothing else may be in the
   folder. Each file is at most 1 MiB, and MUST be a regular file (§3's rules).
-- Each is a **v6 anchor** (format-spec §9) over the chain's entries from the
-  first to the last at the time of signing, and its `subject` MUST equal the
-  chain id (opaque: a checkpoint never names a person).
-- Checkpoint *n* > 1 links to checkpoint *n* − 1 through `previous_anchor_id` and
-  the anchor chain hash. Checkpoint 1 links to the seed values. Its `entry_count`
+- Each is a **v7 anchor** (format-spec §9) over the chain's entries from the
+  first to the last at the time of signing (`start_seq` 0), and its `subject`
+  MUST equal the chain id (opaque: a checkpoint never names a person). (Before
+  v0.5.0 they were v6 anchors; a sink of that version is not read by v0.5.0:
+  §10.)
+- Checkpoint *n* > 1 links to checkpoint *n* − 1 through `previous_anchor_id`
+  and `previous_anchor_hash`. Checkpoint 1 links to the seed values. Its `entry_count`
   MUST be strictly greater than checkpoint *n* − 1's: a series only grows.
 - A new checkpoint is written only when the chain has entries the last one does
   not cover. The existing series MUST verify under the signing key before
@@ -335,14 +338,25 @@ erasure entry of its own. A chain the index had *relinked* (§4.4) is the
 exception: its erasure entry was already there, and the call does not vouch for
 it.
 
-### 5.2 Series heads (optional)
+### 5.2 Series heads (required to checkpoint)
 
 A folder cannot show that its checkpoints are complete: with
 `anchors/<chain>/` removed, a writer starts a new series at `0001.json` over
-the chain as it stands. A writer and a verifier MAY be given a record of each
-chain's **series head**, kept where whoever can rewrite the folder cannot
-rewrite it: the number of checkpoints, and the last one's anchor chain hash
-(its `chain_hash`, format-spec §9).
+the chain as it stands. No check inside the folder can detect that, because
+the folder is what was deleted (docs/decisions.md D23). So a writer is given a
+record of each chain's **series head**, kept where whoever can rewrite the
+folder cannot rewrite it: the number of checkpoints, and the last one's anchor
+chain hash (its `chain_hash`, format-spec §9).
+
+**A writer MUST NOT checkpoint without one.** The record is the caller's to
+keep: a file on another machine, a counterparty's copy, a ticket, a signed
+commit, a transparency service (runbook.md, "Where to keep checkpoint heads").
+When there is no record yet, the caller says so explicitly, and only then is
+one started: the first checkpoint of a sink is the one moment the writer has to
+be trusted on its word (`proof sink checkpoint --heads FILE --first`, which
+refuses if FILE exists; without `--first`, a missing FILE is refused). A
+verifier MAY be given heads; without them it reports that series completeness
+was not checked.
 
 - A series with fewer checkpoints than its head, or with another anchor chain
   hash at the head's number, "was cut or restarted". A verifier MUST report it
@@ -364,10 +378,10 @@ rewrite it: the number of checkpoints, and the last one's anchor chain hash
 
   It holds chain ids, like `anchors/`: no subject, and still pseudonymous
   personal data.
-- Without heads nothing changes, and the limitation stands. Heads are asked
-  about chains the evidence file holds: a chain removed whole, with its
-  checkpoints, is not noticed through them. They do not help against someone
-  who can rewrite the heads too; that needs a witness outside the operator.
+- Heads are asked about chains the evidence file holds: a chain removed whole,
+  with its checkpoints, is not noticed through them. They do not help against
+  someone who can rewrite the heads too; that needs a witness outside the
+  operator, which is why the runbook names counterparties first.
 
 ## 6. Verification
 
@@ -518,7 +532,8 @@ operator holds.
 
 Step 2 includes the STORED linkage: every entry's `previous_hash` field MUST be
 the previous entry's chain hash, and a sink chain MUST start at `global_seq` 0
-with an empty `previous_hash`. Recomputing the hashes is not enough on its own:
+with an empty `previous_hash`. Every entry MUST be chain format v4 (§10); one
+that is not is a problem. Recomputing the hashes is not enough on its own:
 the hashes take no key, and a record signature covers the stored field.
 
 ## 7. Idempotent commits
@@ -701,10 +716,27 @@ signature says: *this signer assigned this record sequence N in chain X, after
 the entry whose chain hash is P*. Because `previous_hash` is signed, record
 signatures chain like the entries do.
 
-### 9.1 The envelope `aleutian.proof.record.v1`
+### 9.1 The envelopes `aleutian.proof.record.v2` and `.v1`
 
-The exact bytes signed, with the **empty** ML-DSA context (the domain is in the
-message):
+A record signature over a **v4 entry** (every entry v0.5.0 writes) is over
+`aleutian.proof.record.v2`, signed with the ML-DSA **context**
+`aleutian.proof.record.v2` (docs/decisions.md D21):
+
+```
+envelope = "aleutian.proof.record.v2" 0x00
+         ‖ field(0x01, chain_id) ‖ … ‖ field(0x08, signing_key_id)    as for v1, below
+         ‖ field(0x09, leaf_hash)
+```
+
+`leaf_hash` is the entry's leaf hash (format-spec §2.0), 128 lowercase hex.
+Signing it binds the salt, which the content hash alone does not: without it,
+the salt of a chain's last entry could be changed and its chain hash
+recomputed with every record signature still valid. Every other rule below
+applies to v2 as to v1, with nine fields where v1 has eight.
+
+A record signature over a **v3 entry** (sinks before v0.5.0) is over
+`aleutian.proof.record.v1`, with the **empty** ML-DSA context (the domain is in
+the message). It is verified, never written:
 
 ```
 envelope = "aleutian.proof.record.v1" 0x00
@@ -836,3 +868,25 @@ The verifier decides whether record signatures are required, never the folder.
   record trust given AND the chain has no problem at all (content and nonces
   gone, index, nothing pending, every signature valid). The signature stands
   in for the checkpoint's coverage only; it never establishes deletion.
+- **An unsigned erasure in a signing sink.** When the folder says the sink
+  signs its records (§9.2's `record_signing`) and a genuine erasure entry no
+  verified checkpoint covers has no signature row, that is a problem
+  (`erasure-unsigned`), with or without record trust: the sink signs every
+  erasure it makes, so one without a signature was written by something else.
+  This is the forged tail erasure the round-2 review found. It is checked from
+  the folder's own word, which whoever deletes the signatures file can also
+  delete; a verifier given record trust needs no such word (every entry must
+  then be signed).
+
+## 10. Versions
+
+From v0.5.0 a sink writes chain format v4 (format-spec §2.0), v7 checkpoints,
+and `record.v2` signatures, and exports `bundle.v2` (bundle-format.md §16).
+Every entry of every chain is v4 from the chain's first entry.
+
+A sink folder written before v0.5.0 (chain format v3, v6 checkpoints,
+`record.v1`) is not continued: v0.5.0's `verify` reports its v3 entries as a
+problem, and its writers refuse to append after them. Export such a folder with
+v0.4.x (`bundle.v1`, which v0.5.0 still verifies) before upgrading. This is a
+property of the sink, an application with no deployed folders, not of the
+chain format: a v3 chain in general is continued in v4 (format-spec §2.5).

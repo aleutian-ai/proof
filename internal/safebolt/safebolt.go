@@ -43,13 +43,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 
 	"github.com/aleutian-ai/proof/internal/fault"
+	"github.com/aleutian-ai/proof/internal/osfile"
 )
 
 // ErrCorrupt is fault.ErrCorrupt: the file is not a well-formed database.
@@ -104,7 +106,7 @@ func (o *openedFiles) release() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for _, f := range o.files {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		osfile.Unlock(f)
 		_ = f.Close()
 	}
 	o.files = nil
@@ -570,20 +572,39 @@ func walk(c *bolt.Cursor, child func(name []byte) *bolt.Bucket, root bool, depth
 //
 // The zero value is ready. Safe for concurrent use.
 type Checker struct {
-	mu   sync.Mutex
-	done map[fileID]bool
+	mu     sync.Mutex
+	done   map[fileID]bool
+	failed fileSet // files that failed: refused without being read again
 }
 
 // fileID identifies a file by device and inode: a file replaced under the same
 // name is a different file.
 type fileID struct{ dev, ino uint64 }
 
-func idOf(fi os.FileInfo) (fileID, bool) {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fileID{}, false
+// fileSet is a set of files, safe for concurrent use.
+type fileSet struct {
+	mu  sync.Mutex
+	ids map[fileID]bool
+}
+
+func (s *fileSet) add(id fileID) {
+	s.mu.Lock()
+	if s.ids == nil {
+		s.ids = map[fileID]bool{}
 	}
-	return fileID{dev: uint64(st.Dev), ino: uint64(st.Ino)}, true
+	s.ids[id] = true
+	s.mu.Unlock()
+}
+
+func (s *fileSet) has(id fileID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ids[id]
+}
+
+func idOf(fi os.FileInfo) (fileID, bool) {
+	dev, ino, ok := osfile.Identity(fi)
+	return fileID{dev: dev, ino: ino}, ok
 }
 
 // Once checks the file at path unless this Checker already passed it.
@@ -591,8 +612,11 @@ func idOf(fi os.FileInfo) (fileID, bool) {
 // # Description
 //
 // A file that does not exist, or is empty (bbolt initialises it), has nothing
-// to check. A file that fails is checked again on the next call: it may have
-// been repaired or replaced.
+// to check. A file that fails is refused on every later call without being
+// read again, until it is replaced (another device and inode): a check that
+// faults inside the storage layer abandons a handle, which keeps its memory
+// map until the process exits, so re-reading a damaged file on every call, as
+// a long-lived server would, would exhaust the address space.
 //
 // # Inputs
 //
@@ -632,8 +656,15 @@ func (c *Checker) Once(path string, opts *bolt.Options) error {
 		if passed {
 			return nil
 		}
+		if c.failed.has(id) {
+			return fmt.Errorf("%w (this file already failed its check in this process; it is not read "+
+				"again until it is replaced)", ErrCorrupt)
+		}
 	}
 	if err := Check(path, opts); err != nil {
+		if known && errors.Is(err, ErrCorrupt) {
+			c.failed.add(id)
+		}
 		return err
 	}
 	if known {
@@ -675,4 +706,192 @@ func (c *Checker) mark(id fileID) {
 	}
 	c.done[id] = true
 	c.mu.Unlock()
+}
+
+// CompactFile rewrites the bbolt file at path into a fresh one, so values
+// deleted from it are gone from the live file rather than left in its free
+// pages (bbolt never zeroes them).
+//
+// # Description
+//
+// Leftover copies of an interrupted compaction are removed first, even when
+// the file itself is gone: each is a copy of the file. The copy is written to
+// a new file with an unpredictable name, created exclusively, synced and
+// renamed over the original, and then the folder is synced. A crash before the
+// rename leaves the original intact. A damaged original fails the copy
+// (ErrCorrupt) and is left as it was.
+//
+// # Inputs
+//
+//   - path: the file. A missing file is not an error: there is nothing to rewrite.
+//   - srcOpts, dstOpts: how to open the original (read-only) and the copy;
+//     their OpenFile is where a caller refuses symlinks.
+//
+// # Outputs
+//
+//   - error: from opening, copying, syncing or renaming
+//
+// # Example
+//
+//	err := safebolt.CompactFile(path, &bolt.Options{ReadOnly: true}, &bolt.Options{})
+//
+// # Limitations
+//
+//   - It reaches the live file only: not SSD wear-levelled blocks, filesystem
+//     snapshots or journals, or backups.
+//   - The caller holds whatever lock keeps writers out; bbolt's own file lock
+//     is held on the original only while it is copied.
+//
+// # Assumptions
+//
+//   - path names a regular file, or nothing.
+func CompactFile(path string, srcOpts, dstOpts *bolt.Options) error {
+	dir, base := filepath.Split(path)
+	if err := removeCompactLeftovers(dir, base); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	tf, err := os.CreateTemp(dir, base+".compact-*")
+	if err != nil {
+		return err
+	}
+	tmp := tf.Name()
+	if err := tf.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	src, err := Open(path, 0o600, srcOpts)
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	dst, err := Open(tmp, 0o600, dstOpts)
+	if err != nil {
+		src.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	err = Compact(dst, src)
+	src.Close()
+	if cerr := dst.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = syncPath(tmp)
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return syncPath(filepath.Clean(dir))
+}
+
+// removeCompactLeftovers removes the temporary copies an interrupted
+// compaction of base left in dir.
+func removeCompactLeftovers(dir, base string) error {
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), base+".compact") {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove an earlier compaction's leftover: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// syncPath fsyncs a file or a folder by name.
+func syncPath(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
+// LockSuffix names the lock file beside a database: path + LockSuffix.
+const LockSuffix = ".lock"
+
+// ErrLockHeld means another process held a lock file past the timeout.
+var ErrLockHeld = errors.New("held by another process")
+
+// LockFile takes the lock on path's lock file, path + [LockSuffix], creating it
+// if need be.
+//
+// # Description
+//
+// bbolt locks the database file itself, so a lock on it cannot span a rewrite
+// that renames a fresh copy over it ([CompactFile]): a writer that opened the
+// old file in that window would write to a file that is then replaced, and
+// lose what it wrote. A separate lock file is never renamed. Every writer
+// takes it exclusively, and so does a compaction, from before the copy until
+// after the rename.
+//
+// # Inputs
+//
+//   - path: the database the lock is for
+//   - exclusive: an exclusive lock (a writer's), or a shared one
+//   - timeout: how long to wait for a held lock; zero waits forever, as bbolt's
+//     own lock does
+//
+// # Outputs
+//
+//   - *os.File: the held lock; release it with [UnlockFile]
+//   - error: wrapping ErrLockHeld on timeout, or from opening the file
+//
+// # Example
+//
+//	lock, err := safebolt.LockFile(path, true, 5*time.Second)
+//	if err != nil {
+//	    return err
+//	}
+//	defer safebolt.UnlockFile(lock)
+//
+// # Limitations
+//
+//   - flock is advisory: only code that takes this lock is held off by it.
+//   - A symlink at the lock file's name is refused, never followed.
+//
+// # Assumptions
+//
+//   - The folder is writable, or the lock file already exists.
+func LockFile(path string, exclusive bool, timeout time.Duration) (*os.File, error) {
+	f, err := osfile.OpenNoFollow(path+LockSuffix, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open the lock file: %w", err)
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		got, err := osfile.TryLock(f, exclusive)
+		if got {
+			return f, nil
+		}
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("take the lock: %w", err)
+		}
+		if timeout > 0 && time.Now().After(deadline) {
+			f.Close()
+			return nil, fmt.Errorf("the lock file is %w (waited %s)", ErrLockHeld, timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// UnlockFile releases and closes a lock taken by LockFile. nil is a no-op.
+func UnlockFile(f *os.File) {
+	if f == nil {
+		return
+	}
+	osfile.Unlock(f)
+	_ = f.Close()
 }

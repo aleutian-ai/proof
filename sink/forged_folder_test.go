@@ -110,7 +110,7 @@ func TestForgedErasure_IsNotCheckpointed(t *testing.T) {
 	}
 
 	// The routine checkpoint refuses it, and says what to do.
-	done, err := s.Checkpoint(ctx, signer, nil)
+	done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestForgedErasure_IsNotCheckpointed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		done, err := s.Checkpoint(ctx, signer, nil, confirm(res.Erased...))
+		done, err := s.Checkpoint(ctx, signer, nil, confirm(res.Erased...), UntrackedHeads())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -157,7 +157,7 @@ func TestForgedErasure_IsNotCheckpointed(t *testing.T) {
 		victim := res.Erased[0].Chain
 		truncateTail(t, s, victim)
 		forgeErasure(t, s, victim)
-		done, err := s.Checkpoint(ctx, signer, nil, confirm(res.Erased...))
+		done, err := s.Checkpoint(ctx, signer, nil, confirm(res.Erased...), UntrackedHeads())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -167,7 +167,7 @@ func TestForgedErasure_IsNotCheckpointed(t *testing.T) {
 	})
 	t.Run("a result that is not a chain and an entry id is refused", func(t *testing.T) {
 		for _, r := range []EraseResult{{Chain: chain, ErasureEntryID: "../" + forged}, {Chain: "../x", ErasureEntryID: forged}} {
-			if _, err := s.Checkpoint(ctx, signer, nil, ConfirmErasures(r)); err == nil {
+			if _, err := s.Checkpoint(ctx, signer, nil, ConfirmErasures(r), UntrackedHeads()); err == nil {
 				t.Fatalf("ConfirmErasures took %+v", r)
 			}
 		}
@@ -210,12 +210,12 @@ func TestRealErasure_IsCheckpointedWhenConfirmed(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Not without it: a real erasure and a forged one look the same.
-		done, err := s.Checkpoint(ctx, signer, nil)
+		done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 		if err != nil || problemFor(done, chain) == "" {
 			t.Fatalf("an unconfirmed erasure was signed: %+v, %v", done, err)
 		}
 		// Only the chains named, when asked.
-		done, err = s.Checkpoint(ctx, signer, nil, confirm(res.Erased...), OnlyChains(chain))
+		done, err = s.Checkpoint(ctx, signer, nil, confirm(res.Erased...), OnlyChains(chain), UntrackedHeads())
 		if err != nil || len(done) != 1 || done[0].Chain != chain || done[0].Problem != "" {
 			t.Fatalf("Checkpoint = %+v, %v; want exactly the erased chain signed", done, err)
 		}
@@ -231,17 +231,17 @@ func TestRealErasure_IsCheckpointedWhenConfirmed(t *testing.T) {
 			t.Fatal(err)
 		}
 		chain := cid(t, s, "u-81")
-		if _, err := s.Checkpoint(ctx, signer, nil); err != nil {
+		if _, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads()); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.EraseSubject(ctx, "u-81"); err != nil {
 			t.Fatal(err)
 		}
-		done, err := s.Checkpoint(ctx, signer, nil)
+		done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 		if err != nil || problemFor(done, chain) == "" {
 			t.Fatalf("without record trust the erasure was signed: %+v, %v", done, err)
 		}
-		done, err = s.Checkpoint(ctx, signer, nil, CheckpointRecordTrust(recordRing(t, rs)))
+		done, err = s.Checkpoint(ctx, signer, nil, CheckpointRecordTrust(recordRing(t, rs)), UntrackedHeads())
 		if err != nil || len(done) != 1 || done[0].Problem != "" {
 			t.Fatalf("Checkpoint with record trust = %+v, %v; want the erased chain signed", done, err)
 		}
@@ -259,7 +259,7 @@ func TestRealErasure_IsCheckpointedWhenConfirmed(t *testing.T) {
 		chain := cid(t, s, "u-81")
 		forgeErasure(t, s, chain)
 		dropIndexRows(t, s, "u-81")
-		done, err := s.Checkpoint(ctx, signer, nil, CheckpointRecordTrust(recordRing(t, rs)))
+		done, err := s.Checkpoint(ctx, signer, nil, CheckpointRecordTrust(recordRing(t, rs)), UntrackedHeads())
 		if err != nil || problemFor(done, chain) == "" {
 			t.Fatalf("an unsigned erasure was signed over under record trust: %+v, %v", done, err)
 		}
@@ -293,7 +293,7 @@ func TestForgedErasure_RelinkedIsNotConfirmedByResume(t *testing.T) {
 		t.Fatalf("EraseSubject = %+v, %v; an ordinary erasure is not Relinked", res, err)
 	}
 	// Left unconfirmed, it is never signed.
-	done, err := s.Checkpoint(ctx, signer, nil)
+	done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 	if err != nil || problemFor(done, chain) == "" {
 		t.Fatalf("Checkpoint = %+v, %v; want the relinked chain's erasure refused", done, err)
 	}
@@ -461,7 +461,7 @@ func TestCheckpointHeads_ARestartedSeriesIsRefused(t *testing.T) {
 	// recorded: u-81's series is 0001, 0002.
 	withHeads := func(t *testing.T) (*Sink, *HeadsFile, string, func(...CheckpointOption) []Checkpointed, func() Report) {
 		s, signer, ring := setup(t)
-		heads := FileHeads(filepath.Join(t.TempDir(), "heads.json"))
+		heads := NewFileHeads(filepath.Join(t.TempDir(), "heads.json"))
 		chain := cid(t, s, "u-81")
 		checkpoint := func(opts ...CheckpointOption) []Checkpointed {
 			t.Helper()
@@ -524,7 +524,7 @@ func TestCheckpointHeads_ARestartedSeriesIsRefused(t *testing.T) {
 		if err := os.RemoveAll(s.anchorDir(chain)); err != nil {
 			t.Fatal(err)
 		}
-		done, err := s.Checkpoint(ctx, signer, nil)
+		done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 		if err != nil || len(done) != 1 || done[0].Problem != "" {
 			t.Fatalf("Checkpoint = %+v, %v", done, err)
 		}
@@ -564,13 +564,13 @@ func TestCheckpointHeads_ARestartedSeriesIsRefused(t *testing.T) {
 		if err := os.RemoveAll(s.anchorDir(chain)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Checkpoint(ctx, signer2, nil); err != nil {
+		if _, err := s.Checkpoint(ctx, signer2, nil, UntrackedHeads()); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.Commit(ctx, events("u-81", 1)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.Checkpoint(ctx, signer2, nil); err != nil {
+		if _, err := s.Checkpoint(ctx, signer2, nil, UntrackedHeads()); err != nil {
 			t.Fatal(err)
 		}
 		_ = verify
@@ -607,15 +607,24 @@ func TestFileHeads(t *testing.T) {
 	chain := "events." + strings.Repeat("ab", 16)
 	hashA, hashB := strings.Repeat("a", 128), strings.Repeat("b", 128)
 
-	h := FileHeads(path)
+	// A missing file is never an empty record: deleting it is what a
+	// restarted series looks like (docs/decisions.md D23).
+	if _, _, _, err := FileHeads(path).Head(ctx, chain); !errors.Is(err, ErrHeadsFileMissing) {
+		t.Fatalf("a missing file through FileHeads: %v, want ErrHeadsFileMissing", err)
+	}
+	h := NewFileHeads(path)
 	if _, _, ok, err := h.Head(ctx, chain); err != nil || ok {
-		t.Fatalf("a missing file: ok=%v err=%v; want no head and no error", ok, err)
+		t.Fatalf("a record not yet started: ok=%v err=%v; want no head and no error", ok, err)
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("reading a head created the file")
 	}
 	if err := h.SetHead(ctx, chain, 1, hashA); err != nil {
 		t.Fatal(err)
+	}
+	// A record is started once.
+	if _, _, _, err := NewFileHeads(path).Head(ctx, chain); !errors.Is(err, ErrHeadsFileExists) {
+		t.Fatalf("NewFileHeads over an existing file: %v, want ErrHeadsFileExists", err)
 	}
 	// A second handle reads what the first wrote, and the first sees its update.
 	h2 := FileHeads(path)
@@ -718,7 +727,7 @@ func TestNotClosed_APendingMarkerMakesTheSinkEraseAChain(t *testing.T) {
 				t.Fatal(err)
 			}
 			all := append(append([]EraseResult(nil), res.Resumed...), res.Erased...)
-			if _, err := s.Checkpoint(ctx, signer, nil, confirm(all...)); err != nil {
+			if _, err := s.Checkpoint(ctx, signer, nil, confirm(all...), UntrackedHeads()); err != nil {
 				t.Fatal(err)
 			}
 			if cr := chainReport(t, mustVerify(t, s, ring), victim); cr.Index != IndexErased {
@@ -808,7 +817,7 @@ func TestForgedErasure_AConfirmedIDCopiedToAnotherChain(t *testing.T) {
 	forgeErasureWithID(t, s, victim, res.Erased[0].ErasureEntryID)
 	dropIndexRows(t, s, "u-82")
 
-	done, err := s.Checkpoint(ctx, signer, nil, ConfirmErasures(res.Erased...))
+	done, err := s.Checkpoint(ctx, signer, nil, ConfirmErasures(res.Erased...), UntrackedHeads())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +852,7 @@ func TestConfirmErasedChains(t *testing.T) {
 	if resumed, err := s.ResumeErasures(ctx); err != nil || len(resumed) != 0 {
 		t.Fatalf("ResumeErasures = %+v, %v; want nothing left to return", resumed, err)
 	}
-	done, err := s.Checkpoint(ctx, signer, nil)
+	done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -852,7 +861,7 @@ func TestConfirmErasedChains(t *testing.T) {
 	}
 	// Vouching for a chain that is not an unconfirmed erasure confirms nothing,
 	// and says so.
-	done, err = s.Checkpoint(ctx, signer, nil, ConfirmErasedChains(live))
+	done, err = s.Checkpoint(ctx, signer, nil, ConfirmErasedChains(live), UntrackedHeads())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -862,18 +871,18 @@ func TestConfirmErasedChains(t *testing.T) {
 	if problemFor(done, chain) == "" {
 		t.Fatalf("vouching for one chain confirmed another: %+v", done)
 	}
-	if _, err := s.Checkpoint(ctx, signer, nil, ConfirmErasedChains("../x")); err == nil {
+	if _, err := s.Checkpoint(ctx, signer, nil, ConfirmErasedChains("../x"), UntrackedHeads()); err == nil {
 		t.Fatal("ConfirmErasedChains took something that is not a chain id")
 	}
 	// Vouched for: signed, once, and then quiet.
-	done, err = s.Checkpoint(ctx, signer, nil, ConfirmErasedChains(chain))
+	done, err = s.Checkpoint(ctx, signer, nil, ConfirmErasedChains(chain), UntrackedHeads())
 	if err != nil || len(done) != 1 || done[0].Chain != chain || done[0].Problem != "" {
 		t.Fatalf("Checkpoint = %+v, %v; want the vouched chain signed", done, err)
 	}
 	if cr := chainReport(t, mustVerify(t, s, ring), chain); cr.Index != IndexErased {
 		t.Fatalf("after vouching: %+v", cr)
 	}
-	if done, err := s.Checkpoint(ctx, signer, nil); err != nil || len(done) != 0 {
+	if done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads()); err != nil || len(done) != 0 {
 		t.Fatalf("a routine run afterwards = %+v, %v; want nothing to report", done, err)
 	}
 
@@ -888,7 +897,7 @@ func TestConfirmErasedChains(t *testing.T) {
 		if err := writeContent(s, chain, ids[0], []byte("still here")); err != nil {
 			t.Fatal(err)
 		}
-		done, err := s.Checkpoint(ctx, signer, nil, ConfirmErasedChains(chain))
+		done, err := s.Checkpoint(ctx, signer, nil, ConfirmErasedChains(chain), UntrackedHeads())
 		if err != nil || !strings.Contains(problemFor(done, chain), "does not verify") {
 			t.Fatalf("Checkpoint = %+v, %v; want the chain refused", done, err)
 		}
@@ -912,7 +921,7 @@ func TestForgedErasure_APlainEraseDoesNotVouchForIt(t *testing.T) {
 	if len(res.Erased) != 1 || res.Erased[0].ErasureEntryID != forged || !res.Erased[0].Relinked {
 		t.Fatalf("EraseSubject = %+v; want the adopted erasure marked Relinked", res.Erased)
 	}
-	done, err := s.Checkpoint(ctx, signer, nil, ConfirmErasures(res.Erased...))
+	done, err := s.Checkpoint(ctx, signer, nil, ConfirmErasures(res.Erased...), UntrackedHeads())
 	if err != nil || problemFor(done, chain) == "" {
 		t.Fatalf("Checkpoint = %+v, %v; want the adopted erasure refused", done, err)
 	}
@@ -976,6 +985,35 @@ func TestSourceConflict_SaysWhy(t *testing.T) {
 		_, err := s.Commit(ctx, rec)
 		if !errors.Is(err, ErrSourceConflict) || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: %v; want ErrSourceConflict saying %q", source, err, want)
+		}
+	}
+}
+
+// TestForgedErasure_UnsignedInASigningSinkIsAProblem is review round 2's
+// TestZZ_ForgedErasureLaundered against a sink that signs its records: the
+// sink signs every erasure it makes, so one without a signature is reported
+// (erasure-unsigned), with and without record trust, while the sink's own
+// signed erasure of another subject is not.
+func TestForgedErasure_UnsignedInASigningSinkIsAProblem(t *testing.T) {
+	ctx := context.Background()
+	s, ring, rs := signedSink(t)
+	forged := cid(t, s, "u-1")
+	real := cid(t, s, "u-2")
+	forgeErasure(t, s, forged)
+	dropIndexRows(t, s, "u-1")
+	if _, err := s.EraseSubject(ctx, "u-2"); err != nil {
+		t.Fatal(err)
+	}
+	for name, opts := range map[string][]VerifyOption{
+		"without record trust": nil,
+		"with record trust":    {WithRecordTrust(recordRing(t, rs))},
+	} {
+		r := verifyWith(t, s, ring, opts...)
+		if cr := chainReport(t, r, forged); !hasProblemWith(cr, "erasure-unsigned") {
+			t.Errorf("%s: the forged erasure is not reported: %+v", name, cr)
+		}
+		if cr := chainReport(t, r, real); hasProblemWith(cr, "erasure-unsigned") {
+			t.Errorf("%s: the sink's own signed erasure was reported: %+v", name, cr)
 		}
 	}
 }

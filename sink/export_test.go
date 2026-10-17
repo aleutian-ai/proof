@@ -35,6 +35,8 @@ type bundleEntry struct {
 	Timestamp       string `json:"timestamp"`
 	ContentHash     string `json:"content_hash"`
 	ChainHash       string `json:"chain_hash"`
+	Salt            string `json:"salt"`
+	LeafHash        string `json:"leaf_hash"`
 	RecordSignature *struct {
 		KeyID     string `json:"key_id"`
 		Signature string `json:"signature"`
@@ -97,7 +99,7 @@ func TestExport_All(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.HasPrefix(raw, []byte(`{"format":"aleutian.proof.bundle.v1","chains":[{"chain_id":`)) {
+	if !bytes.HasPrefix(raw, []byte(`{"format":"aleutian.proof.bundle.v2","chains":[{"chain_id":`)) {
 		t.Fatalf("member order: %.80s", raw)
 	}
 	b := decodeStrict(t, raw)
@@ -479,13 +481,18 @@ func TestExport_ExportedStringsRecompute(t *testing.T) {
 			if _, err := fmt.Sscan(e.GlobalSeq, &seq); err != nil {
 				t.Fatal(err)
 			}
-			h, err := chainformat.ComputeChainHashV3(e.PreviousHash, seq, ts, e.ContentHash)
+			leaf, err := chainformat.ComputeLeafHashV4(e.EntryID, e.EntryType, e.ContentHash, e.Salt)
+			if err != nil || leaf != e.LeafHash {
+				t.Fatalf("leaf hash does not recompute from the exported strings: %v", err)
+			}
+			h, err := chainformat.ComputeChainHashV4(e.PreviousHash, seq, ts, e.LeafHash)
 			if err != nil || h != e.ChainHash {
 				t.Fatalf("chain hash does not recompute from the exported strings: %v", err)
 			}
 			sig, _ := base64.StdEncoding.DecodeString(e.RecordSignature.Signature)
 			f := recordFields{chainID: c.ChainID, entryID: e.EntryID, entryType: e.EntryType, globalSeq: seq,
-				prevHash: e.PreviousHash, timestamp: ts, contentHash: e.ContentHash, keyID: e.RecordSignature.KeyID}
+				prevHash: e.PreviousHash, timestamp: ts, contentHash: e.ContentHash, keyID: e.RecordSignature.KeyID,
+				formatVersion: chainformat.FormatV4, leafHash: e.LeafHash}
 			if err := verifyRecordSignature(key.pub, f, sig); err != nil {
 				t.Fatalf("record signature does not verify from the exported strings: %v", err)
 			}

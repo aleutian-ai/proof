@@ -15,6 +15,13 @@
 // passes the same suite as the in-memory one is interchangeable with it in a way
 // that can be checked rather than asserted.
 //
+// # Not part of the compatibility promise
+//
+// This is a test suite for adapter authors, and it grows as the port's
+// contract is pinned more tightly: a new check can fail an adapter that passed
+// the last release. That is its purpose. The port in package store is what is
+// promised.
+//
 // # Usage
 //
 //	func TestConformance(t *testing.T) {

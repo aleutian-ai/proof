@@ -1,5 +1,5 @@
 {
-  "_comment": "Anchor v6 canonical form: compact JSON, keys in alphabetical order, signature excluded, strings escaped exactly as Go's encoding/json with HTML escaping ON (< > & as \\u003c \\u003e \\u0026; U+2028/U+2029 escaped; other non-ASCII as UTF-8). canonical_sha512 lets an implementation check bytes without trusting its JSON parser. Computed in Python (scripts/independent-vectors.py). See docs/format-spec.md, Anchors.",
+  "_comment": "FROZEN: this format is verified forever and never written after v0.5.0 (docs/format-spec.md §2.6, bundle-format.md §16); these cases will never change. Anchor v6 canonical form: compact JSON, keys in alphabetical order, signature excluded, strings escaped exactly as Go's encoding/json with HTML escaping ON (< > & as \\u003c \\u003e \\u0026; U+2028/U+2029 escaped; other non-ASCII as UTF-8). canonical_sha512 lets an implementation check bytes without trusting its JSON parser. Computed in Python (scripts/independent-vectors.py). See docs/format-spec.md, Anchors.",
   "version": 1,
   "vectors": [
     {

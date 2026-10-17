@@ -263,8 +263,8 @@ type reusingSigner struct {
 }
 
 func (r *reusingSigner) Public() crypto.PublicKey { return r.real.Public() }
-func (r *reusingSigner) SignRecord(ctx context.Context, env []byte) ([]byte, error) {
-	sig, err := r.real.SignRecord(ctx, env)
+func (r *reusingSigner) SignRecord(ctx context.Context, env []byte, mctx string) ([]byte, error) {
+	sig, err := r.real.SignRecord(ctx, env, mctx)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +305,7 @@ type cancellingSigner struct {
 }
 
 func (c *cancellingSigner) Public() crypto.PublicKey { return c.real.Public() }
-func (c *cancellingSigner) SignRecord(ctx context.Context, env []byte) ([]byte, error) {
+func (c *cancellingSigner) SignRecord(ctx context.Context, env []byte, mctx string) ([]byte, error) {
 	c.mu.Lock()
 	c.calls++
 	c.mu.Unlock()

@@ -5,6 +5,8 @@ package linker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -90,10 +92,7 @@ func verifyAll(t *testing.T, s store.Store, chains []string) {
 		}
 		ve := make([]verify.Entry, len(es))
 		for i, e := range es {
-			ve[i] = verify.Entry{EntryID: e.EntryID, EntryType: e.EntryType,
-				Timestamp:     e.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-				FormatVersion: e.FormatVersion, GlobalSeq: e.GlobalSeq,
-				ContentHash: e.ContentHash, ChainHash: e.ChainHash}
+			ve[i] = verify.FromStored(e)
 		}
 		res, err := verify.Chain(ve, verify.Options{})
 		if err != nil || len(res.Breaks) != 0 {
@@ -102,13 +101,24 @@ func verifyAll(t *testing.T, s store.Store, chains []string) {
 	}
 }
 
-// THE invariant (design §4): for FormatV3, AppendChains produces byte-identical
-// entries to appending each chain on its own with Append, whatever the chains,
-// the batch sizes, the input order (shuffled, with tied arrivals), how the
-// rounds are grouped, or whether Append is mixed in on the same store (erasure
-// still appends per chain). It holds on every store, and the result verifies
-// independently.
-func TestAppendChains_V3MatchesAppend(t *testing.T) {
+// THE invariant (design §4): for FormatV3 and FormatV4, AppendChains produces
+// byte-identical entries to appending each chain on its own with Append,
+// whatever the chains, the batch sizes, the input order (shuffled, with tied
+// arrivals), how the rounds are grouped, or whether Append is mixed in on the
+// same store (erasure still appends per chain). It holds on every store, and
+// the result verifies independently. v4 entries carry salts set on the inputs,
+// as the sink sets them, so that both stores receive the same ones.
+func TestAppendChains_MatchesAppend(t *testing.T) {
+	for _, format := range []int{chainformat.FormatV3, chainformat.FormatV4} {
+		t.Run(fmt.Sprintf("v%d", format), func(t *testing.T) { appendChainsMatchesAppend(t, format) })
+	}
+}
+
+func appendChainsMatchesAppend(t *testing.T, format int) {
+	var opts []Option
+	if format == chainformat.FormatV3 {
+		opts = append(opts, WithFormatV3())
+	}
 	for name, newStore := range storeFactories(t) {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -116,11 +126,11 @@ func TestAppendChains_V3MatchesAppend(t *testing.T) {
 			rng := rand.New(rand.NewPCG(7, 74))
 			for trial := 0; trial < 25; trial++ {
 				seq, batched := newStore(), newStore()
-				ls, err := New(seq, WithClock(func() time.Time { return fixed }))
+				ls, err := New(seq, append(opts, WithClock(func() time.Time { return fixed }))...)
 				if err != nil {
 					t.Fatal(err)
 				}
-				lb, err := New(batched, WithClock(func() time.Time { return fixed }))
+				lb, err := New(batched, append(opts, WithClock(func() time.Time { return fixed }))...)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -133,7 +143,14 @@ func TestAppendChains_V3MatchesAppend(t *testing.T) {
 						if rng.IntN(4) == 0 {
 							continue // a chain sits this round out
 						}
-						batches = append(batches, ChainInputs{ChainID: c, Inputs: shuffledWithTies(rng, c, 1+rng.IntN(5), base)})
+						in := shuffledWithTies(rng, c, 1+rng.IntN(5), base)
+						if format == chainformat.FormatV4 {
+							for i := range in {
+								sum := sha256.Sum256([]byte(in[i].EntryID))
+								in[i].Salt = hex.EncodeToString(sum[:])
+							}
+						}
+						batches = append(batches, ChainInputs{ChainID: c, Inputs: in})
 					}
 					if len(batches) == 0 {
 						continue
@@ -189,7 +206,7 @@ func TestAppendChains_V3Golden(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 1, 20, 12, 0, 0, 0, time.UTC)
 	s := memory.New()
-	l, err := New(s)
+	l, err := New(s, WithFormatV3())
 	if err != nil {
 		t.Fatal(err)
 	}

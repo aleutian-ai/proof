@@ -322,7 +322,7 @@ func TestEntryReader_WalksALongChainInBoundedMemory(t *testing.T) {
 	}
 	a := anchorOver(t, []Entry{m.first, m.last}, m.last.ChainHash, anchor.SeedAnchorHash)
 	a.EntryCount, a.VerifiedThrough = n, n
-	bound, err := w.BindAnchor(a, anchor.SeedAnchorHash)
+	bound, err := w.BindAnchor(a, Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil || !bound.Bound {
 		t.Fatalf("bind: %+v, %v", bound, err)
 	}
@@ -374,14 +374,14 @@ func TestWalkerBindAnchor_AgreesWithBindAnchor(t *testing.T) {
 			if err := json.Unmarshal(c.Anchor, &a); err != nil {
 				t.Fatalf("the case's anchor does not parse: %v", err)
 			}
-			want, wantErr := BindAnchor(a, c.Entries, c.PreviousAnchorHash)
+			want, wantErr := BindAnchor(a, c.Entries, Expect{PreviousAnchorHash: c.PreviousAnchorHash})
 			// Any break limit that keeps the first break binds alike.
 			for _, max := range []int{0, 1, 5} {
 				w := NewWalker(Options{MaxBreaks: max})
 				for _, e := range c.Entries {
 					w.Add(e)
 				}
-				got, err := w.BindAnchor(a, c.PreviousAnchorHash)
+				got, err := w.BindAnchor(a, Expect{PreviousAnchorHash: c.PreviousAnchorHash})
 				if (err == nil) != (wantErr == nil) || (err != nil && err.Error() != wantErr.Error()) {
 					t.Fatalf("MaxBreaks %d: error = %v, BindAnchor's = %v", max, err, wantErr)
 				}
@@ -391,7 +391,7 @@ func TestWalkerBindAnchor_AgreesWithBindAnchor(t *testing.T) {
 			}
 		})
 	}
-	if _, err := NewWalker(Options{}).BindAnchor(anchor.Anchor{}, anchor.SeedAnchorHash); !errors.Is(err, ErrNoEntries) {
+	if _, err := NewWalker(Options{}).BindAnchor(anchor.Anchor{}, Expect{PreviousAnchorHash: anchor.SeedAnchorHash}); !errors.Is(err, ErrNoEntries) {
 		t.Errorf("a walker with no entries: error = %v, want ErrNoEntries", err)
 	}
 }

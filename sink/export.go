@@ -26,7 +26,7 @@ import (
 )
 
 // BundleFormat is the export bundle format this sink writes (docs/bundle-format.md).
-const BundleFormat = "aleutian.proof.bundle.v1"
+const BundleFormat = "aleutian.proof.bundle.v2"
 
 // Bundle limits (bundle-format.md §5). An exporter never writes a bundle that
 // conforming verifiers must refuse. Variables only so tests can shrink them.
@@ -44,7 +44,7 @@ var (
 	ErrExportEmpty = errors.New("sink: the selection matched no chain; nothing to export")
 	// ErrExportTooLarge: the bundle would exceed bundle-format.md §5's limits.
 	ErrExportTooLarge = errors.New("sink: the export would exceed the bundle limits; narrow the selection")
-	// ErrExportUnrepresentable: the folder holds something bundle.v1 cannot
+	// ErrExportUnrepresentable: the folder holds something bundle.v2 cannot
 	// represent faithfully. The export fails rather than hide it.
 	ErrExportUnrepresentable = errors.New("sink: the folder holds what a bundle cannot represent faithfully")
 	// ErrDisclosure: a requested disclosure cannot be honoured.
@@ -119,7 +119,7 @@ type ExportSummary struct {
 // still pseudonymous personal data (bundle-format.md §2).
 //
 // Damage is never repaired or hidden. A signature row is exported exactly
-// (split at its storage boundary). What bundle.v1 cannot represent faithfully
+// (split at its storage boundary). What bundle.v2 cannot represent faithfully
 // fails the whole export (ErrExportUnrepresentable): an invalid chain id, a
 // gap or stray file among a chain's checkpoints, checkpoint text that is not
 // UTF-8, an unreadable signatures file, or a live event asked to be disclosed
@@ -428,24 +428,26 @@ func (ex *exporter) readEntries(ctx context.Context, p *pageFiles, pos int, chai
 	}
 }
 
-// representable refuses an entry bundle.v1 cannot carry faithfully: a chain
-// format other than v3 (a bundle verifier would report a hash mismatch where
-// the folder reports the format), or a timestamp outside years 0001-9999 (no
-// format-spec §4 timestamp can express it).
+// representable refuses an entry bundle.v2 cannot carry faithfully: a chain
+// format other than v4 or an erased v4 entry (a bundle verifier would report
+// a hash mismatch or a shape where the folder reports the format), or a
+// timestamp outside years 0001-9999 (no format-spec §4 timestamp can express
+// it).
 func representable(r store.Entry) bool {
-	if r.FormatVersion != chainformat.FormatV3 {
+	if r.FormatVersion != chainformat.FormatV4 || r.Erased {
 		return false
 	}
 	y := r.Timestamp.UTC().Year()
 	return y >= 1 && y <= 9999
 }
 
-// wellFormed is bundle-format.md §7.1's well-formedness, for the fields the
-// store can hold out of shape.
+// wellFormed is bundle-format.md §7.1's well-formedness (v2, §16), for the
+// fields the store can hold out of shape.
 func wellFormed(r store.Entry) bool {
 	return entryIDPattern.MatchString(r.EntryID) && r.GlobalSeq >= 0 &&
 		(r.PreviousHash == "" || hex128.MatchString(r.PreviousHash)) &&
-		hex128.MatchString(r.ContentHash) && hex128.MatchString(r.ChainHash)
+		hex128.MatchString(r.ContentHash) && hex128.MatchString(r.ChainHash) &&
+		chainformat.ValidateSaltV4(r.Salt) == nil && hex128.MatchString(r.LeafHash)
 }
 
 // chain writes one chain, read under the page p holds.
@@ -467,7 +469,7 @@ func (ex *exporter) chain(ctx context.Context, p *pageFiles, pos int, chain stri
 	}
 	for _, r := range rows {
 		if !representable(r) {
-			return fmt.Errorf("%w: chain #%d holds an entry that is not chain format v3, "+
+			return fmt.Errorf("%w: chain #%d holds an entry that is not a live chain format v4 entry, "+
 				"or whose timestamp is outside years 0001-9999", ErrExportUnrepresentable, pos)
 		}
 	}
@@ -528,6 +530,10 @@ func (ex *exporter) chain(ctx context.Context, p *pageFiles, pos int, chain stri
 		cw.json(r.ContentHash)
 		cw.str(`,"chain_hash":`)
 		cw.json(r.ChainHash)
+		cw.str(`,"salt":`)
+		cw.json(r.Salt)
+		cw.str(`,"leaf_hash":`)
+		cw.json(r.LeafHash)
 		if err := ex.signature(p, chain, r.EntryID); err != nil {
 			return err
 		}

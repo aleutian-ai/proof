@@ -118,7 +118,9 @@ type DirResult struct {
 //
 // # Inputs
 //
-//   - dir: the bundle directory
+//   - dir: the bundle directory, already opened as an [os.Root] by the caller,
+//     which decides what directory that is (a server confines it to its own
+//     root by opening it through that root); every read is through it
 //   - files: the manifest's files[] entries
 //   - claimedRoot: the manifest's manifest_root; empty skips the root check
 //   - maxFileBytes: per-file size cap; <= 0 uses DefaultMaxFileBytes
@@ -131,6 +133,11 @@ type DirResult struct {
 //
 // # Example
 //
+//	dir, err := os.OpenRoot("bundle")
+//	if err != nil {
+//	    return err
+//	}
+//	defer dir.Close()
 //	res, err := bundle.VerifyDir(dir, m.Files, m.ManifestRoot, 0)
 //	if err != nil {
 //	    return err
@@ -146,31 +153,24 @@ type DirResult struct {
 //   - Does not verify any signature. See anchor.VerifySignature and D14.
 //   - Follows no symlinks, in any path component: a listed path that is a
 //     symlink, or that passes through a symlinked directory, is reported
-//     unreadable, not chased. Every file is opened through an [os.Root] on dir,
-//     so a path swapped for a symlink mid-check still cannot leave the bundle.
+//     unreadable, not chased. Every file is read through dir, so a path
+//     swapped for a symlink mid-check still cannot leave the bundle.
 //
 // # Assumptions
 //
-//   - dir is a path the caller intends to read; this function never writes
-func VerifyDir(dir string, files []FileEntry, claimedRoot string, maxFileBytes int64) (DirResult, error) {
+//   - dir is the directory the caller intends to read; this function never
+//     writes, and does not close it
+func VerifyDir(dir *os.Root, files []FileEntry, claimedRoot string, maxFileBytes int64) (DirResult, error) {
+	if dir == nil {
+		return DirResult{}, errors.New("bundle: a directory is required")
+	}
 	if maxFileBytes <= 0 {
 		maxFileBytes = DefaultMaxFileBytes
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		return DirResult{}, fmt.Errorf("bundle: open %s: %w", dir, err)
-	}
-	if !info.IsDir() {
-		return DirResult{}, fmt.Errorf("bundle: %s is not a directory", dir)
 	}
 	if len(files) == 0 {
 		return DirResult{}, ErrEmptyManifest
 	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return DirResult{}, fmt.Errorf("bundle: open %s: %w", dir, err)
-	}
-	defer func() { _ = root.Close() }()
+	root := dir
 
 	res := DirResult{
 		Proven: "every file listed in the manifest is present and its bytes match " +
@@ -195,7 +195,7 @@ func VerifyDir(dir string, files []FileEntry, claimedRoot string, maxFileBytes i
 		}
 		listed[f.Path] = struct{}{}
 
-		rel, perr := safePath(dir, f.Path)
+		rel, perr := safePath(f.Path)
 		if perr != nil {
 			res.Problems = append(res.Problems, Problem{
 				Path: f.Path, Kind: ProblemUnsafePath, Detail: perr.Error(),
@@ -265,7 +265,7 @@ func VerifyDir(dir string, files []FileEntry, claimedRoot string, maxFileBytes i
 // A manifest is untrusted. Without this, an attacker controlling it could point
 // the verifier at /etc/shadow and learn — from whether the digest matched —
 // something about a file outside the bundle entirely.
-func safePath(dir, relSlash string) (string, error) {
+func safePath(relSlash string) (string, error) {
 	if relSlash == "" {
 		return "", errors.New("empty path")
 	}
@@ -282,15 +282,10 @@ func safePath(dir, relSlash string) (string, error) {
 		return "", errors.New("path is not in clean form: it has a \".\" or \"..\" component, " +
 			"or a doubled or trailing slash")
 	}
-	joined := filepath.Join(dir, rel)
-	back, err := filepath.Rel(dir, joined)
-	if err != nil {
-		return "", err
-	}
-	if back == "." || back == ".." || strings.HasPrefix(back, ".."+string(filepath.Separator)) {
+	if !filepath.IsLocal(rel) {
 		return "", errors.New("path escapes the bundle directory")
 	}
-	return back, nil
+	return rel, nil
 }
 
 // errNotRegular is what a listed path that is not a plain file reports.
@@ -348,24 +343,20 @@ func hashRegularFile(root *os.Root, rel string, cap int64) (string, error) {
 
 // filesOnDisk returns the bundle-relative, slash-separated path of every
 // file under dir that is not a directory.
-func filesOnDisk(dir string) (map[string]struct{}, error) {
+func filesOnDisk(dir *os.Root) (map[string]struct{}, error) {
 	found := map[string]struct{}{}
-	err := filepath.WalkDir(dir, func(full string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(dir.FS(), ".", func(rel string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		rel, rerr := filepath.Rel(dir, full)
-		if rerr != nil {
-			return rerr
-		}
-		found[filepath.ToSlash(rel)] = struct{}{}
+		found[rel] = struct{}{}
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bundle: walk %s: %w", dir, err)
+		return nil, fmt.Errorf("bundle: walk the bundle directory: %w", err)
 	}
 	return found, nil
 }

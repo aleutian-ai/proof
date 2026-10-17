@@ -299,7 +299,7 @@ func VerifySignature(a Anchor, src KeySource) (Trust, error) {
 	// 4. Verify, through the same primitive SignCanonical self-checks with, so
 	// "the signer just produced this" and "this package accepts this" cannot
 	// drift apart.
-	if err := verifyMLDSA65(pubKey, canonical, sig); err != nil {
+	if err := verifyMLDSA65(pubKey, canonical, sig, SigningContext(a.Version)); err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidSignature, err)
 	}
 	return trust, nil

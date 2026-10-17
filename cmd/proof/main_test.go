@@ -182,7 +182,7 @@ func TestCLI_ErasedEntryIsNotABreak(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("a lawfully erased entry made verify exit %d:\n%s", code, stdout)
 	}
-	if !strings.Contains(stdout, "1 erased") {
+	if !strings.Contains(stdout, "1 v2/v3 tombstones") {
 		t.Errorf("verify did not report the erasure:\n%s", stdout)
 	}
 }
@@ -578,7 +578,7 @@ func TestExportAndVerify_MemoryDoesNotGrowWithTheChain(t *testing.T) {
 
 	var stdout string
 	verifyPeak := peakHeld(func() {
-		code, stdout, stderr = capture(t, "verify", exported, "--anchor", anchorPath)
+		code, stdout, stderr = capture(t, "verify", exported, "--anchor", anchorPath, "--subject", "acct-7f3a")
 	})
 	if code != exitOK || !strings.Contains(stdout, fmt.Sprintf("INTACT, ANCHORED — %d entries", n)) ||
 		!strings.Contains(stdout, "ANCHOR BOUND") {

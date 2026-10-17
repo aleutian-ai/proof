@@ -88,7 +88,7 @@ func TestCorruptFiles_AreAnErrorNotACrash(t *testing.T) {
 			return err
 		},
 		"checkpoint": func(ctx context.Context, s *Sink) error {
-			_, err := s.Checkpoint(ctx, nil, nil)
+			_, err := s.Checkpoint(ctx, nil, nil, UntrackedHeads())
 			return err
 		},
 		"chain subjects": func(ctx context.Context, s *Sink) error {

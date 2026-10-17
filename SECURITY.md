@@ -30,6 +30,8 @@ with you. We credit reporters in the changelog unless you ask us not to.
   implementation passes.
 - The sink and the stores: a way to forge, hide or destroy evidence, or to get
   something signed, without the keys the threat model requires.
+- Supported platforms: Linux and macOS. On Windows the store-opening commands
+  report that the platform is unsupported; that is not a vulnerability.
 - The CLI and the MCP server: reading or writing outside what the user asked
   for, leaking key material, subjects or evidence content, or a crash or hang
   on input from someone else.
@@ -37,9 +39,10 @@ with you. We credit reporters in the changelog unless you ask us not to.
 
 ## Known limitations
 
-Some weaknesses are known, documented and not yet fixed, because closing them
-needs a new format version. They are listed in the README under
-["Known limitations of the current formats"](README.md#known-limitations-of-the-current-formats).
+Some weaknesses are known and documented: the permanent limits of the frozen
+v2 and v3 formats, and what no format can close (an operator who holds every
+key). They are listed in the README under
+["What chain format v4 closed, and what is left"](README.md#what-chain-format-v4-closed-and-what-is-left).
 A report that one of them is exploitable is welcome only if it goes further
 than what is written there.
 

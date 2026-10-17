@@ -61,12 +61,12 @@ type Entry struct {
 	// EntryID uniquely identifies this entry across all chains.
 	EntryID string
 
-	// EntryType classifies the entry. "tombstone" marks an erased entry; see
-	// chainformat.IsTombstone.
+	// EntryType classifies the entry. In v2 and v3, "tombstone" marks an erased
+	// entry; see chainformat.IsTombstone. v4 has no tombstones.
 	EntryType string
 
-	// FormatVersion says which preimage produced ChainHash: chainformat.FormatV2
-	// or chainformat.FormatV3. Zero means v2 — entries written before the field
+	// FormatVersion says which preimage produced ChainHash: chainformat.FormatV2,
+	// FormatV3 or FormatV4. Zero means v2 — entries written before the field
 	// existed have no value for it, and an absent field decodes as zero, so
 	// treating zero as v2 is what keeps those entries verifiable.
 	//
@@ -98,8 +98,8 @@ type Entry struct {
 	// Timestamp is hash input. See the precision requirement above.
 	Timestamp time.Time
 
-	// ContentHash commits to the entry's content, or is a tombstone value if the
-	// content was erased.
+	// ContentHash commits to the entry's content. In v2 and v3 it is a
+	// tombstone value if the content was erased; an erased v4 entry has none.
 	ContentHash string
 
 	// PreviousHash is the preceding entry's ChainHash; empty for the first entry.
@@ -111,6 +111,17 @@ type Entry struct {
 	// erasure — it is NOT reproducible from the fields of a tombstoned row. See
 	// the chainformat package documentation.
 	ChainHash string
+
+	// Salt and LeafHash are v4's (format-spec §2.0). The chain hash covers the
+	// leaf hash, and the leaf hash covers EntryID, EntryType, ContentHash and
+	// Salt.
+	Salt     string
+	LeafHash string
+
+	// Erased marks an erased v4 entry. Its EntryID, EntryType, ContentHash and
+	// Salt are empty, and its LeafHash and ChainHash are kept, so it is
+	// recomputed like any other entry (format-spec §5.0).
+	Erased bool
 }
 
 // State is a chain's head: enough to append without walking the whole chain.
@@ -232,6 +243,10 @@ type Tail struct {
 	// GlobalSeq is the GlobalSeq of the chain's last entry. The next entry gets
 	// GlobalSeq + 1.
 	GlobalSeq int64
+
+	// FormatVersion is the format of the chain's last entry. A chain whose last
+	// entry is v4 is never continued in v2 or v3 (format-spec §2.5).
+	FormatVersion int
 }
 
 // ChainsUpdater appends to several chains in ONE atomic transaction.

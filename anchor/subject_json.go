@@ -54,6 +54,13 @@ type anchorWire Anchor
 //
 //   - An anchor has exactly one subject.
 func (a Anchor) MarshalJSON() ([]byte, error) {
+	if a.Version == SequenceRangeVersion {
+		raw, err := json.Marshal(wireV7{toCanonicalV7(a), a.Signature})
+		if err != nil {
+			return nil, fmt.Errorf("anchor: encode: %w", err)
+		}
+		return raw, nil
+	}
 	raw, err := json.Marshal(anchorWire(a))
 	if err != nil {
 		return nil, fmt.Errorf("anchor: encode: %w", err)
@@ -125,6 +132,14 @@ func (a Anchor) MarshalJSON() ([]byte, error) {
 //
 //   - The caller runs ValidateVersionInvariants (every verifier here does).
 func (a *Anchor) UnmarshalJSON(data []byte) error {
+	// The version decides which members exist; it is read first, and the
+	// member checks below are what refuse anything else in the object.
+	var head struct {
+		Version json.RawMessage `json:"version"`
+	}
+	if err := json.Unmarshal(data, &head); err == nil && string(head.Version) == "7" {
+		return a.unmarshalV7(data)
+	}
 	names, err := objectMembers(data, anchorMembers, "the anchor")
 	if err != nil {
 		return err

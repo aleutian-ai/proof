@@ -115,7 +115,7 @@ func TestVerifyAnchor_PredecessorNamedTwiceMustAgree(t *testing.T) {
 	first := good[0]
 	first.PreviousAnchorID = "anchor_99999999-0000-0000-0000-000000000000"
 	first = resign(t, first)
-	res, err := VerifyAnchor(first, entries[:3], anchor.SeedAnchorHash, ring)
+	res, err := VerifyAnchor(first, entries[:3], Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestVerifyAnchor_PredecessorNamedTwiceMustAgree(t *testing.T) {
 	second := good[1]
 	second.PreviousAnchorID = anchor.SeedAnchorID
 	second = resign(t, second)
-	res, err = VerifyAnchor(second, entries, good[0].ChainHash, ring)
+	res, err = VerifyAnchor(second, entries, Expect{PreviousAnchorHash: good[0].ChainHash}, ring)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestWalkerVerifyAnchor_RefusesASegment(t *testing.T) {
 	if !w.Segment() {
 		t.Fatal("Segment() is false for a walk with a previous hash")
 	}
-	res, err := w.VerifyAnchor(good[0], anchor.SeedAnchorHash, ring)
+	res, err := w.VerifyAnchor(good[0], Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err == nil || res.Bound {
 		t.Fatalf("bound an anchor to a segment: %+v, %v", res, err)
 	}

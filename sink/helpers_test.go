@@ -98,7 +98,7 @@ func setup(t *testing.T) (*Sink, *anchor.MLDSA65Signer, *anchor.KeyRing) {
 	if n := len(entryIDs(t, s, a81)); n != 3 {
 		t.Fatalf("u-81's chain holds %d entries, want 3", n)
 	}
-	if _, err := s.Checkpoint(context.Background(), signer, nil); err != nil {
+	if _, err := s.Checkpoint(context.Background(), signer, nil, UntrackedHeads()); err != nil {
 		t.Fatal(err)
 	}
 	return s, signer, ring

@@ -1,0 +1,688 @@
+[
+  {
+    "name": "canonicalize_leaf",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "additionalProperties": false,
+          "description": "a capture.request.v3 entry",
+          "properties": {
+            "capture_method": {
+              "type": "string"
+            },
+            "content_hash": {
+              "type": "string"
+            },
+            "dlp": {
+              "type": "string"
+            },
+            "encryption_mode": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "pii_action": {
+              "type": "string"
+            },
+            "pii_categories": {
+              "type": "string"
+            },
+            "pii_detected": {
+              "type": "boolean"
+            },
+            "pii_digest_key_version": {
+              "type": "string"
+            },
+            "processing_mode": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "region": {
+              "type": "string"
+            },
+            "signing_key_id": {
+              "type": "string"
+            },
+            "source_type": {
+              "type": "string"
+            },
+            "subject": {
+              "type": "string"
+            },
+            "timestamp_ms": {
+              "type": "integer"
+            },
+            "trust_level": {
+              "type": "string"
+            },
+            "user_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "subject",
+            "signing_key_id",
+            "timestamp_ms",
+            "capture_method",
+            "content_hash",
+            "dlp",
+            "encryption_mode",
+            "model",
+            "pii_action",
+            "pii_categories",
+            "pii_detected",
+            "pii_digest_key_version",
+            "processing_mode",
+            "provider",
+            "region",
+            "source_type",
+            "trust_level",
+            "user_id"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "entry"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical_byte_len": {
+          "type": "integer"
+        },
+        "canonical_bytes_hex": {
+          "type": "string"
+        },
+        "content_hash": {
+          "type": "string"
+        },
+        "how_to_check": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical_bytes_hex",
+        "canonical_byte_len",
+        "content_hash",
+        "how_to_check"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "commit",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "chain": {
+          "description": "which chain to append to: one of the chains this server was started with. A topic or a pseudonym, never a name, email or other identifier: it is stored permanently",
+          "maxLength": 64,
+          "type": "string"
+        },
+        "entries": {
+          "description": "1 to 100 entries, committed in this order, atomically",
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "description": "the evidence as text. NOTE: it passes through this conversation, so it is visible to the model provider. The server stores only a salted commitment and keeps the nonce locally. Exactly one of content or content_hash",
+                "maxLength": 65536,
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "content_hash": {
+                "description": "a SHA-512 digest you computed yourself (128 lowercase hex). Use it for HIGH-ENTROPY input only, such as randomized ciphertext: a plain hash of short or predictable text can be guessed. Exactly one of content or content_hash",
+                "maxLength": 128,
+                "type": [
+                  "null",
+                  "string"
+                ]
+              },
+              "label": {
+                "description": "optional label appended to the entry type, e.g. agent-action (lowercase letters, digits, . _ -, max 48). Never a name, email or other identifier: it is stored permanently",
+                "maxLength": 48,
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "type": [
+            "null",
+            "array"
+          ]
+        }
+      },
+      "required": [
+        "chain",
+        "entries"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "chain": {
+          "type": "string"
+        },
+        "committed": {
+          "type": "integer"
+        },
+        "entries": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "commitment": {
+                "type": "string"
+              },
+              "entry_id": {
+                "type": "string"
+              },
+              "entry_type": {
+                "type": "string"
+              },
+              "global_seq": {
+                "type": "string"
+              },
+              "nonce_stored": {
+                "type": "boolean"
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "entry_id",
+              "entry_type",
+              "global_seq",
+              "timestamp",
+              "commitment",
+              "nonce_stored"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "head_hash": {
+          "type": "string"
+        },
+        "warning": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "chain",
+        "committed",
+        "head_hash",
+        "entries"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "compute_chain_hash",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "content_hash": {
+          "description": "128 hex characters (v2 and v3: or a TOMBSTONE: value); omitted for an erased v4 entry",
+          "type": "string"
+        },
+        "entry_id": {
+          "description": "v4 live entry: the entry id, exactly as stored",
+          "type": "string"
+        },
+        "entry_type": {
+          "description": "v4 live entry: the entry type, exactly as stored",
+          "type": "string"
+        },
+        "format_version": {
+          "description": "REQUIRED: 4 for chains written by proof commit, 3 or 2 for older chains",
+          "type": "integer"
+        },
+        "global_seq": {
+          "description": "v3 and v4, required: chain-wide sequence number as a decimal string, e.g. \"4\"",
+          "type": "string"
+        },
+        "leaf_hash": {
+          "description": "v4 erased entry: the stored leaf hash, instead of entry_id, entry_type, content_hash and salt",
+          "type": "string"
+        },
+        "previous_hash": {
+          "description": "the preceding entry's chain hash; empty for the first entry",
+          "type": "string"
+        },
+        "run_id": {
+          "description": "v2 only: the batch run identifier",
+          "type": "string"
+        },
+        "salt": {
+          "description": "v4 live entry: the salt, 64 hex characters",
+          "type": "string"
+        },
+        "sequence_num": {
+          "description": "v2 only, required: position within the run as a decimal string, e.g. \"3\"",
+          "type": "string"
+        },
+        "timestamp": {
+          "description": "RFC3339 with microseconds, e.g. 2026-01-20T12:00:01.123456Z",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format_version",
+        "previous_hash",
+        "timestamp"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "chain_hash": {
+          "type": "string"
+        },
+        "format_version": {
+          "type": "integer"
+        },
+        "leaf_hash": {
+          "type": "string"
+        },
+        "preimage_description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "chain_hash",
+        "format_version",
+        "preimage_description"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "explain_trust_model",
+    "input_schema": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor_provenance_caveat": {
+          "type": "string"
+        },
+        "trust_levels": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "establishes": {
+                "type": "string"
+              },
+              "level": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "level",
+              "establishes"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "what_each_check_proves": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "check": {
+                "type": "string"
+              },
+              "not_proven": {
+                "type": "string"
+              },
+              "proven": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "check",
+              "proven",
+              "not_proven"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "why_no_built_in_trust_store": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "what_each_check_proves",
+        "trust_levels",
+        "why_no_built_in_trust_store",
+        "anchor_provenance_caveat"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "verify_anchor",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor_path": {
+          "description": "path to an anchor JSON file",
+          "type": "string"
+        },
+        "entries_path": {
+          "description": "path to an exported entries file (JSON array or JSONL)",
+          "type": "string"
+        },
+        "previous_anchor_hash": {
+          "description": "the previous anchor's chain_hash (128 lowercase hex). For a v7 anchor, optional: the anchor signs its own, and when given it must match. For an older anchor, required unless it is the first in its chain: omitting it for a later one reports a head mismatch, which looks like tampering but is not.",
+          "type": "string"
+        },
+        "public_key_path": {
+          "description": "optional path to a PEM-encoded ML-DSA-65 public key, as proof keygen writes it. Without it the signature is checked only against keys the server was started with, if any. The trust level is not an argument: a key supplied here is 'provided' unless the server was started with that same key",
+          "type": "string"
+        },
+        "subject": {
+          "description": "the subject the anchor must be for. Optional; when omitted the result's not_proven says the subject was not checked, and a genuine anchor for another chain would bind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entries_path",
+        "anchor_path"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "assumed_genesis": {
+          "type": "boolean"
+        },
+        "bound": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "entries_covered": {
+          "type": "integer"
+        },
+        "entries_not_bound": {
+          "type": "integer"
+        },
+        "not_proven": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "proven": {
+          "type": "string"
+        },
+        "signature_verified": {
+          "type": "boolean"
+        },
+        "subject_checked": {
+          "type": "boolean"
+        },
+        "tombstones": {
+          "type": "integer"
+        },
+        "trust": {
+          "type": "string"
+        },
+        "trust_establishes": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "bound",
+        "subject_checked",
+        "entries_covered",
+        "tombstones",
+        "entries_not_bound",
+        "signature_verified",
+        "proven",
+        "not_proven"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "verify_bundle",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "description": "path to an export bundle directory containing manifest.json",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dir"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "files_checked": {
+          "type": "integer"
+        },
+        "intact": {
+          "type": "boolean"
+        },
+        "not_proven": {
+          "type": "string"
+        },
+        "problems": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "detail"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "proven": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "intact",
+        "files_checked",
+        "proven",
+        "not_proven"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "verify_chain",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "path to an exported entries file (JSON array or JSONL), inside the directory this server was started with",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "breaks": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "break_type": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "entry_id": {
+                "type": "string"
+              },
+              "position": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "position",
+              "entry_id",
+              "break_type"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "entries_verified": {
+          "type": "integer"
+        },
+        "first_break": {
+          "type": "integer"
+        },
+        "last_tombstone": {
+          "type": "integer"
+        },
+        "not_proven": {
+          "type": "string"
+        },
+        "proven": {
+          "type": "string"
+        },
+        "tombstones_found": {
+          "type": "integer"
+        },
+        "verdict": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verdict",
+        "entries_verified",
+        "tombstones_found",
+        "last_tombstone",
+        "first_break",
+        "proven",
+        "not_proven"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "verify_inclusion",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "leaf_content_hash": {
+          "description": "the leaf's content hash, 128 hex characters",
+          "maxLength": 128,
+          "type": "string"
+        },
+        "leaf_index": {
+          "description": "zero-based position of the leaf in the tree",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "proof_hex": {
+          "description": "the audit path, each element hex-encoded",
+          "items": {
+            "maxLength": 128,
+            "type": "string"
+          },
+          "maxItems": 63,
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "root_hex": {
+          "description": "the expected Merkle root, hex-encoded",
+          "maxLength": 128,
+          "type": "string"
+        },
+        "tree_size": {
+          "description": "total number of leaves",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "leaf_content_hash",
+        "leaf_index",
+        "tree_size",
+        "proof_hex",
+        "root_hex"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "included": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "included",
+        "detail"
+      ],
+      "type": "object"
+    }
+  }
+]

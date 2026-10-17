@@ -82,8 +82,8 @@ func TestWalker_SameResultAsVerifyAnchor(t *testing.T) {
 				w.Add(e)
 				for next < len(anchors) && int64(w.Count()) == anchors[next].EntryCount {
 					a := anchors[next]
-					want, werr := VerifyAnchor(a, entries[:a.EntryCount], prev, ring)
-					got, gerr := w.VerifyAnchor(a, prev, ring)
+					want, werr := VerifyAnchor(a, entries[:a.EntryCount], Expect{PreviousAnchorHash: prev}, ring)
+					got, gerr := w.VerifyAnchor(a, Expect{PreviousAnchorHash: prev}, ring)
 					if (werr == nil) != (gerr == nil) || want.Bound != got.Bound ||
 						want.Outcome != got.Outcome || want.SignatureVerified != got.SignatureVerified {
 						t.Fatalf("checkpoint over %d: VerifyAnchor = %+v, %v; Walker = %+v, %v",
@@ -113,7 +113,7 @@ func TestWalker_IsChain(t *testing.T) {
 			t.Fatalf("after %d entries: Chain = %+v, %v; Walker = %+v", i+1, want, err, w.Result())
 		}
 	}
-	if _, err := NewWalker(Options{}).VerifyAnchor(anchor.Anchor{}, anchor.SeedAnchorHash, nil); err != ErrNoEntries {
+	if _, err := NewWalker(Options{}).VerifyAnchor(anchor.Anchor{}, Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, nil); err != ErrNoEntries {
 		t.Fatalf("an empty walker: %v", err)
 	}
 }
@@ -130,7 +130,7 @@ func TestWalker_AnchorMustFitWhatWasWalked(t *testing.T) {
 	for _, e := range entries[:5] {
 		w.Add(e)
 	}
-	if res, err := w.VerifyAnchor(anchors[0], anchor.SeedAnchorHash, ring); err != nil || res.Bound {
+	if res, err := w.VerifyAnchor(anchors[0], Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring); err != nil || res.Bound {
 		t.Fatalf("an anchor over 8 entries against a walk of 5 was bound: %+v, %v", res, err)
 	}
 
@@ -141,7 +141,7 @@ func TestWalker_AnchorMustFitWhatWasWalked(t *testing.T) {
 	for _, e := range crafted[:5] {
 		w.Add(e)
 	}
-	res, err := w.VerifyAnchor(anchors[0], anchor.SeedAnchorHash, ring)
+	res, err := w.VerifyAnchor(anchors[0], Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err != nil || res.Bound || res.Outcome != BindHeightMismatch {
 		t.Fatalf("a crafted repeated id: %+v, %v; want height_mismatch", res, err)
 	}

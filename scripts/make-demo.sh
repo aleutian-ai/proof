@@ -24,11 +24,11 @@
 #   temporary directory; it never enters the repository.
 #
 # NOT REPRODUCIBLE BYTE FOR BYTE, on purpose
-#   input.jsonl, entries.json and entries-tampered.json come out the same every
-#   run: the input is fixed and chain hashes are a function of it. anchor.json
-#   and anchor-public.pem do not: each run makes a new key, a new anchor id and
-#   a new signing time. Rerun this only to change the demo; then rerun the
-#   README's commands and paste what they print.
+#   input.jsonl comes out the same every run. Nothing else does: chain format
+#   v4 mints a random salt for every entry (format-spec §2.0), so entries.json
+#   and its hashes differ each run, and each run makes a new key, anchor id and
+#   signing time. Rerun this only to change the demo; then rerun the README's
+#   commands and paste what they print.
 #
 # USAGE
 #   ./scripts/make-demo.sh
@@ -82,7 +82,8 @@ fi
 
 # The demo must behave as the README says before it is left on disk.
 proof verify "$DEMO/entries.json" >/dev/null
-proof verify "$DEMO/entries.json" --anchor "$DEMO/anchor.json" --key "$DEMO/anchor-public.pem" >/dev/null
+proof verify "$DEMO/entries.json" --anchor "$DEMO/anchor.json" --subject demo-chain \
+    --key "$DEMO/anchor-public.pem" >/dev/null
 if proof verify "$DEMO/entries-tampered.json" >/dev/null 2>&1; then
     echo "the tampered copy verifies; the demo is wrong" >&2
     exit 1

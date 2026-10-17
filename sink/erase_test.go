@@ -63,7 +63,7 @@ func TestErase(t *testing.T) {
 	}
 	// Confirmed with the result the erase call returned: Checkpoint does not sign
 	// over an erasure it cannot tell the sink made.
-	if _, err := s.Checkpoint(ctx, signer, nil, ConfirmErasures(res)); err != nil {
+	if _, err := s.Checkpoint(ctx, signer, nil, ConfirmErasures(res), UntrackedHeads()); err != nil {
 		t.Fatal(err)
 	}
 	r = mustVerify(t, s, ring)

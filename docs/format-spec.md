@@ -3,10 +3,11 @@
 **Status:** normative for what it covers · **Audience:** anyone implementing a
 verifier in any language
 
-**Covered here:** chain hash **v3** (the current format, written by
-`proof commit`) and **v2** (legacy, for existing chains), capture leaf v3,
-salted commitments, and **anchors**: the canonical form of every version,
-the anchor chain hash, the ML-DSA-65 signature, and key ids.
+**Covered here:** chain hash **v4** (the current format, written by
+`proof commit`), **v3** and **v2** (frozen: verified forever, never written by
+this project after v0.5.0; §2.6), capture leaf v3, salted commitments, and
+**anchors**: the canonical form of every version, the anchor chain hash, the
+ML-DSA-65 signature, and key ids.
 
 Three implementations agree on everything here: Go (the reference) and the
 Python and JavaScript verification SDKs. The conformance vectors in §10 are
@@ -19,7 +20,8 @@ and each shipped a verifier that reported intact chains as broken. None of their
 authors did anything unreasonable; the rule was simply not written anywhere they
 could find it.
 
-**If you are implementing a verifier, §5, §6 and §9.2 are the parts you cannot infer.**
+**If you are implementing a verifier, §2.0, §2.5, §5, §6 and §9.2 are the
+parts you cannot infer.**
 
 ---
 
@@ -36,10 +38,85 @@ could find it.
 ## 2. Chain hash
 
 Each entry's hash covers its predecessor's, which is what makes the chain
-tamper-evident. There are two formats. **Each entry declares its own** (§2.2),
-and one chain may contain both.
+tamper-evident. There are three formats. **Each entry declares its own** (§2.2).
+One chain may contain v2 and v3 entries, and may continue in v4 (§2.5), but
+never goes back from v4.
 
-### 2.1 v3 — the current format
+### 2.0 v4 — the current format
+
+v4 separates what links the chain from what erasure removes. Each entry has a
+**leaf hash**, a salted commitment to the entry's id, type and content hash, and
+the chain links through the leaf hash. Erasure removes the salt and those three
+fields and keeps the leaf hash (§5.0), so every link of a v4 chain is
+recomputed by a verifier, erased entries included.
+
+```
+leaf_hash = SHA-512(
+    "aleutian.chain.leaf.v4:"
+    ‖ len(entry_id)   ‖ entry_id
+    ‖ len(entry_type) ‖ entry_type
+    ‖ content_hash
+    ‖ salt
+)
+
+chain_hash = SHA-512(
+    "aleutian.chain.v4:"
+    ‖ previous_hash  ‖ "|"
+    ‖ global_seq     ‖ "|"
+    ‖ timestamp      ‖ "|"
+    ‖ leaf_hash
+)
+```
+
+| Field | Encoding | Notes |
+|---|---|---|
+| `entry_id` | UTF-8 bytes **as stored**, 1 to 256 bytes | no control characters (U+0000 to U+001F, U+007F); not normalised |
+| `entry_type` | as `entry_id` | `tombstone` is refused (below) |
+| `len(x)` | 4-byte big-endian count of the bytes of `x` | the length prefix of §6.1, without its NFC step |
+| `content_hash` | 128 lowercase hex characters | always; v4 has no tombstone value |
+| `salt` | 64 lowercase hex characters | 32 bytes from a cryptographically secure random source, fresh for every entry |
+| `leaf_hash` | 128 lowercase hex characters | the hex text is what `chain_hash` hashes |
+| `previous_hash` | 128 lowercase hex, **or empty** for the first entry | see §3 |
+| `global_seq` | as v3 (§2.1) | **0** for the first entry of a chain |
+| `timestamp` | as v3 (§4) | |
+
+- **The salt is minted by the writer** that links the entry, never supplied by
+  the caller, so that two entries never share one and a caller cannot choose
+  one that makes a leaf guessable. Disclosing an entry's salt discloses nothing
+  about any other entry.
+- `entry_id` and `entry_type` are hashed exactly as stored. An implementation
+  MUST NOT normalise them (NFC or otherwise) before hashing: two spellings that
+  hash the same would be a field an editor can change without detection, the
+  same reason §4 fixes one timestamp spelling. They are length-prefixed, so `|`
+  and every other printable character are allowed in them.
+- The chain hash preimage has the shape of v3's with `content_hash` replaced by
+  `leaf_hash`, which is fixed-shape, so §3's rule (validate `previous_hash`)
+  is again the only one that keeps the boundaries recoverable.
+- **The first entry.** An entry whose `previous_hash` is empty has `global_seq`
+  0, and an entry whose `previous_hash` is not empty has `global_seq` above 0.
+  A v4 entries file therefore says by itself whether it starts at the chain's
+  first entry or is a segment: it is a segment exactly when its first entry's
+  `global_seq` is above 0. A verifier walking a segment from nothing (no
+  predecessor hash supplied) reports this rule's break, `invalid_field`, on the
+  first entry, and so does one given a predecessor hash for an entry at 0.
+  (v2 and v3 fix no first `global_seq`; §5.5.)
+- **Run fields.** v4 entries carry no `run_id` and no `sequence_num`: those
+  members are absent, not zero. A v4 entry carrying either, with any value, is
+  `format_field_misuse`.
+- **No tombstones.** A v4 entry with `entry_type` `tombstone`, or an `entry_id`
+  starting with `tomb_`, or a `content_hash` starting with `TOMBSTONE:`, is
+  `format_field_misuse`. Erasure in v4 is §5.0.
+
+**An entry as exported.** A live entry carries every field above except
+`previous_hash`, which is the chain hash of the entry before it (exports do not
+repeat it), plus `format_version: 4` and its `chain_hash`. An **erased** entry
+carries exactly `format_version`, `global_seq`, `timestamp`, `leaf_hash`,
+`chain_hash` and `erased: true`. `entry_id`, `entry_type`, `content_hash` and
+`salt` are **absent** from an erased entry, not empty, and a live entry carries
+no `erased` member (`erased: false` is refused). Any other combination is
+malformed (`invalid_field`).
+
+### 2.1 v3 — frozen
 
 ```
 chain_hash = SHA-512(
@@ -71,13 +148,18 @@ chain_hash = SHA-512(
 
 ### 2.2 Which format an entry uses
 
-An entry's `format_version` is `3` or `2`. Exports **omit** the field for v2
-entries, because v2 entries were written before it existed. A verifier reading an
-entry with no `format_version` therefore treats it as v2. That describes existing
-data, not a default a writer may rely on: every v3 writer emits `3`. Any other
-value is an unknown format. Report it as such; never guess.
+An entry's `format_version` is `4`, `3` or `2`. Exports **omit** the field for
+v2 entries, because v2 entries were written before it existed. A verifier
+reading an entry with no `format_version` therefore treats it as v2. That
+describes existing data, not a default a writer may rely on: every v3 writer
+emits `3`, and `format_version: 4` is **required** on every v4 entry and never
+omitted. Any other value is an unknown format. Report it as such; never guess.
 
-### 2.3 v2 — legacy, for existing chains
+Members that belong to another format are refused, not ignored: `salt`,
+`leaf_hash` or `erased` on a v2 or v3 entry, or `run_id` or `sequence_num` on a
+v4 entry, is `format_field_misuse`.
+
+### 2.3 v2 — frozen
 
 ```
 chain_hash = SHA-512(
@@ -130,6 +212,41 @@ Two rules follow, and neither is optional:
 
 Implementations must not "helpfully" renumber, regroup, or re-link on import.
 
+### 2.5 Continuing a v2 or v3 chain in v4
+
+A v2 or v3 chain is never rewritten: its hashes are signed into anchors, and a
+migration that recomputed them would destroy the evidence it was asked to keep.
+It is **continued** instead. The next entry written to it is v4 and links from
+the existing head like any other entry:
+
+```
+  … ── v3 e(k−1) ── v3 e(k) ── v4 e(k+1) ── v4 e(k+2) ── …
+                        │           │
+                        │           previous_hash = e(k).chain_hash
+                        │           global_seq    = e(k).global_seq + 1
+                        last v3 entry
+```
+
+- From the first v4 entry on, every entry is v4. **A v2 or v3 entry after a v4
+  entry is `format_field_misuse`.** This rule is load-bearing, not tidiness: a
+  v3 tombstone's chain hash is taken as stored (§5.1), so a v3 tombstone
+  appended after v4 entries would make every entry before it unlinked again.
+- The v4 entries are fully linked and recomputed (§2.0). The v2 and v3 prefix
+  keeps exactly the guarantee it had: if it contains a tombstone, the entries up
+  to the last tombstone are reported as not bound (§5.5), and nothing after it.
+- The first v4 entry of a continued chain has a `previous_hash`, so the "first
+  entry" rule of §2.0 does not apply to it; it applies only to an entry with an
+  empty `previous_hash`, which in a continued chain is a v2 or v3 entry.
+- There is no migration tool, and there must not be one.
+
+### 2.6 v2 and v3 are frozen
+
+v2 and v3 are verified by this project forever and never written by it after
+v0.5.0. Their known weaknesses (§2.4 and §5.5, and that v2 does not hash
+`global_seq`) are permanent properties of those formats, not defects awaiting a
+fix: fixing them would mean rewriting signed history. The remedy is §2.5. Their
+conformance vectors will never change.
+
 ---
 
 ## 3. Delimiter safety — the non-obvious part
@@ -154,8 +271,9 @@ boundaries are recoverable from the right.
 > **The load-bearing rule: `previous_hash` MUST be empty or exactly 128
 > lowercase hex characters.** Validate it before hashing.
 
-The rule is the same for v3. Its other fields are all fixed-shape, so an
-unvalidated `previous_hash` is again the one way to shift a boundary.
+The rule is the same for v3 and v4. Their other fields are all fixed-shape (v4's
+free-form fields are length-prefixed inside the leaf hash), so an unvalidated
+`previous_hash` is again the one way to shift a boundary.
 
 A producer that controls its own inputs is safe by provenance. A **library** is
 not — it hashes whatever a caller passes.
@@ -191,7 +309,67 @@ four-digit form and MUST be refused by a producer.
 
 ---
 
-## 5. Tombstones — the rule most likely to be got wrong
+## 5. Erasure
+
+### 5.0 v4: the salt and the fields go, the leaf hash stays
+
+Erasing a v4 entry deletes its `entry_id`, `entry_type`, `content_hash` and
+`salt`, and keeps `global_seq`, `timestamp`, `leaf_hash` and `chain_hash`. The
+entry is marked `erased: true` (§2.0). Nothing else in the chain changes.
+
+A verifier treats an erased entry like a live one, except that it cannot
+recompute the leaf hash: it checks that `leaf_hash` is 128 lowercase hex,
+recomputes `chain_hash` from `previous_hash`, `global_seq`, `timestamp` and the
+stored `leaf_hash`, and compares. There is no branch that takes a stored chain
+hash on trust.
+
+```
+    for each v4 entry:
+        if entry.erased:
+            leaf = entry.leaf_hash                         ← checked for shape only
+        else:
+            leaf = compute_leaf_hash(entry_id, entry_type, content_hash, salt)
+            if leaf != entry.leaf_hash:  report a break
+        expected = compute_chain_hash_v4(previous_hash, global_seq, timestamp, leaf)
+        if expected != entry.chain_hash:  report a break
+        previous_hash = expected
+```
+
+A live entry whose recomputed leaf hash differs from its stored `leaf_hash` is
+`hash_mismatch`, and the walk continues from the chain hash the **recomputed**
+leaf gives, as a v3 walk continues from the expected chain hash after a
+mismatch.
+
+What this gives, and why each property holds:
+
+- **Every link is checked.** Changing anything before an erased entry changes
+  the `previous_hash` it is recomputed from, so its chain hash, and the head an
+  anchor signed, change. (v3's hole, §5.5, does not exist in v4.)
+- **Erasure does not break anchors.** The leaf hash, the chain hash, the count
+  and the sequence numbers all survive erasure, and v7 anchors name their range
+  by sequence (§9), so an anchor over an erased entry still binds, whichever
+  entry of its range was erased.
+- **The erased content cannot be correlated.** `leaf_hash` is a salted
+  commitment: without the salt, someone who holds the original entry (its id,
+  type and content) cannot confirm that it was the entry at this position,
+  because they cannot recompute the leaf. This is the property v3's random
+  tombstone value and new id (§5.4) exist for, kept without either. Only once
+  every copy of the salt is gone (backups, replicas, anyone the entry was
+  disclosed to) is that true; §8's paragraph on erasure applies to the salt in
+  the same way.
+- **Nothing maps the old id.** The erased entry carries no id, so the original
+  id cannot resolve to it.
+
+What it does not give: **an erasure is not authenticated by the chain.**
+Whoever can write the store can erase a live entry, and the result is
+indistinguishable from a lawful erasure: the chain stays intact and the anchor
+stays bound. It proves an entry existed at that position, not why its content
+is gone. Who may erase is decided outside the chain (in the sink, by a signed
+erasure record; sink-format.md).
+
+v4 has no tombstone. §5.1 to §5.5 apply to v2 and v3 only.
+
+### Tombstones (v2 and v3) — the rule most likely to be got wrong
 
 When an entry's content is erased, the entry **stays in place**. Its
 `content_hash` is replaced, its `entry_type` becomes `tombstone` and its
@@ -280,14 +458,50 @@ report a break (`invalid_field`, or `invalid_timestamp` for the timestamp) when:
   tombstone value;
 - `global_seq` is negative, or (v2) `sequence_num` is negative or `run_id` is
   empty;
-- `timestamp` is not exactly the form in §4.
+- `timestamp` is not exactly the form in §4;
+- (v4) `leaf_hash` is not 128 lowercase hex, `salt` is not 64 lowercase hex,
+  `entry_id` or `entry_type` is empty, longer than 256 bytes, not valid UTF-8
+  or contains a control character, or the members present are not one of the
+  two shapes of §2.0.
 
 A hash recomputed over malformed fields can equal the stored one, so the shape
 is checked on its own and not left to the comparison.
 
-The format does not fix the first `global_seq`: this module's linker starts a
+**Which break is reported first.** One entry can fail several checks; a
+verifier reports them in this order, so that the first break of a result is
+the same in every implementation:
+
+1. `sequence_gap`: `global_seq` is not the previous entry's plus one;
+2. `invalid_field`: `chain_hash` is not 128 lowercase hex;
+3. `format_field_misuse`: a v2 or v3 entry after a v4 entry (§2.5), a v4
+   member on a v2 or v3 entry (§2.2), or a v4 entry with run fields or a
+   tombstone shape (§2.0);
+4. (v2 and v3) a tombstone's own checks, and then nothing else;
+5. `invalid_timestamp`;
+6. the declared format: `unknown_format`, or a v3 entry with run fields,
+   `format_field_misuse` (§2.1);
+7. `invalid_field`: the field shapes above, and for v4 the two entry shapes and
+   the first-entry rule of §2.0;
+8. `hash_mismatch`: for v4 the leaf hash first, then the chain hash.
+
+After a break in steps 2 to 7 the walk continues from the entry's stored
+chain hash, so the next entry is judged on its own.
+
+**What a result counts.** An entry is counted only once it passes step 2 (its
+`chain_hash` is in shape). `tombstones_found` then counts the entries read as
+tombstones (both conditions of §5, and not refused at step 3), whatever their
+declared format and whatever else is wrong with them; `last_tombstone` is the
+last one's index. `erased_found` counts the v4 entries carrying `erased: true`,
+whatever else is wrong with them. Both count every entry walked, including
+entries after the first break.
+
+`global_seq` in an entries file is a JSON number, read as a 64-bit integer; any
+other JSON type makes the file not entries, an error rather than a break.
+
+v2 and v3 do not fix the first `global_seq`: this module's linker starts a
 chain at 0 and the hosted platform's at 1. A verifier MUST NOT treat either as
-a break. `global_seq` must still rise by one from each entry to the next.
+a break in a v2 or v3 chain. (v4 fixes it: §2.0.) `global_seq` must still rise
+by one from each entry to the next, in every format.
 
 **The limitation.** A tombstone's chain hash is taken as stored, so nothing
 links the entries before a tombstone to the entries after it. Whoever can write
@@ -297,6 +511,10 @@ A verifier cannot detect this. It MUST report how many entries a result leaves
 exposed (every entry up to and including the last tombstone) and MUST NOT
 describe those entries as verified or as bound by an anchor. See
 verification-model.md, "What a tombstone leaves unverified".
+
+This is a permanent property of v2 and v3 (§2.6). A chain stops accumulating
+exposure the moment it continues in v4 (§2.5): no tombstone can follow a v4
+entry.
 
 ---
 
@@ -443,15 +661,20 @@ entries it covers, and to the anchor before it, so a verifier can detect entries
 |---|---|---|
 | `version` | integer | the canonical form in use (§9.2) |
 | `anchor_id` | string | this anchor's id |
-| `subject` (v6) / `company_id` (v1–v5) | string | what the chain is about. Same value, key renamed in v6 |
+| `subject` (v6, v7) / `company_id` (v1–v5) | string | what the chain is about. Same value, key renamed in v6 |
 | `chain_hash` | 128 lowercase hex | the **anchor** chain hash (§9.4), not the tip entry's |
-| `range` | `{start_entry_id, end_entry_id}` | the entries covered |
-| `entry_count` | integer | entries covered, counted from the chain's first entry |
-| `signing_key_id` | 32 lowercase hex | the signing key (§9.6) |
+| `range` | v7: `{start_seq, end_seq}`; v1–v6: `{start_entry_id, end_entry_id}` | the entries covered. v7 names them by `global_seq`, inclusive, as decimal strings (§2.1's grammar) |
+| `entry_count` | v7: decimal string; v1–v6: integer | entries covered, counted from the chain's first entry. v7: exactly `end_seq − start_seq + 1` |
+| `signing_key_id` | string, non-empty | the signing key. 32 lowercase hex when derived as §9.6 says; a verifier looks the id up and does not derive or check its form |
 | `created_at_ms` | integer | Unix milliseconds. Advisory; order comes from the chain |
 | `previous_anchor_id` | string | the anchor before this one, or the seed id (§9.4) |
-| `verified_through` | integer | v4+: the producer verified the chain through this count |
+| `previous_anchor_hash` | 128 lowercase hex | v7 only: the previous anchor's `chain_hash`, or the seed hash (§9.4) |
+| `verified_through` | integer | v4 and v6 only: the producer verified the chain through this count. Removed in v7: it was never compared with anything |
 | `signature` | base64 | §9.5. **Excluded** from the canonical form |
+
+v7's sequence numbers and count are strings because they may exceed 2⁵³, the
+largest integer a JSON number carries exactly in every language: a JavaScript
+verifier that parsed them as numbers would canonicalize different bytes.
 
 `subject` is inside the signed bytes. It can never be erased or corrected
 afterwards, so it **MUST NOT** carry personal data. Use a topic or a pseudonym.
@@ -459,8 +682,8 @@ afterwards, so it **MUST NOT** carry personal data. Use a topic or a pseudonym.
 ### 9.2 Canonical form: the bytes that are signed
 
 - Compact JSON: no whitespace, keys in **strict alphabetical order**, including
-  inside `range` (`end_entry_id` before `start_entry_id`). `signature` is left
-  out.
+  inside `range` (`end_entry_id` before `start_entry_id`; v7 `end_seq` before
+  `start_seq`). `signature` is left out.
 - Integers are plain decimal.
 - Strings are escaped **exactly as Go's `encoding/json` does, with HTML escaping
   on**:
@@ -492,8 +715,18 @@ afterwards, so it **MUST NOT** carry personal data. Use a topic or a pseudonym.
 | 4 | as above, plus `verified_through` between `signing_key_id` and `version` | 10 fields |
 | 5 | **withdrawn.** Refuse it by name; it has no canonical form, and the number is never reused | — |
 | 6 | `anchor_id`, `chain_hash`, `created_at_ms`, `entry_count`, `previous_anchor_id`, `range`, `signing_key_id`, `subject`, `verified_through`, `version` | 10 fields. `subject` sorts **8th**, where `company_id` sorted 3rd |
+| 7 | `anchor_id`, `chain_hash`, `created_at_ms`, `entry_count`, `previous_anchor_hash`, `previous_anchor_id`, `range` (`end_seq`, `start_seq`), `signing_key_id`, `subject`, `version` | 10 fields. `previous_anchor_hash` sorts before `previous_anchor_id`; `entry_count`, `end_seq` and `start_seq` are JSON **strings** |
 
 Any other version: refuse. Never canonicalize it as the closest known form.
+
+A v7 anchor, canonical (wrapped here for width; the real bytes have no
+whitespace):
+
+```
+{"anchor_id":"anchor_…","chain_hash":"<128 hex>","created_at_ms":1760000000000,
+ "entry_count":"3","previous_anchor_hash":"<128 hex>","previous_anchor_id":"anchor_00000000-0000-0000-0000-000000000000",
+ "range":{"end_seq":"2","start_seq":"0"},"signing_key_id":"<32 hex>","subject":"orders","version":7}
+```
 
 ### 9.3 Version invariants: check them before canonicalizing
 
@@ -503,6 +736,7 @@ Any other version: refuse. Never canonicalize it as the closest known form.
 | 4 | `verified_through` > 0 |
 | 5 | refused |
 | 6 | `verified_through` > 0 **and** `subject` non-empty |
+| 7 | `subject` non-empty; `start_seq`, `end_seq` and `entry_count` in §2.1's decimal grammar; `start_seq ≤ end_seq`; `entry_count = end_seq − start_seq + 1`; `previous_anchor_hash` 128 lowercase hex; `previous_anchor_id` is the seed id **exactly when** `previous_anchor_hash` is the seed hash |
 
 `version` is inside the signed bytes, so an anchor that breaks its invariants
 carries a valid signature over malformed content. Report it as malformed, not as
@@ -532,10 +766,40 @@ chain_hash = SHA-512(
   never byte-compare it with the tip.
 - The preimage is not self-delimiting (§3). Its fields must not contain `|`.
 
+**v7** has its own preimage, which names the range by sequence and
+length-prefixes the subject:
+
+```
+chain_hash = SHA-512(
+    "aleutian.anchor.v7:"
+    ‖ previous_anchor_hash ‖ "|"
+    ‖ len(subject) ‖ subject ‖ "|"
+    ‖ start_seq            ‖ "|"
+    ‖ end_seq              ‖ "|"
+    ‖ tip_chain_hash
+)
+```
+
+- `len` is the 4-byte big-endian byte count of §2.0; the subject is hashed as
+  its UTF-8 bytes, not normalised, so it may contain `|`. Every other field is
+  fixed-shape or a decimal number.
+- `previous_anchor_hash` is the anchor's own `previous_anchor_hash` member: a
+  v7 anchor carries its predecessor's hash in its signed bytes, so a verifier
+  needs no second file to bind it. The seed hash is the same value as above.
+- `tip_chain_hash` is the chain hash of the entry at `end_seq`. An erased v4
+  entry keeps its chain hash (§5.0), so erasing any entry of the range,
+  including the first or the last, changes nothing this hash covers.
+
 ### 9.5 Signature
 
-- **ML-DSA-65** (FIPS 204), in pure mode (not HashML-DSA), with an **empty
-  context string**, over the canonical bytes of §9.2.
+- **ML-DSA-65** (FIPS 204), in pure mode (not HashML-DSA), over the canonical
+  bytes of §9.2.
+- The **context string** (FIPS 204's `ctx`) is `aleutian.proof.anchor.v7`
+  (24 ASCII bytes) for v7, and **empty** for v1 to v6. The context is part of
+  what is signed: a v7 signature does not verify with an empty context, and a
+  signature made by the same key in another protocol, with another context or
+  none, never verifies as a v7 anchor. The verifier chooses the context from
+  the declared `version`, never from the signature.
 - The signature is 3309 bytes, written as standard base64 with padding. The
   public key is 1952 bytes.
 - A verifier MUST refuse any other spelling of the signature: a line break
@@ -566,6 +830,34 @@ the chain was when it was signed: entries `0 … entry_count−1`, not entries a
 since. Use the previous anchor's `chain_hash`, or the seed hash for the first
 anchor.
 
+To bind a **v7** anchor, refuse as errors, with no outcome: an anchor that
+breaks §9.3 or §9.8, and entries walked from a predecessor hash (a segment;
+§9.8). Then check, in this order; the first that fails is the outcome:
+
+1. **The chain.** Walk every entry as §5.5 says. Any break: `chain_broken`.
+2. **The start.** The first entry's `global_seq` must be `start_seq`:
+   otherwise `range_start_mismatch`. (The first entry of a walk that is not a
+   segment is the chain's first entry.)
+3. **The end.** There must be an entry whose `global_seq` is `end_seq`:
+   otherwise `height_mismatch`, because the anchor covers entries the verifier
+   was not given. Its chain hash is the tip. Entries after it are not the
+   anchor's concern; a chain that has grown since still binds.
+4. **The predecessor.** If the caller expected a predecessor hash, the
+   anchor's `previous_anchor_hash` must equal it: otherwise
+   `predecessor_mismatch`.
+5. **The subject.** If the caller expected a subject, the anchor's `subject`
+   must equal it, byte for byte: otherwise `tenant_mismatch`.
+6. **The head.** Recompute §9.4 with the anchor's own `previous_anchor_hash`
+   and the tip, and compare with its `chain_hash`: otherwise `head_mismatch`.
+   All six passed: `bound`.
+
+A verifier that was given no expected subject MUST say in its result that the
+subject was not checked: the signature proves who signed the anchor, not that
+it is about the chain the reader meant. A bound result also reports
+`entries_not_bound`: the entries up to and including the last v2 or v3
+tombstone at or before `end_seq` (its index plus one), or 0. The signature
+(§9.5) is checked whatever the bind found.
+
 ### 9.8 What a verifier refuses
 
 **Parsing.** An anchor is read strictly: only the member names of §9.1, spelled
@@ -575,7 +867,12 @@ the other name, or both, is refused. A lenient parser accepts members the
 signature does not cover and lets two readers see two different anchors.
 
 **Counts** (v4 and v6). `entry_count ≥ 1`, `0 < verified_through ≤ entry_count`,
-`created_at_ms ≥ 0`.
+`created_at_ms ≥ 0`. (v7: §9.3, and `created_at_ms ≥ 0`.)
+
+**The wrong range shape.** A v7 anchor whose `range` carries
+`start_entry_id` or `end_entry_id`, or a v1 to v6 anchor whose `range` carries
+`start_seq` or `end_seq`, is refused. So is a v7 anchor carrying
+`verified_through`, or one without `previous_anchor_hash`.
 
 **Key id.** An anchor with an empty `signing_key_id` is refused, and a key
 source holds no key under the empty id. A key id is otherwise whatever the key's
@@ -583,7 +880,14 @@ holder assigned (§9.6): a verifier looks it up and does not derive it.
 
 **The predecessor, named twice.** `previous_anchor_id` is the seed id exactly
 when the predecessor hash used in §9.4 is the seed hash. Disagreement is
-`predecessor_mismatch`, not a bind.
+`predecessor_mismatch`, not a bind. (v7 carries both in the anchor, so there
+the disagreement is a §9.3 invariant, refused as malformed.)
+
+**v7 members.** Every member of §9.1 for v7 is required, `signature`
+included, and each is read with the JSON type the canonical form gives it:
+`version` and `created_at_ms` as JSON integers with no fraction or exponent,
+`entry_count`, `start_seq` and `end_seq` as strings, everything else as a
+string. Its `chain_hash` is 128 lowercase hex, or the anchor is malformed.
 
 **A segment.** `entry_count` is counted from the chain's first entry. A verifier
 MUST NOT bind an anchor to entries it verified from a predecessor hash, and a
@@ -594,7 +898,8 @@ verifier given more than one checks all of:
 
 - every anchor is for the same subject;
 - the first names the seed id; each later one names the `anchor_id` of the one
-  before and binds with that anchor's `chain_hash`;
+  before and binds with that anchor's `chain_hash` (v7: its
+  `previous_anchor_hash` equals that anchor's `chain_hash`);
 - `entry_count` strictly rises;
 - `created_at_ms` does not fall;
 - each binds to the prefix of its own length and its signature verifies.
@@ -617,6 +922,8 @@ records each file's SHA-256, so a vendored copy that drifts is detectable.
 
 | File | Covers |
 |---|---|
+| `chain_v4_vectors.json` | chain hash and leaf hash v4 (§2.0): first entry, linked, continued from a v3 head (§2.5), erased (§5.0), non-ASCII and `\|` in ids, and cases that MUST be refused |
+| `anchor_v7_canonical_vectors.json` | anchor v7 canonical bytes (§9.2), chain hash (§9.4) and signatures with the v7 context (§9.5), and anchors that MUST be refused |
 | `chain_v3_vectors.json` | chain hash v3 (§2.1): first, linked, `global_seq` above 2⁵³ and at 2⁶³−1, tombstone, sub-microsecond truncation, and cases that MUST be refused |
 | `chain_vectors.json` | chain hash v2 (§2.3): genesis, linked, tombstone |
 | `anchor_v6_canonical_vectors.json` | anchor v6 canonical bytes (§9.2), incl. HTML escaping, U+2028/U+2029, non-ASCII, quote and backslash |
@@ -636,6 +943,7 @@ script that computes the values from this document:
 |---|---|
 | `scripts/independent-vectors.py` | `chain_v3_vectors.json`, `anchor_v6_canonical_vectors.json`, `keyid_vectors.json`, `record_v1_vectors.json` |
 | `scripts/spec-vectors.py` | `chain_vectors.json`, `v3_golden_capture_request.json`, `merkle_golden.json`, `commitment_vectors.json`, `anchor_chain_hash_vectors.json` |
+| `scripts/v4-vectors.py` | `chain_v4_vectors.json`, `anchor_v7_canonical_vectors.json` (needs `dilithium-py` for the anchor signatures) |
 | `scripts/verdict-vectors.py` | `verify_verdict_vectors.json` |
 | `scripts/bundle-vectors.py` | `bundle_v1_vectors.json` (needs `dilithium-py` for its signatures; the others use the standard library only) |
 
@@ -667,6 +975,14 @@ other implementation.
 
 ## 11. Conformance checklist
 
+- [ ] Leaf hash and chain hash v4 reproduce `chain_v4_vectors.json` `vectors`, and every `reject` case is refused (§2.0)
+- [ ] `entry_id` and `entry_type` hashed as stored, never normalised (§2.0)
+- [ ] A v4 first entry has `global_seq` 0; a v4 entry with run fields or a tombstone shape is `format_field_misuse` (§2.0)
+- [ ] A v2 or v3 entry after a v4 entry is `format_field_misuse` (§2.5)
+- [ ] An erased v4 entry is recomputed from its stored leaf hash; no stored chain hash is taken on trust (§5.0)
+- [ ] Anchor v7 canonical bytes, chain hash and signatures reproduce `anchor_v7_canonical_vectors.json`; every `reject` case is refused (§9.2, §9.4)
+- [ ] v7 signatures verified with the context `aleutian.proof.anchor.v7`, v1 to v6 with the empty context (§9.5)
+- [ ] A v7 anchor bound by sequence; expected subject and predecessor compared, and an unchecked subject said so (§9.7)
 - [ ] Chain hash v3 reproduces `chain_v3_vectors.json` `vectors` and refuses every `reject` case (§2.1)
 - [ ] `global_seq` handled as a 64-bit integer, not a floating-point number (§2.1)
 - [ ] A v3 entry with a non-empty `run_id` or a non-zero `sequence_num` is reported as malformed, not as a hash mismatch (§2.1)
@@ -692,7 +1008,7 @@ other implementation.
 - [ ] Anchor version dispatched on the declared value only; v5 and unknown versions refused (§9.2)
 - [ ] Version invariants checked before canonicalizing (§9.3)
 - [ ] Anchor chain hash reproduces `anchor_chain_hash_vectors.json`; seed hash used for the first anchor (§9.4)
-- [ ] Signature verified as pure ML-DSA-65 with an empty context (§9.5)
+- [ ] Signature verified as pure ML-DSA-65, with the context its version names (§9.5)
 - [ ] Key ids reproduce `keyid_vectors.json` (§9.6)
 - [ ] An anchor is bound against the entries it covered, not against entries added since (§9.7)
 - [ ] Verdicts distinguish consistency from existence

@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/anchor/build"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
+	"github.com/aleutian-ai/proof/verify"
 )
 
 // TestStreaming_AcrossPages: a chain longer than two pages, with checkpoints on
@@ -31,7 +33,7 @@ func TestStreaming_AcrossPages(t *testing.T) {
 		if _, err := s.Commit(ctx, events("u-1", n)); err != nil {
 			t.Fatal(err)
 		}
-		if done, err := s.Checkpoint(ctx, signer, nil); err != nil || len(done) != 1 || done[0].Problem != "" {
+		if done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads()); err != nil || len(done) != 1 || done[0].Problem != "" {
 			t.Fatalf("checkpoint: %+v, %v", done, err)
 		}
 	}
@@ -89,12 +91,16 @@ func TestStreaming_CheckpointBeyondTheChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := build.Anchor(ctx, build.Input{Subject: cid(t, s, "u-81"), Entries: entries, Previous: &series[0]})
+	w := verify.NewWalker(verify.Options{})
+	for _, e := range entries {
+		w.Add(e)
+	}
+	next, err := build.FromWalker(ctx, cid(t, s, "u-81"), w, &series[0], time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	next.EntryCount = int64(len(entries)) + 5
-	next.VerifiedThrough = next.EntryCount
+	next.Range.EndSeq = next.EntryCount - 1
 	signed, err := anchor.SignAnchor(ctx, signer, next)
 	if err != nil {
 		t.Fatal(err)

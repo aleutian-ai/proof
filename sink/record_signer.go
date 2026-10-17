@@ -65,9 +65,12 @@ type RecordSigner interface {
 	// Public returns the ML-DSA-65 public key; see the Assumptions.
 	Public() crypto.PublicKey
 
-	// SignRecord signs envelope, the whole message. It must abort if ctx is
-	// cancelled before the signature is produced.
-	SignRecord(ctx context.Context, envelope []byte) ([]byte, error)
+	// SignRecord signs envelope, the whole message, with the ML-DSA context
+	// string mldsaContext (RecordContextV2 for a record.v2 envelope, empty
+	// for record.v1). It must abort if ctx is cancelled before the signature
+	// is produced. A signer that ignores the context produces a signature the
+	// sink's own check refuses, and nothing is stored.
+	SignRecord(ctx context.Context, envelope []byte, mldsaContext string) ([]byte, error)
 }
 
 // MLDSA65RecordSigner is a RecordSigner holding an ML-DSA-65 key in memory.
@@ -169,14 +172,15 @@ func (s *MLDSA65RecordSigner) Public() crypto.PublicKey {
 //
 // # Description
 //
-// Implements [RecordSigner]. Signing is deterministic, with the empty ML-DSA
-// context. The sink verifies every signature it is given before storing it,
-// so a faulted signature never reaches the file.
+// Implements [RecordSigner]. Signing is deterministic, with the context the
+// sink passes. The sink verifies every signature it is given before storing
+// it, so a faulted signature never reaches the file.
 //
 // # Inputs
 //
 //   - ctx: cancelled before the call means no signature
-//   - envelope: the whole aleutian.proof.record.v1 envelope
+//   - envelope: the whole record envelope
+//   - mldsaContext: the ML-DSA context string; see [RecordSigner]
 //
 // # Outputs
 //
@@ -187,7 +191,7 @@ func (s *MLDSA65RecordSigner) Public() crypto.PublicKey {
 //
 // # Example
 //
-//	sig, err := s.SignRecord(ctx, envelope)
+//	sig, err := s.SignRecord(ctx, envelope, sink.RecordContextV2)
 //
 // # Limitations
 //
@@ -197,14 +201,14 @@ func (s *MLDSA65RecordSigner) Public() crypto.PublicKey {
 // # Assumptions
 //
 //   - envelope is already the exact bytes to sign.
-func (s *MLDSA65RecordSigner) SignRecord(ctx context.Context, envelope []byte) ([]byte, error) {
+func (s *MLDSA65RecordSigner) SignRecord(ctx context.Context, envelope []byte, mldsaContext string) ([]byte, error) {
 	if s == nil || s.inner == nil {
 		return nil, errors.New("record signer was not made by NewMLDSA65RecordSigner")
 	}
 	if ctx == nil {
 		return nil, errors.New("record signer: a context is required")
 	}
-	return s.inner.SignContext(ctx, envelope)
+	return s.inner.SignWithContext(ctx, envelope, mldsaContext)
 }
 
 // Close zeroizes the key and makes the signer refuse to sign.
@@ -285,7 +289,7 @@ func signRecord(ctx context.Context, s RecordSigner, key recordKey, f recordFiel
 	if err != nil {
 		return nil, err
 	}
-	sig, err := s.SignRecord(ctx, env)
+	sig, err := s.SignRecord(ctx, env, recordContext(env))
 	if err != nil {
 		return nil, fmt.Errorf("sink: sign record: %w", err)
 	}
@@ -323,7 +327,7 @@ func verifyRecordEnvelope(pub, env, sig []byte) error {
 	if len(sig) != anchor.SignatureSize {
 		return fmt.Errorf("signature is %d bytes, want %d", len(sig), anchor.SignatureSize)
 	}
-	if err := mldsa.Verify(mldsa.MLDSA65, pub, env, sig); err != nil {
+	if err := mldsa.VerifyWithContext(mldsa.MLDSA65, pub, env, sig, []byte(recordContext(env))); err != nil {
 		return fmt.Errorf("signature does not verify: %w", err)
 	}
 	return nil

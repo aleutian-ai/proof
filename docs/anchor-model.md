@@ -108,14 +108,20 @@ The bind is computed first. The signature is checked last.
    │ evidence of tampering.)                                           │
    └───────────────────────────────────────────────────────────────────┘
    ┌─ 2 ─ THE RANGE ──────────────────────────────────────────────────┐
+   │ v1–v6:                                                            │
    │ first entry id ≠ range.start_entry_id     → range_start_mismatch  │
    │ last entry id  ≠ range.end_entry_id       → range_end_mismatch    │
    │ number of entries ≠ entry_count           → height_mismatch       │
+   │ v7, by sequence:                                                  │
+   │ first entry's global_seq ≠ start_seq      → range_start_mismatch  │
+   │ no entry at end_seq                       → height_mismatch       │
    └───────────────────────────────────────────────────────────────────┘
-   ┌─ 3 ─ THE PREDECESSOR ────────────────────────────────────────────┐
+   ┌─ 3 ─ THE PREDECESSOR AND THE SUBJECT ────────────────────────────┐
    │ The seed hash goes with the seed id and with no other. If the     │
-   │ hash supplied and the anchor's previous_anchor_id disagree about  │
-   │ whether this is the first anchor      → predecessor_mismatch      │
+   │ hash used and the anchor's previous_anchor_id disagree about      │
+   │ whether this is the first anchor, or (v7) the caller expected a   │
+   │ different previous_anchor_hash         → predecessor_mismatch     │
+   │ The caller expected another subject    → tenant_mismatch          │
    └───────────────────────────────────────────────────────────────────┘
    ┌─ 4 ─ THE HEAD ───────────────────────────────────────────────────┐
    │ Recompute the anchor chain hash (format-spec §9.4) from the       │
@@ -127,7 +133,8 @@ The bind is computed first. The signature is checked last.
    ┌─ 5 ─ THE SIGNATURE (VerifyAnchor only) ──────────────────────────┐
    │ Version invariants again, then the key named by signing_key_id,   │
    │ then the signature decoded (strict base64, exact length), then    │
-   │ ML-DSA-65 over the canonical bytes.                               │
+   │ ML-DSA-65 over the canonical bytes, with the context the version  │
+   │ names (v7: aleutian.proof.anchor.v7; earlier: empty).             │
    │ Any failure                               → signature_invalid     │
    └───────────────────────────────────────────────────────────────────┘
 ```
@@ -239,7 +246,8 @@ customer.
 | ≤3 | 9 | baseline | **yes — default** |
 | 4 | 10 | `verified_through` | yes, behind `minAnchorVersion` opt-in |
 | 5 | — | **WITHDRAWN** (was `root_hash`, `tree_size`) | **no — nothing ever emitted it** |
-| 6 | 10 | `company_id` → `subject` | no — `proof` only |
+| 6 | 10 | `company_id` → `subject` | no — `proof` only; verified, no longer written |
+| 7 | 10 | range by sequence, `previous_anchor_hash`, signing context; `verified_through` removed | no — `proof` only; written from v0.5.0 |
 
 > **v5 was withdrawn from `proof` on 2026-09-27.** It has no canonical form in
 > this module: `Canonicalize` and `ValidateVersionInvariants` refuse it by name,
@@ -313,6 +321,40 @@ Two things this change fixed that were not about naming:
 V6 anchors to a consumer that has not been taught them. The Go implementation
 pins the canonical bytes with a golden vector; that guards against drift, and is
 weaker than the cross-language agreement V3/V4 have.
+
+### V7 (v0.5.0): what erasure and a second file used to break
+
+V7 is the anchor for chain format v4 (format-spec §2.0, §9). Each change closes
+a hole two external reviews found in v6:
+
+| Change | What it closes |
+|---|---|
+| `range` names `start_seq` and `end_seq`, not entry ids | erasing the first or last entry of an anchored range changed its id, so a lawful erasure broke the anchor (`range_start_mismatch`). Sequence numbers survive erasure |
+| `previous_anchor_hash` is in the signed bytes | binding a v6 anchor needed its predecessor's hash from a second file, and a caller who passed the wrong one, or none, was the commonest misuse. `SeedAnchorHash` existed to work around it |
+| `verified_through` is removed | it was signed and never compared with anything. `entry_count` carries the meaning, and must equal `end_seq − start_seq + 1` |
+| the signature has the context `aleutian.proof.anchor.v7` | a key used in two protocols could produce a signature that meant something in both. FIPS 204 defines the context parameter for exactly this |
+| `entry_count` and the sequence numbers are strings | they may exceed 2⁵³, and a JavaScript verifier would canonicalize different bytes |
+| the subject is length-prefixed in the anchor chain hash | §7's delimiter rule no longer applies to it |
+
+The verifier also takes the **expected subject** as an input
+(`verify.Expect{Subject, PreviousAnchorHash}`). A genuine anchor over a
+different subject is `tenant_mismatch`, an outcome that existed since v0.1 and
+was never produced, because nothing asked the caller what they expected. A
+caller who passes no subject gets a result saying the subject was not checked.
+
+V1 to V6 still verify as they did, with the empty context. Nothing writes them.
+
+### Signatures and COSE
+
+Nothing here is COSE, and no COSE code ships before 1.0. What is decided now is
+the one thing that would be expensive to change later: the canonical bytes of a
+v7 anchor (format-spec §9.2) and of a v2 sink record envelope (sink-format §9)
+are **stable byte strings**, each signed with its own ML-DSA context. Either
+can later be the payload of a `COSE_Sign1` (RFC 9052) without changing what is
+signed: the algorithm is ML-DSA-65's identifier in the IANA COSE registry, the
+`signing_key_id` maps to the COSE `kid` header, and the context string travels
+in the protected header. A SCITT or transparency-service integration is then a
+wrapper around bytes this format already produces, not a new format.
 
 ---
 

@@ -120,7 +120,7 @@ func TestSinkExport_Writes(t *testing.T) {
 		t.Fatalf("bundle: %v, mode %v", err, fi.Mode())
 	}
 	b, _ := os.ReadFile(out)
-	if !bytes.HasPrefix(b, []byte(`{"format":"aleutian.proof.bundle.v1"`)) || bytes.Contains(b, []byte("u-81")) {
+	if !bytes.HasPrefix(b, []byte(`{"format":"aleutian.proof.bundle.v2"`)) || bytes.Contains(b, []byte("u-81")) {
 		t.Fatalf("bundle: %.80s", b)
 	}
 	if extra := leftovers(t, outDir, "b.json"); len(extra) != 0 {

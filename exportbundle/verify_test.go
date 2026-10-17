@@ -147,7 +147,7 @@ func TestChainHash_OverStoredStrings(t *testing.T) {
 	} {
 		e := rawEntry{entryID: "sink-" + strings.Repeat("0", 32), globalSeq: c.seq, previousHash: c.previous,
 			timestamp: c.timestamp, contentHash: content, chainHash: content}
-		seq, ts, ok := entryShape(&e)
+		seq, ts, ok := entryShape(&e, false)
 		if !ok {
 			t.Fatalf("%+v is not well-formed", c)
 		}
@@ -222,8 +222,8 @@ func TestRecordEnvelope_Vectors(t *testing.T) {
 	}
 	for _, v := range file.Vectors {
 		f := v.Fields
-		got := recordEnvelope(f.ChainID, &rawEntry{entryID: f.EntryID, entryType: f.EntryType, globalSeq: f.GlobalSeq,
-			previousHash: f.PreviousHash, timestamp: f.Timestamp, contentHash: f.ContentHash}, f.SigningKeyID)
+		got, _ := recordEnvelope(f.ChainID, &rawEntry{entryID: f.EntryID, entryType: f.EntryType, globalSeq: f.GlobalSeq,
+			previousHash: f.PreviousHash, timestamp: f.Timestamp, contentHash: f.ContentHash}, f.SigningKeyID, false)
 		if hex.EncodeToString(got) != v.EnvelopeHex {
 			t.Errorf("%s: envelope differs", v.Name)
 		}

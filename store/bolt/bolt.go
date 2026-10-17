@@ -13,12 +13,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"syscall"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 
 	"github.com/aleutian-ai/proof/internal/fault"
+	"github.com/aleutian-ai/proof/internal/osfile"
 	"github.com/aleutian-ai/proof/internal/safebolt"
 	"github.com/aleutian-ai/proof/store"
 )
@@ -77,7 +77,8 @@ const keySep = 0x00
 //   - One writer at a time. Open takes an exclusive file lock (a shared one
 //     with WithReadOnly), so a second process blocks rather than corrupting.
 type Store struct {
-	db *safebolt.DB
+	db   *safebolt.DB
+	lock *os.File // a writer's hold on path + ".lock"; nil when read-only
 }
 
 var _ store.Store = (*Store)(nil)
@@ -247,7 +248,7 @@ func WithoutCheck() Option {
 // openRegularNoFollow is os.OpenFile that never follows a symlink and refuses
 // anything but a regular file, checked on the opened handle.
 func openRegularNoFollow(path string, flag int, mode os.FileMode) (*os.File, error) {
-	f, err := os.OpenFile(path, flag|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, mode)
+	f, err := osfile.OpenNoFollow(path, flag|osfile.NonBlock, mode)
 	if err != nil {
 		return nil, fmt.Errorf("%w (a symlink is never followed)", err)
 	}
@@ -309,14 +310,31 @@ func Open(path string, opts ...Option) (*Store, error) {
 		}
 		return fmt.Errorf("bolt: open %s: %w", path, err)
 	}
+	// A writer holds the database's lock file as well as bbolt's lock on the
+	// database: a lock on the database itself cannot span CompactFile's rename
+	// of a fresh copy over it, and a writer that opened the old file then would
+	// lose what it wrote. A reader needs neither: what it opened is a consistent
+	// file whichever one it is, so read-only use works on read-only media.
+	var lock *os.File
+	if !cfg.readOnly {
+		var err error
+		if lock, err = safebolt.LockFile(path, true, cfg.lockTimeout); err != nil {
+			if errors.Is(err, safebolt.ErrLockHeld) {
+				return nil, locked(bolt.ErrTimeout)
+			}
+			return nil, fmt.Errorf("bolt: open %s: %w", path, err)
+		}
+	}
 	if !cfg.readOnly && !cfg.noCheck {
 		// Before the first write to this file in this process: read it through.
 		if err := checked.Once(path, bopts); err != nil {
+			safebolt.UnlockFile(lock)
 			return nil, locked(err)
 		}
 	}
 	db, err := safebolt.Open(path, 0o600, bopts)
 	if err != nil {
+		safebolt.UnlockFile(lock)
 		return nil, locked(err)
 	}
 	if cfg.readOnly {
@@ -365,9 +383,10 @@ func Open(path string, opts ...Option) (*Store, error) {
 	})
 	if err != nil {
 		db.Close()
+		safebolt.UnlockFile(lock)
 		return nil, fmt.Errorf("bolt: initialise %s: %w", path, err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: db, lock: lock}, nil
 }
 
 // Close releases the database and its file lock.
@@ -378,7 +397,12 @@ func Open(path string, opts ...Option) (*Store, error) {
 // and the descriptor closed, so the file can be opened again; its memory map
 // stays until the process exits. Close then returns an error wrapping
 // ErrCorrupt.
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	err := s.db.Close()
+	safebolt.UnlockFile(s.lock)
+	s.lock = nil
+	return err
+}
 
 // entryKey builds chainID ‖ 0x00 ‖ big-endian uint64(seq).
 func entryKey(chainID string, seq int64) []byte {
@@ -416,7 +440,8 @@ func validateEntries(entries []store.Entry) error {
 		if e.ChainID == "" {
 			return fmt.Errorf("bolt: entry %d has an empty ChainID", i)
 		}
-		if e.EntryID == "" {
+		if e.EntryID == "" && !e.Erased {
+			// An erased v4 entry has no id (format-spec §2.0); every other has one.
 			return fmt.Errorf("bolt: entry %d has an empty EntryID", i)
 		}
 		// A negative sequence would sort before every non-negative one under
@@ -495,7 +520,7 @@ func tailOf(tx *bolt.Tx, chainID string) (store.Tail, error) {
 	if err := json.Unmarshal(v, &e); err != nil {
 		return store.Tail{}, err
 	}
-	return store.Tail{ChainID: chainID, Hash: e.ChainHash, GlobalSeq: e.GlobalSeq}, nil
+	return store.Tail{ChainID: chainID, Hash: e.ChainHash, GlobalSeq: e.GlobalSeq, FormatVersion: e.FormatVersion}, nil
 }
 
 // Predecessor returns the entry immediately before startSeq.
@@ -930,4 +955,137 @@ func (s *Store) Release(ctx context.Context, chainID, token string) error {
 		}
 		return bk.Delete([]byte(chainID))
 	})
+}
+
+// formatV4 is chainformat.FormatV4, named here because this package keeps its
+// dependencies to bbolt (docs/decisions.md D9) and chainformat brings x/text.
+const formatV4 = 4
+
+// ErrNotV4 is returned by [Store.Erase] for an entry that is not v4. A v2 or
+// v3 entry is erased by replacing it with a tombstone, which this store does
+// not write: v2 and v3 are frozen (format-spec §2.6).
+var ErrNotV4 = errors.New("bolt: only a v4 entry is erased in place")
+
+// Erase erases one v4 entry in place.
+//
+// # Description
+//
+// In one transaction, the entry at globalSeq loses its EntryID, EntryType,
+// ContentHash and Salt and is marked Erased; its GlobalSeq, Timestamp,
+// LeafHash and ChainHash are kept, so the chain still verifies, every link
+// recomputed (format-spec §5.0). Erasing an erased entry changes nothing.
+//
+// The removed values are still in the file's free pages until the file is
+// rewritten: close the store and call [CompactFile] on its path.
+//
+// # Inputs
+//
+//   - ctx: a cancelled context aborts before the write
+//   - chainID, globalSeq: the entry
+//
+// # Outputs
+//
+//   - store.Entry: the entry as it was BEFORE erasure, so the caller can
+//     remove what it holds elsewhere under the old id (a nonce, the content)
+//   - error: store.ErrNotFound, ErrNotV4, or a wrapped store error
+//
+// # Example
+//
+//	was, err := st.Erase(ctx, "chain-1", 7)
+//	// ... st.Close(); bolt.CompactFile(path)
+//
+// # Limitations
+//
+//   - Nothing in the chain says who erased the entry, or that they were
+//     allowed to (docs/verification-model.md, "Who may erase").
+//
+// # Assumptions
+//
+//   - None.
+func (s *Store) Erase(ctx context.Context, chainID string, globalSeq int64) (store.Entry, error) {
+	if err := ctx.Err(); err != nil {
+		return store.Entry{}, err
+	}
+	var was store.Entry
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		be := tx.Bucket(bucketEntries)
+		key := entryKey(chainID, globalSeq)
+		raw := be.Get(key)
+		if raw == nil {
+			return store.ErrNotFound
+		}
+		if err := json.Unmarshal(raw, &was); err != nil {
+			return fmt.Errorf("bolt: decode entry: %w", err)
+		}
+		if was.FormatVersion != formatV4 {
+			return ErrNotV4
+		}
+		if was.Erased {
+			return nil
+		}
+		erased := was
+		erased.EntryID, erased.EntryType, erased.ContentHash, erased.Salt = "", "", "", ""
+		erased.Erased = true
+		return putEntries(tx, []store.Entry{erased})
+	})
+	if err != nil {
+		return store.Entry{}, err
+	}
+	return was, nil
+}
+
+// CompactFile rewrites the database at path into a fresh file, so values an
+// [Store.Erase] removed are gone from the live file rather than left in its
+// free pages (bbolt never zeroes them).
+//
+// # Description
+//
+// The store must be closed: the copy takes the file's lock. A symlink is never
+// followed. A crash part way leaves the original intact. Only the live file is
+// rewritten: not SSD wear-levelled blocks, filesystem snapshots, journals or
+// backups.
+//
+// # Inputs
+//
+//   - path: the database
+//   - opts: WithLockTimeout is honoured; the others do not apply
+//
+// # Outputs
+//
+//   - error: ErrLocked if another process holds the file, or from the copy
+//
+// # Example
+//
+//	if err := bolt.CompactFile(path); err != nil {
+//	    return err
+//	}
+//
+// # Limitations
+//
+//   - As above.
+//
+// # Assumptions
+//
+//   - Nothing else writes the file meanwhile.
+func CompactFile(path string, opts ...Option) error {
+	cfg := config{lockTimeout: DefaultLockTimeout}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	// Held from before the copy until after the rename: see Open.
+	lock, err := safebolt.LockFile(path, true, cfg.lockTimeout)
+	if errors.Is(err, safebolt.ErrLockHeld) {
+		return fmt.Errorf("%w: %s is held by another process", ErrLocked, path)
+	}
+	if err != nil {
+		return fmt.Errorf("bolt: compact %s: %w", path, err)
+	}
+	defer safebolt.UnlockFile(lock)
+	err = safebolt.CompactFile(path,
+		&bolt.Options{Timeout: cfg.lockTimeout, ReadOnly: true, OpenFile: openRegularNoFollow},
+		&bolt.Options{Timeout: cfg.lockTimeout, OpenFile: openRegularNoFollow})
+	if errors.Is(err, bolt.ErrTimeout) {
+		return fmt.Errorf("%w: %v", ErrLocked, err)
+	}
+	return err
 }

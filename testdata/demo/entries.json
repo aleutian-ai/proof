@@ -3,55 +3,55 @@
     "entry_id": "ent_000",
     "entry_type": "event",
     "timestamp": "2026-10-13T09:00:00.000000Z",
-    "format_version": 3,
-    "run_id": "",
-    "sequence_num": 0,
+    "format_version": 4,
     "global_seq": 0,
     "content_hash": "23611b9176b397ee93edc22431170b500e97ebfac950ee90dcf5fd60a4d43da2c8cac0eaf345ddb6e65b6dbcc15175255a4110dcb385ab99a51348a8ed6f6d44",
-    "chain_hash": "ac608c606fa1cc22b8108d0de2cfa6c1d326970a92a45b9100477688cffc619e82963dcbbff93a04a7053a943fd7d6372c6f1981ad96d7dbc423159b668f1b6c"
+    "salt": "8ff9104ab2dec046ea505056eff1b6a71e887cca346e60da34fa27d6e9d49aa8",
+    "leaf_hash": "148b428ac1b230100f2317acca2bf32ca2d3d2e1fa65f4ec82d7a33cd8c73d19a1521392cb29717795dab70a04e893fc25e090b4179d6daa745ae2f5b602fa8d",
+    "chain_hash": "f230210aec1f7e1966f2632b5e3653f4d5fbddf0c1264e491bdd3666ab3a0899fa253d14b0ec606c0d34fb1f6207a08eefb34cf28d88d5ad2a61baeb33af21f6"
   },
   {
     "entry_id": "ent_001",
     "entry_type": "event",
     "timestamp": "2026-10-13T09:00:01.000000Z",
-    "format_version": 3,
-    "run_id": "",
-    "sequence_num": 0,
+    "format_version": 4,
     "global_seq": 1,
     "content_hash": "5a0420ef946751a29986e916363fd7f32e00bdf494fccc65b40decd3c99c6dfc8deccff2a06800cc27813dedb20244c9272582d93b52c9abf739023ad19581b9",
-    "chain_hash": "89ed6efa18a25cbb49826afb803c9228a691443d1c93c2356a788e45241adce3667ec0d29d6ca6cf15aecd44aaa2c69868fce8a5ff93c4f57299aefa5c0b6086"
+    "salt": "2c89386ff84119f04c5db35f112c669197a99563582a8c4820b8373dd7f8fc6a",
+    "leaf_hash": "8dab4a04d990935684c1d16ae3cae8e35e3c7a92083259d3297d544e23c2cc271b35c1a0e9b40807da1c700f65cfd7c19a94370aabeade8f2e6d64d87ff7b664",
+    "chain_hash": "16f32a2e5b7fa036909da25f0f9f3e6d06143a53530bee45cea0e1fc17abaa65821b58ea6c3a96ddb5b00ded93613ce57c9699857e8ceb4450cc497dadf31034"
   },
   {
     "entry_id": "ent_002",
     "entry_type": "event",
     "timestamp": "2026-10-13T09:00:02.000000Z",
-    "format_version": 3,
-    "run_id": "",
-    "sequence_num": 0,
+    "format_version": 4,
     "global_seq": 2,
     "content_hash": "8a129f81994dee95281bd1dbfb2fc57a764076431bea28e6a08ba37dc85cf87898357d3cd1f74657be536894aa2ed24957f138ef4a4b66b392bb5632ea3abe71",
-    "chain_hash": "61863b5ef3be12a0c185ae1555701f9b72980636b8ade4d96351cc7ffad06e344167955447e5cae24fc35e6e3ae2cf8edea191467c600f9b9fd6891eefdc14ec"
+    "salt": "2cbdde52229369cb33be0fda37b40ac4e7b199a40eb61c717b35ef612178180c",
+    "leaf_hash": "236f0a98d4312a333f309cf34719d481372c4aafc426c5a435b3bbb36609c48881ecd89540346cb4d8ab15ac026f330e7f9a32a167523c75ff9ad5e0f339e9e2",
+    "chain_hash": "a7038212db08c231b279fdc468213e86021908c905410f09f23e033858f46dd2a678481c38b0a95c3c0e72e4484013453ad9ac0c24166552a89e43ea8a18fa1d"
   },
   {
     "entry_id": "ent_003",
     "entry_type": "event",
     "timestamp": "2026-10-13T09:00:03.000000Z",
-    "format_version": 3,
-    "run_id": "",
-    "sequence_num": 0,
+    "format_version": 4,
     "global_seq": 3,
     "content_hash": "02f1e559569d5f891044c4140a7d2d032bfc3118d0b87d079c085d0ae6dd1d1acf7bbcf8523cb846c2533d9f951fee73f656eb65bac063b100d0f276824b9e82",
-    "chain_hash": "9dda32f8d174fc701ebbab239febb666941733a64be706e5a0d5a0e82a38339b25db12e83810a0ad3e0ee67299b811d8af3f42680f4c31113de29d3abbf52882"
+    "salt": "0acbafb324bd7127c36f16c2391106dcd108aaaf81760fb2463da884c10e0b74",
+    "leaf_hash": "551dcbb9b63b33b7422b7e98892bc392a94534daf543f9d321d4bf7bb973cc66eeec78767e410596d143ad414063693ed125cda09c22a23c474de03f3f5ec0bb",
+    "chain_hash": "47a95a07cc1917a7484e21fb05d53db98855da38c252ea1672284b06a0ffc3e2cf26d8677e5d2ea4965fd3abf122dbbdbbdc7cb96369044e599076385c1bc0b5"
   },
   {
     "entry_id": "ent_004",
     "entry_type": "event",
     "timestamp": "2026-10-13T09:00:04.000000Z",
-    "format_version": 3,
-    "run_id": "",
-    "sequence_num": 0,
+    "format_version": 4,
     "global_seq": 4,
     "content_hash": "275980e599af52049342dcaf9947d54fab1570e832487a15ba3e7038dafabd577331876e20361cd3569b6bde8157b5ecda048ac4cdc02465c3a0976da2b7eaa1",
-    "chain_hash": "08a3d94e3b3f351483642273ab1e4a0318bf9e95c49a5cd0a21b16737f9bc8988996f9fe66cdfe1bd944840fbee3763541483cf176598ea58fe02bb177aa2c7b"
+    "salt": "5056e36ce27564b511502fe1568dcafcb8d0f16a29b45e81c84001df5d93be25",
+    "leaf_hash": "c0b91ed8f862d5accd5f310f25a28b9e5f9aa5fca413b4d73e1d9acd592ea50bd351667edfa690e0be6a9ef5219ba5b55403f59de46f0bb17e4ffc1a011e5b11",
+    "chain_hash": "ad4cb788e3311701da339ae119939aa2d3169036e597648ec66885296821d4d5a32d2bb2bc5ffc09b3c55d433731aef61c11c6b2e0a843ec2e13bfd138d7fa66"
   }
 ]

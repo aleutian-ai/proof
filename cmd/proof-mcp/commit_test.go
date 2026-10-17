@@ -71,12 +71,7 @@ func readChain(t *testing.T, db, chain string) []verify.Entry {
 	}
 	out := make([]verify.Entry, len(rows))
 	for i, r := range rows {
-		out[i] = verify.Entry{
-			EntryID: r.EntryID, EntryType: r.EntryType,
-			Timestamp:     r.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-			FormatVersion: r.FormatVersion, GlobalSeq: r.GlobalSeq,
-			ContentHash: r.ContentHash, ChainHash: r.ChainHash,
-		}
+		out[i] = verify.FromStored(r)
 	}
 	return out
 }

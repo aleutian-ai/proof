@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -308,7 +309,22 @@ func SignCanonical(ctx context.Context, s ContextSigner, canonical []byte) ([]by
 			"Canonicalize (derived id for this signer: %s)", ErrKeyIDMissing, keyID)
 	}
 
-	sig, err := s.SignContext(ctx, canonical)
+	// The context string is the one the declared version names (format-spec
+	// §9.5), read from the bytes being signed, so it cannot disagree with them.
+	var declared struct {
+		Version int `json:"version"`
+	}
+	_ = json.Unmarshal(canonical, &declared)
+	mctx := SigningContext(declared.Version)
+	var sig []byte
+	if mctx == "" {
+		sig, err = s.SignContext(ctx, canonical)
+	} else if cs, ok := s.(ContextStringSigner); ok {
+		sig, err = cs.SignWithContext(ctx, canonical, mctx)
+	} else {
+		return nil, "", fmt.Errorf("anchor: a v%d anchor is signed with the ML-DSA context %q, and this "+
+			"signer (%T) cannot sign with one; it must implement ContextStringSigner", declared.Version, mctx, s)
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("anchor: signer: %w", err)
 	}
@@ -320,10 +336,11 @@ func SignCanonical(ctx context.Context, s ContextSigner, canonical []byte) ([]by
 	// Step 4, through the SAME primitive VerifySignature uses. Routing it
 	// through a different one would weaken the guarantee to "some verifier
 	// accepts this" rather than "this package's verifier accepts this".
-	if err := verifyMLDSA65(pub, canonical, sig); err != nil {
-		return nil, "", fmt.Errorf("%w (key %s): the most likely cause is a signer that "+
-			"hashes its input before signing — ML-DSA signs the message itself: %w",
-			ErrSignerProducedBadSignature, keyID, err)
+	if err := verifyMLDSA65(pub, canonical, sig, mctx); err != nil {
+		return nil, "", fmt.Errorf("%w (key %s): the most likely causes are a signer that "+
+			"hashes its input before signing (ML-DSA signs the message itself) or one that "+
+			"ignored the context string %q: %w",
+			ErrSignerProducedBadSignature, keyID, mctx, err)
 	}
 
 	return sig, keyID, nil
@@ -334,6 +351,6 @@ func SignCanonical(ctx context.Context, s ContextSigner, canonical []byte) ([]by
 // Both [VerifySignature] and [SignCanonical]'s self-check call it, so "I just
 // produced a signature that verifies" and "this package accepts this signature"
 // cannot drift apart.
-func verifyMLDSA65(pub, msg, sig []byte) error {
-	return mldsa.Verify(mldsa.MLDSA65, pub, msg, sig)
+func verifyMLDSA65(pub, msg, sig []byte, mldsaContext string) error {
+	return mldsa.VerifyWithContext(mldsa.MLDSA65, pub, msg, sig, []byte(mldsaContext))
 }

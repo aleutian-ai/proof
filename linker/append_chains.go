@@ -138,6 +138,9 @@ func (l *Linker) AppendChains(ctx context.Context, batches []ChainInputs) ([]Res
 				previousHash, nextGlobalSeq := "", int64(0)
 				if !tail.Empty {
 					previousHash, nextGlobalSeq = tail.Hash, tail.GlobalSeq+1
+					if tail.FormatVersion == chainformat.FormatV4 && l.format != chainformat.FormatV4 {
+						return nil, nil, fmt.Errorf("batch %d (chain %q): %w", b, chainIDs[b], ErrFormatRegression)
+					}
 				}
 				linked, err := l.link(chainIDs[b], previousHash, nextGlobalSeq, runIDs[b], sorted[b])
 				if err != nil {

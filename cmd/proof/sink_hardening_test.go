@@ -255,8 +255,8 @@ func TestSinkVerify_RequireCheckpoint(t *testing.T) {
 func TestSink_Heads(t *testing.T) {
 	dir, priv, pub := newSink(t)
 	heads := filepath.Join(t.TempDir(), "heads.json")
-	if code, out, errs := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv, "--heads", heads); code != exitOK {
-		t.Fatalf("checkpoint --heads: exit %d\n%s%s", code, out, errs)
+	if code, out, errs := sinkRun(t, "", "checkpoint", "--dir", dir, "--key", priv, "--heads", heads, "--first"); code != exitOK {
+		t.Fatalf("checkpoint --heads --first: exit %d\n%s%s", code, out, errs)
 	}
 	if code, out, _ := sinkRun(t, "", "verify", "--dir", dir, "--key", pub, "--heads", heads); code != exitOK {
 		t.Fatalf("verify --heads: exit %d\n%s", code, out)
@@ -342,7 +342,8 @@ func TestCorruptStore_EverySinkVerb(t *testing.T) {
 			return "{\"user\":\"u-81\"}\n{\"user\":\"u-99\"}\n", []string{"sink", "commit", "--dir", dir, "--class", "events", "--subject-field", "user", "--skip-check"}, exitIOError
 		},
 		"erase": func(t *testing.T, dir string) (string, []string, int) {
-			return "", []string{"sink", "erase", "--dir", dir, "--subject", "u-81", "--key", priv}, exitIOError
+			return "", []string{"sink", "erase", "--dir", dir, "--subject", "u-81", "--key", priv,
+				"--heads", filepath.Join(t.TempDir(), "heads.json"), "--first"}, exitIOError
 		},
 		"erase --skip-check": func(t *testing.T, dir string) (string, []string, int) {
 			return "", []string{"sink", "erase", "--dir", dir, "--subject", "u-81", "--skip-check"}, exitIOError
@@ -357,7 +358,8 @@ func TestCorruptStore_EverySinkVerb(t *testing.T) {
 			return "", []string{"sink", "repair", "--dir", dir, "--skip-check"}, exitIOError
 		},
 		"checkpoint": func(t *testing.T, dir string) (string, []string, int) {
-			return "", []string{"sink", "checkpoint", "--dir", dir, "--key", priv}, exitIOError
+			return "", []string{"sink", "checkpoint", "--dir", dir, "--key", priv,
+				"--heads", filepath.Join(t.TempDir(), "heads.json"), "--first"}, exitIOError
 		},
 		"export": func(t *testing.T, dir string) (string, []string, int) {
 			return "", []string{"sink", "export", "--dir", dir, "--all", "--out", bundle(t)}, exitIOError

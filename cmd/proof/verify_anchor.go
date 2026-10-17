@@ -25,6 +25,7 @@ type anchorOptions struct {
 	anchorPath   string
 	previousPath string
 	previousHash string
+	subject      string
 	keyPath      string
 	keyTrust     string
 }
@@ -38,6 +39,11 @@ type anchorResult struct {
 	// head mismatch alongside it almost certainly means the missing input
 	// rather than an attack, and the two must not be confused.
 	assumedGenesis bool
+
+	// subjectUnchecked records that no --subject was given for an anchor
+	// older than v7, for which it is optional, so the result is printed with
+	// a warning (for v7 it is required).
+	subjectUnchecked bool
 }
 
 // inputFileError is a failure to read or use a file named by --anchor,
@@ -105,14 +111,28 @@ func verifyAnchorFlags(opts anchorOptions, w *verify.Walker) (*anchorResult, err
 		return nil, &inputFileError{err}
 	}
 
-	previousHash, assumed, err := resolvePreviousHash(opts)
-	if err != nil {
-		return nil, err
+	// A v7 anchor says what it is about and which anchor it follows, inside
+	// its signature: the subject is asked for so that a genuine anchor for
+	// another chain is not taken for this one's, and the predecessor is
+	// compared only when given.
+	if a.Version == anchor.SequenceRangeVersion && opts.subject == "" {
+		return nil, fmt.Errorf("--subject is required to verify a v7 anchor: it is what the anchor " +
+			"must be about, and without it a genuine anchor for another chain would bind")
 	}
-	out := &anchorResult{assumedGenesis: assumed}
+	expect := verify.Expect{Subject: opts.subject}
+	out := &anchorResult{subjectUnchecked: opts.subject == ""}
+	if a.Version == anchor.SequenceRangeVersion && opts.previousPath == "" && opts.previousHash == "" {
+		// Nothing to resolve: the anchor carries its predecessor's hash.
+	} else {
+		previousHash, assumed, err := resolvePreviousHash(opts)
+		if err != nil {
+			return nil, err
+		}
+		expect.PreviousAnchorHash, out.assumedGenesis = previousHash, assumed
+	}
 
 	if opts.keyPath == "" {
-		out.bind, err = w.BindAnchor(*a, previousHash)
+		out.bind, err = w.BindAnchor(*a, expect)
 		if err != nil {
 			return nil, err
 		}
@@ -123,7 +143,7 @@ func verifyAnchorFlags(opts anchorOptions, w *verify.Walker) (*anchorResult, err
 	if err != nil {
 		return nil, err
 	}
-	out.bind, err = w.VerifyAnchor(*a, previousHash, ring)
+	out.bind, err = w.VerifyAnchor(*a, expect, ring)
 	if err != nil {
 		return nil, err
 	}
@@ -278,6 +298,11 @@ func printAnchorResult(w *os.File, r *anchorResult) {
 		fmt.Fprintln(w, "  FIRST in its chain. If it is not, that is the likely cause of the")
 		fmt.Fprintln(w, "  mismatch above rather than tampering. An anchor names its")
 		fmt.Fprintln(w, "  predecessor by id, not by hash, so the hash has to be supplied.")
+	}
+
+	if r.subjectUnchecked {
+		fmt.Fprintln(w, "\n  WARNING: no --subject was given, so the anchor's subject was not")
+		fmt.Fprintln(w, "  checked: a genuine anchor for another chain would bind here too.")
 	}
 
 	fmt.Fprintf(w, "\n  Proven:     %s\n", r.bind.Proven)

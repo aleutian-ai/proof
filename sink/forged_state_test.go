@@ -100,7 +100,7 @@ func TestVerify_EntriesAfterAnErasureAreAProblem(t *testing.T) {
 	}
 
 	// And nothing is signed over it.
-	done, err := s.Checkpoint(ctx, signer, nil)
+	done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestCheckpoint_SignsNothingThatDoesNotVerify(t *testing.T) {
 			}
 			damage(t, s, chain, entryIDs(t, s, chain)[0])
 
-			done, err := s.Checkpoint(ctx, signer, nil)
+			done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 			if err != nil {
 				t.Fatal(err)
 			}

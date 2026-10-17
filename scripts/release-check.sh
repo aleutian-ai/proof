@@ -34,6 +34,8 @@
 #   ./scripts/release-check.sh                 # everything
 #   ./scripts/release-check.sh --local         # steps 1 to 3 only
 #   ./scripts/release-check.sh <sdk-testdata-dir>...   # also check vendored vector copies
+#   ./scripts/release-check.sh --sdk <sdk-dir>...      # and that each SDK's README states the
+#                                                      # vector set it passes is this one
 #   PROOF_CHECK_IMAGE=docker.io/library/golang:1.25 ./scripts/release-check.sh
 #   PROOF_CHECK_IMAGE_AMD64=docker.io/amd64/golang:1.25 ./scripts/release-check.sh
 
@@ -51,9 +53,13 @@ CRYPTO_PACKAGES="./xwing/... ./mlkem/... ./mldsa/... ./keywrap/... ./keyfile/...
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCAL_ONLY=0
 VENDORED=()
+SDKS=()
+next_is_sdk=0
 for arg in "$@"; do
+    if [[ $next_is_sdk -eq 1 ]]; then SDKS+=("$arg"); next_is_sdk=0; continue; fi
     case "$arg" in
         --local) LOCAL_ONLY=1 ;;
+        --sdk) next_is_sdk=1 ;;
         -*) echo "unknown flag $arg" >&2; exit 2 ;;
         *) VENDORED+=("$arg") ;;
     esac
@@ -97,7 +103,9 @@ step "2. conformance vectors"
 # was changed without the vector being regenerated on purpose.
 cp -R "$REPO_ROOT/fixtures" "$WORK/fixtures.before"
 vectors_ok=1
-for script in independent-vectors.py spec-vectors.py verdict-vectors.py; do
+# v4-vectors.py and bundle-vectors.py sign with dilithium-py; the gate needs it.
+python3 -c 'import dilithium_py' 2>/dev/null || { bad "dilithium-py is not installed (pip install dilithium-py): the signed vectors cannot be regenerated"; vectors_ok=0; }
+for script in independent-vectors.py spec-vectors.py verdict-vectors.py v4-vectors.py bundle-vectors.py; do
     python3 "$REPO_ROOT/scripts/$script" >"$WORK/$script.log" 2>&1 || { bad "$script did not run"; tail -3 "$WORK/$script.log"; vectors_ok=0; }
 done
 if ! diff -r "$WORK/fixtures.before" "$REPO_ROOT/fixtures" >"$WORK/vectors.diff" 2>&1; then
@@ -110,6 +118,16 @@ fi
 if [[ ${#VENDORED[@]} -gt 0 ]]; then
     run "vendored copies match MANIFEST.json" "$REPO_ROOT/scripts/sync-vectors.sh" --check "${VENDORED[@]}"
 fi
+# An SDK states, in its README, the MANIFEST.json digest of the vector set it
+# passes (docs/conformance.md). One that states an older set is behind.
+manifest_sha="$(shasum -a 256 "$REPO_ROOT/fixtures/MANIFEST.json" | cut -d' ' -f1)"
+for sdk in ${SDKS[@]+"${SDKS[@]}"}; do
+    if grep -q "$manifest_sha" "$sdk/README.md" 2>/dev/null; then
+        ok "$(basename "$sdk") states this vector set ($manifest_sha)"
+    else
+        bad "$(basename "$sdk")'s README does not state this vector set's MANIFEST.json digest ($manifest_sha): it is behind, or the digest was not recorded"
+    fi
+done
 
 step "3. third-party licence files"
 # Each image ships the licences of the modules its binary links. A dependency

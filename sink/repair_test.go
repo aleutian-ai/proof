@@ -208,7 +208,7 @@ func TestRepair_NeverDeletesForAChainThatHeldEntries(t *testing.T) {
 		// the chain existed. The head kept outside does.
 		s, signer, _ := setup(t)
 		chain := cid(t, s, "u-81")
-		heads := FileHeads(filepath.Join(t.TempDir(), "heads.json"))
+		heads := NewFileHeads(filepath.Join(t.TempDir(), "heads.json"))
 		if _, err := s.Checkpoint(ctx, signer, nil, TrackHeads(heads)); err != nil {
 			t.Fatal(err)
 		}
@@ -227,7 +227,7 @@ func TestRepair_NeverDeletesForAChainThatHeldEntries(t *testing.T) {
 	t.Run("checkpoints removed from a chain cut short, with a recorded head", func(t *testing.T) {
 		s, signer, _ := setup(t)
 		chain := cid(t, s, "u-81")
-		heads := FileHeads(filepath.Join(t.TempDir(), "heads.json"))
+		heads := NewFileHeads(filepath.Join(t.TempDir(), "heads.json"))
 		if _, err := s.Checkpoint(ctx, signer, nil, TrackHeads(heads)); err != nil {
 			t.Fatal(err)
 		}

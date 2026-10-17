@@ -7,6 +7,96 @@ change is called out here.
 
 ## Unreleased
 
+v0.5.0, in preparation: chain format v4, anchor v7 and bundle v2, which close
+by construction the holes two external reviews found in v3 and v6. The formats
+are specified in `docs/format-spec.md`, `docs/bundle-format.md` and
+`docs/sink-format.md`, and their conformance vectors are written in Python from
+that text (`scripts/v4-vectors.py`, `verdict-vectors.py`, `bundle-vectors.py`).
+
+### Formats
+
+- **Chain format v4** (format-spec §2.0). Each entry links through a salted
+  leaf hash over its id, type and content hash. Erasure removes the salt and
+  those fields and keeps the leaf hash, so an erased entry is recomputed like
+  any other: rewriting the entries before it breaks the chain, and `entry_id`
+  and `entry_type` are hashed. A chain's first entry is at `global_seq` 0. v4
+  has no tombstones.
+- **v2 and v3 are frozen** (§2.6): verified forever, never rewritten. A v2 or
+  v3 chain is continued in v4 from its next entry; a v2 or v3 entry after a v4
+  entry is `format_field_misuse`. There is no migration tool, by design.
+- **Anchor v7** (§9): the range by `start_seq`/`end_seq` (strings), so erasure
+  never breaks an anchor; `previous_anchor_hash` signed in; `verified_through`
+  removed; signed with the ML-DSA context `aleutian.proof.anchor.v7`.
+- **Sink record envelope v2** (sink-format §9.1), signed with the context
+  `aleutian.proof.record.v2`, also binds the entry's leaf hash.
+- **Export bundle v2** (bundle-format §16): v4 entries, v7 checkpoints,
+  record.v2 signatures. Under checkpoint trust, inner entry ids and types are
+  now authenticated. v1 is frozen and still verified.
+- Three bundle v1 vectors changed their example of a wrong `format` (it was
+  the now-valid v2 string; bundle-format §15 note 3). The frozen vector files'
+  comments say they are frozen. No expected value of a frozen file changed.
+
+### Breaking changes
+
+- `verify.BindAnchor`, `verify.VerifyAnchor`, `Walker.BindAnchor` and
+  `Walker.VerifyAnchor` take a `verify.Expect{Subject, PreviousAnchorHash}`
+  instead of the previous anchor hash. A subject that differs is
+  `BindTenantMismatch`; with none given, `BindResult.SubjectChecked` is false
+  and `NotProven` says so.
+- `linker` writes v4 by default; `linker.WithFormatV3` (deprecated) and
+  `WithFormatV2` write the frozen formats, and refuse to append after a v4
+  entry (`ErrFormatRegression`). `Input.Salt` lets a writer layered on the
+  linker supply the salt it minted; `WithSaltFunc` is for tests.
+- `anchor/build` produces v7 anchors only.
+- `anchor.ContextStringSigner` (new) signs with an ML-DSA context; a v7 anchor
+  needs one. `anchor.SignerOpts` carries the context through `crypto.Signer`.
+  `mldsa.SignWithContext` and `VerifyWithContext` are new.
+- `sink.RecordSigner.SignRecord` takes the ML-DSA context string.
+- `sink.Sink.Checkpoint` requires `TrackHeads` (or, by name, `UntrackedHeads`):
+  a checkpoint series is only as complete as a record kept outside the folder
+  shows (`ErrHeadsRequired`). `FileHeads` refuses a missing file
+  (`ErrHeadsFileMissing`); `NewFileHeads` starts one, once.
+- The sink writes v4 chains, v7 checkpoints, record.v2 signatures and bundle
+  v2 exports. A sink folder from before v0.5.0 (v3 chains) is not continued:
+  export it with v0.4.x first (sink-format §10).
+- `bundle.VerifyDir` takes an `*os.Root` opened by the caller.
+- `safebolt.LockFile` (internal) takes `exclusive bool`.
+
+### CLI
+
+- `proof commit` writes v4 and requires `entry_type`; `--format 3` and
+  `--format 2` replace `--format-v2` and print a deprecation warning.
+- New `proof erase --db --chain --seq`: erases a v4 entry in place, forgets its
+  nonce, and rewrites the database and nonce files.
+- `proof verify --anchor` takes `--subject`, required for a v7 anchor.
+- `proof sink checkpoint` and `proof sink erase --key` require `--heads FILE`,
+  and `--first` to start it.
+- `proof verify` reports erased v4 entries separately from v2/v3 tombstones.
+
+### MCP
+
+- `verify_anchor` takes an optional `subject` and reports `subject_checked`.
+- `compute_chain_hash` takes `format_version` 4 (from id, type, content hash
+  and salt, or an erased entry's leaf hash) and returns `leaf_hash`.
+- `verify_bundle` reads the bundle through an `os.Root` opened inside `--root`.
+- The tool names and schemas are pinned in `testdata/tools_list.golden.json`.
+
+### Security
+
+- An erasure with no record signature in a sink that signs its records is a
+  problem (`erasure-unsigned`): the forged tail erasure of review round 2.
+- The bolt store's writers hold a lock file (`<db>.lock`) as well as bbolt's
+  lock, so `bolt.CompactFile`'s rename cannot lose a concurrent write.
+- The bbolt read-through check refuses a file that already failed in this
+  process without reading it again, so a long-lived server cannot be made to
+  abandon a handle (and its memory map) on every call.
+
+### Platforms
+
+- Linux and macOS. The module builds on other platforms, and the operations
+  that open a store return an error saying the platform is unsupported
+  (`internal/osfile`).
+
 ## v0.4.1 — 2026-10-15
 
 A patch for defects found in a review of v0.4.0. No new features and no format

@@ -34,6 +34,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTDATA = os.path.join(ROOT, "fixtures", "testdata")
 
 
+
+# The note every frozen file's _comment opens with.
+FROZEN = ("FROZEN: this format is verified forever and never written after v0.5.0 (docs/format-spec.md "
+          "§2.6, bundle-format.md §16); these cases will never change. ")
+
 def sha512_hex(b: bytes) -> str:
     return hashlib.sha512(b).hexdigest()
 
@@ -87,7 +92,7 @@ def chain_v3_file() -> dict:
          "timestamp": "2026-09-28T12:00:00.000000Z", "content_hash": c0[:127]},
     ]
     return {
-        "_comment": "Chain hash v3: SHA-512(\"aleutian.chain.v3:\" || previous_hash || \"|\" || "
+        "_comment": FROZEN + "Chain hash v3: SHA-512(\"aleutian.chain.v3:\" || previous_hash || \"|\" || "
                     "global_seq || \"|\" || timestamp || \"|\" || content_hash). global_seq is "
                     "decimal ASCII, carried here as a STRING because JSON numbers lose precision "
                     "above 2^53. Expected values computed in Python "
@@ -161,7 +166,7 @@ def anchor_v6_file() -> dict:
         vectors.append({"name": name, "anchor": a, "canonical_bytes": canon,
                         "canonical_sha512": sha512_hex(canon.encode())})
     return {
-        "_comment": "Anchor v6 canonical form: compact JSON, keys in alphabetical order, "
+        "_comment": FROZEN + "Anchor v6 canonical form: compact JSON, keys in alphabetical order, "
                     "signature excluded, strings escaped exactly as Go's encoding/json with "
                     "HTML escaping ON (< > & as \\u003c \\u003e \\u0026; U+2028/U+2029 escaped; "
                     "other non-ASCII as UTF-8). canonical_sha512 lets an implementation check "
@@ -327,7 +332,7 @@ def record_v1_file() -> dict:
         ("key_id_short", {"signing_key_id": "3fb85abc"}),
     ]
     return {
-        "_comment": "Sink record-signing envelope aleutian.proof.record.v1: the exact bytes "
+        "_comment": FROZEN + "Sink record-signing envelope aleutian.proof.record.v1: the exact bytes "
                     "an ML-DSA-65 record signature covers (empty ML-DSA context). Domain "
                     "\"aleutian.proof.record.v1\" then 0x00, then eight fields in fixed order, "
                     "each tag (1 byte) || length (uint32 big-endian) || ASCII value. Values use "

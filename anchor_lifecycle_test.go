@@ -147,7 +147,7 @@ func anchorOver(t *testing.T, entries []anchoredEntry, previousAnchorHash string
 func bindAnchor(t *testing.T, a anchor.Anchor, entries []anchoredEntry) error {
 	t.Helper()
 
-	res, err := verify.BindAnchor(a, toVerifyEntries(entries), anchor.SeedAnchorHash)
+	res, err := verify.BindAnchor(a, toVerifyEntries(entries), verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ func TestAnchor_TruncationIsDetected(t *testing.T) {
 	// mutation that deleted the range-start check survive: truncation also trips
 	// the height check, so the test passed while the guard it names was gone.
 	rows := toVerifyEntries(truncated)
-	res, err := verify.BindAnchor(a, rows, anchor.SeedAnchorHash)
+	res, err := verify.BindAnchor(a, rows, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil {
 		t.Fatalf("BindAnchor: %v", err)
 	}
@@ -499,7 +499,7 @@ func TestAnchor_SignedVerificationEndToEnd(t *testing.T) {
 
 	rows := toVerifyEntries(entries)
 
-	res, err := verify.VerifyAnchor(a, rows, anchor.SeedAnchorHash, ring)
+	res, err := verify.VerifyAnchor(a, rows, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err != nil {
 		t.Fatalf("VerifyAnchor: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestAnchor_SignedVerificationEndToEnd(t *testing.T) {
 			truncated[i].Timestamp, truncated[i].ContentHash)
 		previousHash = truncated[i].ChainHash
 	}
-	bad, err := verify.VerifyAnchor(a, toVerifyEntries(truncated), anchor.SeedAnchorHash, ring)
+	bad, err := verify.VerifyAnchor(a, toVerifyEntries(truncated), verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err != nil {
 		t.Fatalf("VerifyAnchor on a truncated chain should return a result, not an error: %v", err)
 	}
@@ -560,11 +560,11 @@ func TestAnchor_KeylessAndKeyedClaimsDiffer(t *testing.T) {
 
 	rows := toVerifyEntries(entries)
 
-	keyless, err := verify.BindAnchor(a, rows, anchor.SeedAnchorHash)
+	keyless, err := verify.BindAnchor(a, rows, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyed, err := verify.VerifyAnchor(a, rows, anchor.SeedAnchorHash, ring)
+	keyed, err := verify.VerifyAnchor(a, rows, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err != nil {
 		t.Fatal(err)
 	}

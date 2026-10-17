@@ -147,7 +147,11 @@ func printAnchorSummary(w *os.File, a anchor.Anchor, previous *anchor.Anchor) {
 	fmt.Fprintf(w, "\nanchored %d entries\n\n", a.EntryCount)
 	fmt.Fprintf(w, "  anchor id   %s\n", a.AnchorID)
 	fmt.Fprintf(w, "  subject     %s\n", a.Subject)
-	fmt.Fprintf(w, "  range       %s … %s\n", a.Range.StartEntryID, a.Range.EndEntryID)
+	if a.Version == anchor.SequenceRangeVersion {
+		fmt.Fprintf(w, "  range       global_seq %d … %d\n", a.Range.StartSeq, a.Range.EndSeq)
+	} else {
+		fmt.Fprintf(w, "  range       %s … %s\n", a.Range.StartEntryID, a.Range.EndEntryID)
+	}
 	fmt.Fprintf(w, "  key id      %s\n", a.SigningKeyID)
 	if previous == nil {
 		fmt.Fprintf(w, "  previous    (none — this is the first anchor in the chain)\n")
@@ -161,7 +165,7 @@ func printAnchorSummary(w *os.File, a anchor.Anchor, previous *anchor.Anchor) {
 	fmt.Fprintln(w, "              rewrite. Kept beside the chain it describes, it proves")
 	fmt.Fprintln(w, "              consistency and nothing more.")
 
-	if previous != nil {
+	if previous != nil && a.Version != anchor.SequenceRangeVersion {
 		fmt.Fprintf(w, "\n  To verify this anchor, a reader needs the PREVIOUS anchor's chain\n"+
 			"  hash. It is inside this one's signature and is not recoverable from\n"+
 			"  this file alone:\n\n    %s\n", previous.ChainHash)

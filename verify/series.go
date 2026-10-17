@@ -145,7 +145,7 @@ func (s *Series) Reached(w *Walker) {
 		return
 	}
 	a, n := s.anchors[s.next], s.next+1
-	br, err := w.VerifyAnchor(a, s.prevHash, s.keys)
+	br, err := w.VerifyAnchor(a, Expect{Subject: s.subject, PreviousAnchorHash: s.prevHash}, s.keys)
 	switch {
 	case err != nil:
 		s.fail("%s: %v", s.label(n), err)

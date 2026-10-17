@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/aleutian-ai/proof/chainformat"
@@ -33,6 +34,12 @@ var ErrUnexpectedChainHash = errors.New("linker: an entry's chain hash is not th
 // reads the tail from the stored entries, never from it.
 var ErrHeadStateStale = errors.New("linker: entries written, but the saved head record was not updated")
 
+// ErrFormatRegression is returned, before anything is written, when a linker
+// configured for v2 or v3 is asked to append to a chain whose last entry is
+// v4. A chain never goes back from v4 (format-spec §2.5): a v3 tombstone after
+// it would leave every entry before it unlinked.
+var ErrFormatRegression = errors.New("linker: the chain's last entry is v4, and a chain never goes back from v4")
+
 // Input is an entry awaiting linkage.
 //
 // It carries only what the linker cannot derive. Position (run id, sequence
@@ -48,8 +55,9 @@ type Input struct {
 	// within the batch — duplicates make the batch's order undefined.
 	EntryID string
 
-	// EntryType classifies the entry. "tombstone" marks an erased entry; see
-	// chainformat.IsTombstone.
+	// EntryType classifies the entry. In v4, which is the default, it is
+	// required: 1 to 256 bytes of UTF-8 with no control character, never
+	// "tombstone" (format-spec §2.0).
 	EntryType string
 
 	// Timestamp is the event time. It is hash CONTENT and never an ordering
@@ -58,9 +66,17 @@ type Input struct {
 	// Its UTC year must be 0000 to 9999: the chain hash writes four digits.
 	Timestamp time.Time
 
-	// ContentHash commits to the entry's content: 128 lowercase hex characters,
-	// or a tombstone content hash.
+	// ContentHash commits to the entry's content: 128 lowercase hex characters.
 	ContentHash string
+
+	// Salt is the v4 salt (format-spec §2.0). LEAVE IT EMPTY: the linker mints
+	// one per entry with crypto/rand. It exists for a writer layered on the
+	// linker that must know an entry's chain hash before the append (the sink,
+	// which signs records against it): such a writer mints the salt itself with
+	// chainformat.NewSaltV4 and pins the result with ExpectChainHash. A salt
+	// chosen by whoever produced the content would let them make a leaf hash
+	// guessable. Refused unless the linker writes v4.
+	Salt string
 
 	// IngestedAt is arrival time, and the ordering authority for this batch.
 	// Required and non-zero.
@@ -103,6 +119,7 @@ type Linker struct {
 	store  store.Store
 	now    func() time.Time
 	runID  func() (string, error)
+	salt   func() (string, error)
 	format int
 }
 
@@ -127,11 +144,38 @@ func WithRunIDFunc(fn func() (string, error)) Option {
 	return func(l *Linker) { l.runID = fn }
 }
 
+// WithSaltFunc replaces v4 salt generation.
+//
+// Intended for tests that need reproducible hashes, exactly as [WithRunIDFunc]
+// is. Production code must not use it: a salt that can be predicted makes a
+// leaf hash guessable, and so lets someone holding an erased entry's content
+// confirm it was there (format-spec §5.0). A salt the function returns is
+// validated like any other. It has no effect on a v2 or v3 linker.
+func WithSaltFunc(fn func() (string, error)) Option {
+	return func(l *Linker) { l.salt = fn }
+}
+
+// WithFormatV3 makes the linker write v3 entries.
+//
+// # Description
+//
+// Deprecated: v3 is frozen (format-spec §2.6). It is kept for one release so
+// that something which must still produce v3 can, and is then removed. v4 is
+// the default and the format to use. A chain that already holds a v4 entry is
+// never written in v3: the append is refused (§2.5).
+//
+// # Example
+//
+//	l, err := linker.New(st, linker.WithFormatV3())
+func WithFormatV3() Option {
+	return func(l *Linker) { l.format = chainformat.FormatV3 }
+}
+
 // WithFormatV2 makes the linker write v2 entries.
 //
 // # Description
 //
-// v3 is the default and the format to use. v2 exists for one reason: something
+// v4 is the default and the format to use. v2 exists for one reason: something
 // that must keep producing bytes an older verifier accepts. It binds a run id
 // and a batch-local sequence number into every hash, which makes a chain depend
 // on how its entries were grouped into calls — appending A and B together does
@@ -180,7 +224,8 @@ func New(s store.Store, opts ...Option) (*Linker, error) {
 		store:  s,
 		now:    func() time.Time { return time.Now().UTC() },
 		runID:  newRunID,
-		format: chainformat.FormatV3,
+		salt:   chainformat.NewSaltV4,
+		format: chainformat.FormatV4,
 	}
 	for _, opt := range opts {
 		opt(l)
@@ -296,6 +341,15 @@ func (l *Linker) Append(ctx context.Context, chainID string, inputs []Input) (Re
 	if err != nil {
 		return Result{}, err
 	}
+	if l.format != chainformat.FormatV4 && previousHash != "" {
+		tail, err := l.store.Range(ctx, chainID, nextGlobalSeq-1, nextGlobalSeq-1, 1)
+		if err != nil {
+			return Result{}, fmt.Errorf("linker: read chain tail: %w", err)
+		}
+		if len(tail) == 1 && tail[0].FormatVersion == chainformat.FormatV4 {
+			return Result{}, ErrFormatRegression
+		}
+	}
 
 	entries, err := l.link(chainID, previousHash, nextGlobalSeq, runID, batch)
 	if err != nil {
@@ -346,14 +400,28 @@ func (l *Linker) link(chainID, previousHash string, nextGlobalSeq int64, runID s
 		seqNum := int64(i)
 		globalSeq := nextGlobalSeq + seqNum
 
-		var chainHash string
+		var chainHash, salt, leaf string
 		var hashErr error
-		if l.format == chainformat.FormatV2 {
+		switch {
+		case batch[i].Salt != "" && l.format != chainformat.FormatV4:
+			hashErr = errors.New("a salt is a v4 field, and this linker writes v" + strconv.Itoa(l.format))
+		case l.format == chainformat.FormatV2:
 			chainHash, hashErr = chainformat.ComputeChainHash(
 				previousHash, runID, seqNum, batch[i].Timestamp, batch[i].ContentHash)
-		} else {
+		case l.format == chainformat.FormatV3:
 			chainHash, hashErr = chainformat.ComputeChainHashV3(
 				previousHash, globalSeq, batch[i].Timestamp, batch[i].ContentHash)
+		default:
+			if salt = batch[i].Salt; salt == "" {
+				if salt, hashErr = l.salt(); hashErr != nil {
+					break
+				}
+			}
+			if leaf, hashErr = chainformat.ComputeLeafHashV4(
+				batch[i].EntryID, batch[i].EntryType, batch[i].ContentHash, salt); hashErr != nil {
+				break
+			}
+			chainHash, hashErr = chainformat.ComputeChainHashV4(previousHash, globalSeq, batch[i].Timestamp, leaf)
 		}
 		if hashErr != nil {
 			return nil, fmt.Errorf(
@@ -376,6 +444,8 @@ func (l *Linker) link(chainID, previousHash string, nextGlobalSeq int64, runID s
 			ContentHash:   batch[i].ContentHash,
 			PreviousHash:  previousHash,
 			ChainHash:     chainHash,
+			Salt:          salt,
+			LeafHash:      leaf,
 		}
 		// v2 only: these are hash inputs there and meaningless noise in v3.
 		if l.format == chainformat.FormatV2 {

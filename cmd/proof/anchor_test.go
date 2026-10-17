@@ -32,8 +32,8 @@ type anchorFixture struct {
 	chainID string
 }
 
-// newAnchorFixture writes a bolt database containing n linked v3 entries and an
-// ML-DSA-65 private key in the form `proof keygen` produces.
+// newAnchorFixture writes a bolt database containing n linked v4 entries, with
+// fixed salts, and an ML-DSA-65 private key in the form `proof keygen` produces.
 func newAnchorFixture(t *testing.T, n int) anchorFixture {
 	t.Helper()
 	dir := t.TempDir()
@@ -59,13 +59,15 @@ func newAnchorFixture(t *testing.T, n int) anchorFixture {
 			ChainID:       f.chainID,
 			EntryID:       "ent_" + string(rune('a'+i)),
 			EntryType:     "capture.request.v3",
-			FormatVersion: chainformat.FormatV3,
+			FormatVersion: chainformat.FormatV4,
 			GlobalSeq:     int64(i),
 			Timestamp:     ts,
 			ContentHash:   strings.Repeat("0123456789abcdef", 8),
 			PreviousHash:  prev,
+			Salt:          fmt.Sprintf("%064x", i+1),
 		}
-		e.ChainHash = chainformat.ComputeChainHashV3Unchecked(prev, e.GlobalSeq, ts, e.ContentHash)
+		e.LeafHash = chainformat.ComputeLeafHashV4Unchecked(e.EntryID, e.EntryType, e.ContentHash, e.Salt)
+		e.ChainHash = chainformat.ComputeChainHashV4Unchecked(prev, e.GlobalSeq, ts, e.LeafHash)
 		prev = e.ChainHash
 		rows = append(rows, e)
 	}
@@ -129,11 +131,11 @@ func TestAnchorVerb_ProducesAVerifiableAnchor(t *testing.T) {
 	if err := json.Unmarshal(raw, &a); err != nil {
 		t.Fatalf("parse anchor: %v", err)
 	}
-	if a.Version != anchor.SubjectVersion {
-		t.Errorf("version = %d, want v6", a.Version)
+	if a.Version != anchor.SequenceRangeVersion {
+		t.Errorf("version = %d, want v7", a.Version)
 	}
-	if a.EntryCount != 5 || a.VerifiedThrough != 5 {
-		t.Errorf("count=%d verified=%d, want 5/5", a.EntryCount, a.VerifiedThrough)
+	if a.EntryCount != 5 || a.Range.StartSeq != 0 || a.Range.EndSeq != 4 {
+		t.Errorf("count=%d range %d..%d, want 5, 0..4", a.EntryCount, a.Range.StartSeq, a.Range.EndSeq)
 	}
 	if a.Signature == "" {
 		t.Fatal("the anchor is unsigned")
@@ -154,7 +156,7 @@ func TestAnchorVerb_ProducesAVerifiableAnchor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ring: %v", err)
 	}
-	res, err := verify.VerifyAnchor(a, entries, anchor.SeedAnchorHash, ring)
+	res, err := verify.VerifyAnchor(a, entries, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err != nil {
 		t.Fatalf("VerifyAnchor: %v", err)
 	}
@@ -220,10 +222,13 @@ func TestAnchorVerb_ChainsFromAPreviousAnchor(t *testing.T) {
 		t.Error("the two anchors have the same chain hash; the second does not commit to the first")
 	}
 
-	// A verifier needs the predecessor's hash and cannot derive it. The CLI must
-	// hand it over, or the operator has a file nobody can check.
-	if !strings.Contains(stdout, first.ChainHash) {
-		t.Error("the summary does not print the previous anchor's chain hash, which a verifier needs")
+	// A v7 anchor carries its predecessor's hash in its signed bytes, so a
+	// verifier needs no second file, and the summary does not ask for one.
+	if second.PreviousAnchorHash != first.ChainHash {
+		t.Errorf("previous_anchor_hash %.16s…, want the first anchor's chain hash", second.PreviousAnchorHash)
+	}
+	if strings.Contains(stdout, "not recoverable") {
+		t.Error("the summary says the predecessor's hash is not recoverable, which v7 no longer is")
 	}
 
 	entries := readFixtureEntries(t, f)
@@ -232,7 +237,7 @@ func TestAnchorVerb_ChainsFromAPreviousAnchor(t *testing.T) {
 	pub, _ := signer.Public().(*anchor.PublicKey).MarshalBinary()
 	ring, _ := anchor.NewKeyRing(anchor.TrustSelf, map[string][]byte{second.SigningKeyID: pub})
 
-	res, err := verify.VerifyAnchor(second, entries, first.ChainHash, ring)
+	res, err := verify.VerifyAnchor(second, entries, verify.Expect{PreviousAnchorHash: first.ChainHash}, ring)
 	if err != nil {
 		t.Fatalf("VerifyAnchor: %v", err)
 	}

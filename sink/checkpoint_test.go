@@ -6,6 +6,7 @@ package sink
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,7 @@ func TestAnchors_StrayFileAndGap(t *testing.T) {
 			if _, err := s.Commit(context.Background(), events("u-81", 1)); err != nil {
 				t.Fatal(err)
 			}
-			done, err := s.Checkpoint(context.Background(), signer, nil)
+			done, err := s.Checkpoint(context.Background(), signer, nil, UntrackedHeads())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +128,7 @@ func TestCheckpoint_ContinuesPastABadChain(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	done, err := s.Checkpoint(ctx, signer, nil)
+	done, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,17 +167,35 @@ func TestCheckpoint_KeyRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Without trusting the old key: refused, as a problem, not an error.
-	done, err := s.Checkpoint(ctx, newSigner, nil)
+	done, err := s.Checkpoint(ctx, newSigner, nil, UntrackedHeads())
 	if err != nil || problemFor(done, cid(t, s, "u-81")) == "" {
 		t.Fatalf("new key alone: %+v, %v", done, err)
 	}
 	// Trusting both: the new key signs 0002 on top of the old key's 0001.
 	both := ring(oldSigner, newSigner)
-	done, err = s.Checkpoint(ctx, newSigner, both)
+	done, err = s.Checkpoint(ctx, newSigner, both, UntrackedHeads())
 	if err != nil || problemFor(done, cid(t, s, "u-81")) != "" {
 		t.Fatalf("rotation: %+v, %v", done, err)
 	}
 	if c := chainReport(t, mustVerify(t, s, both), cid(t, s, "u-81")); c.Checkpoints != 2 {
 		t.Fatalf("after rotation: %+v", c)
+	}
+}
+
+// TestCheckpoint_HeadsAreRequired: a checkpoint without a record of its
+// series heads is refused, unless the caller has said, by name, that it
+// gives that up (docs/decisions.md D23).
+func TestCheckpoint_HeadsAreRequired(t *testing.T) {
+	ctx := context.Background()
+	s, signer, _ := setup(t)
+	if _, err := s.Checkpoint(ctx, signer, nil); !errors.Is(err, ErrHeadsRequired) {
+		t.Fatalf("no heads: %v, want ErrHeadsRequired", err)
+	}
+	heads := NewFileHeads(filepath.Join(t.TempDir(), "heads.json"))
+	if _, err := s.Checkpoint(ctx, signer, nil, TrackHeads(heads), UntrackedHeads()); err == nil {
+		t.Fatal("accepted heads and no heads at once")
+	}
+	if _, err := s.Checkpoint(ctx, signer, nil, TrackHeads(heads)); err != nil {
+		t.Fatal(err)
 	}
 }

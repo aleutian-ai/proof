@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/aleutian-ai/proof/anchor"
+	"github.com/aleutian-ai/proof/chainformat"
 )
 
 // BindOutcome is why an anchor did or did not describe a chain.
@@ -97,11 +98,38 @@ type BindResult struct {
 	// about where the anchor came from.
 	SignatureVerified bool `json:"signature_verified"`
 
+	// SubjectChecked is whether the anchor's subject was compared with one the
+	// caller expected (Expect.Subject). When it was not, a bound result proves
+	// the chain matches an anchor, not that the anchor is about the chain the
+	// caller meant, and NotProven says so.
+	SubjectChecked bool `json:"subject_checked"`
+
 	// Proven and NotProven state the claim in plain language. They are part of
 	// the payload, not the docs, because a caller relaying this result must have
 	// to actively discard the caveat rather than remember to add it.
 	Proven    string `json:"proven"`
 	NotProven string `json:"not_proven"`
+}
+
+// Expect is what the caller expects an anchor to be: the other half of a
+// bind, which an anchor cannot supply about itself (format-spec §9.7).
+type Expect struct {
+	// Subject is the subject the anchor must be for. Empty means not checked,
+	// and the result says so (BindResult.SubjectChecked). A genuine anchor for
+	// another subject is BindTenantMismatch.
+	Subject string
+
+	// PreviousAnchorHash is the predecessor's ChainHash, or
+	// anchor.SeedAnchorHash for a first anchor.
+	//
+	// REQUIRED for v1 to v6: their predecessor's hash is inside their chain hash
+	// and nowhere in the anchor, so a verifier that assumed one could check no
+	// anchor but the first. It was once defaulted to the seed, which made
+	// binding silently genesis-only.
+	//
+	// Optional for v7, which signs its predecessor's hash: when given, the
+	// anchor's previous_anchor_hash must equal it (BindPredecessorMismatch).
+	PreviousAnchorHash string
 }
 
 // BindAnchor checks a chain against an anchor WITHOUT verifying the signature.
@@ -113,38 +141,34 @@ type BindResult struct {
 // in front of me the one this anchor described", and deliberately not "is this
 // anchor genuine" — that needs a key, and is [VerifyAnchor].
 //
-// # previousAnchorHash is not optional, on purpose
+// The checks, in order, the first that fails deciding the outcome
+// (format-spec §9.7): the chain walks clean (BindChainBroken); the range starts
+// at the chain's first entry (BindRangeStartMismatch); the range's end is
+// there (v7: an entry at end_seq; v1 to v6: the last entry, with the right id
+// and count); the predecessor is the one expected (BindPredecessorMismatch);
+// the subject is the one expected (BindTenantMismatch); the head recomputes
+// (BindHeadMismatch).
 //
-// The predecessor's hash is INSIDE the anchor's own chain hash, so a verifier
-// that assumes it cannot check any anchor but the first:
-//
-//	first anchor      previousAnchorHash = anchor.SeedAnchorHash
-//	every one after   previousAnchorHash = the previous anchor's ChainHash
-//
-// An anchor names its predecessor by id (PreviousAnchorID), never by hash, so
-// the hash cannot be recovered from the anchor alone — the caller must hold the
-// previous anchor or a record of its chain hash. That is inherent to the format.
-//
-// This argument was once defaulted to the seed sentinel, which made the function
-// silently genesis-only: a correct chained anchor came back as BindHeadMismatch,
-// reading as tamper evidence. Passing it explicitly costs a caller one named
-// constant and removes a default that was wrong for every anchor but the first.
+// A v7 anchor names its range by sequence, so erasing any entry of it changes
+// nothing it binds, and its tip is the entry at end_seq: a chain that has grown
+// since still binds. A v1 to v6 anchor names its first and last entry ids and
+// must be given the chain as it was when it was signed, entries[:a.EntryCount].
 //
 // # Inputs
 //
 //   - a: the anchor to bind against
-//   - entries: the chain, in ascending sequence order
-//   - previousAnchorHash: the predecessor's ChainHash, or [anchor.SeedAnchorHash]
-//     for a genesis anchor. Validated, not trusted.
+//   - entries: the chain from its first entry, in ascending sequence order
+//   - expect: what the caller expects; see [Expect]. Validated, not trusted.
 //
 // # Outputs
 //
 //   - BindResult: outcome plus the explicit proven / not-proven claim
-//   - error: ErrNoEntries, a malformed anchor, or a malformed previousAnchorHash
+//   - error: ErrNoEntries, a malformed anchor, or a malformed or missing
+//     expected predecessor hash
 //
 // # Example
 //
-//	res, err := verify.BindAnchor(a, entries, prev.ChainHash)
+//	res, err := verify.BindAnchor(a, entries, verify.Expect{Subject: "orders"})
 //	if err != nil {
 //	    return err
 //	}
@@ -156,19 +180,13 @@ type BindResult struct {
 //
 //   - Keyless by design. res.SignatureVerified is always false.
 //   - Covers only the anchored range; entries after the anchor are unprotected.
-//   - The anchor is checked against the chain AS IT WAS WHEN SIGNED: entries must
-//     end at the anchor's last entry. With several checkpoints, pass each one
-//     entries[:a.EntryCount], not the whole current chain — entries added after
-//     the anchor make it fail with "committed last entry is not this chain's
-//     last entry", which is correct, not a break.
 //   - Checks that the anchor commits to THIS predecessor hash. It does not check
-//     that the predecessor is genuine, or that PreviousAnchorID names it — walk
-//     the anchor chain to its genesis for that.
+//     that the predecessor is genuine — walk the series with [Series] for that.
 //
 // # Assumptions
 //
 //   - entries are ordered ascending by sequence, as exported
-func BindAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string) (BindResult, error) {
+func BindAnchor(a anchor.Anchor, entries []Entry, expect Expect) (BindResult, error) {
 	if len(entries) == 0 {
 		return BindResult{}, ErrNoEntries
 	}
@@ -176,7 +194,7 @@ func BindAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string) (Bi
 	// previous hash would otherwise recompute to something that simply does not
 	// match, and get reported as BindHeadMismatch — telling the caller their
 	// chain was tampered with when in fact their argument was wrong.
-	if err := validatePreviousAnchorHash(previousAnchorHash); err != nil {
+	if err := validateExpect(a, expect); err != nil {
 		return BindResult{}, err
 	}
 	if err := anchor.ValidateVersionInvariants(a); err != nil {
@@ -190,50 +208,46 @@ func BindAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string) (Bi
 	for _, e := range entries {
 		w.Add(e)
 	}
-	return w.bind(a, previousAnchorHash)
+	if a.Version != anchor.SequenceRangeVersion {
+		return w.bind(a, expect)
+	}
+	// v7: the tip is the entry at end_seq, wherever it is in what was given,
+	// and only the tombstones at or before it limit what the anchor binds.
+	tip := tipOf(entries, a.Range.EndSeq)
+	return w.bindV7(a, expect, entries, tip)
 }
 
-// bind is BindAnchor after the walk: it binds a to exactly the entries the
-// walker has seen. Shared by BindAnchor and Walker.VerifyAnchor, so the two
-// paths cannot drift apart.
-func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, error) {
-	if w.opts.PreviousHash != "" {
-		// An anchor's entry_count is counted from the chain's first entry
-		// (format-spec §9.1). A walk that started from a predecessor hash saw a
-		// segment, and an anchor bound to it would read as covering a chain.
-		return BindResult{}, errors.New("verify: an anchor covers a chain from its first entry; " +
-			"this walk started from a predecessor hash, so it saw a segment")
-	}
-	firstID, lastID, count := w.first.EntryID, w.last.EntryID, int64(w.Count())
-	res := BindResult{
-		EntriesCovered:  a.EntryCount,
-		Tombstones:      w.res.TombstonesFound,
-		EntriesNotBound: int64(w.res.LastTombstone + 1),
-		// What a result that is NOT bound says. The wording for a bind is set
-		// only where the bind succeeds, at the end: every other outcome once
-		// carried "the chain in front of you is the one this anchor committed
-		// to" beside an outcome that said it was not.
-		Proven:    "nothing: this anchor does not describe the chain in front of you",
-		NotProven: "that the chain is the one this anchor committed to",
-	}
-	boundProven := "the chain in front of you is the one this anchor committed to"
-	boundNotProven := "that the anchor is genuine — no signature was checked, so an " +
-		"adversary able to rewrite the chain could also have minted this anchor"
-	if res.Tombstones > 0 {
-		boundProven = boundAfterTombstone(res.EntriesNotBound, count)
-		boundNotProven = notBoundBeforeTombstone(res.EntriesNotBound) + "; or " + boundNotProven
-	}
-	if brk := w.res.FirstBreak; brk >= 0 {
-		// An entry this build cannot recompute is not evidence of tampering, and
-		// is not reported as a broken chain. Say what it actually is.
-		if len(w.res.Breaks) > 0 {
-			switch first := w.res.Breaks[0]; first.Type {
-			case BreakUnknownFormat, BreakFormatFieldMisuse:
-				return BindResult{}, fmt.Errorf("verify: entry %d: %s", brk, first.Detail)
-			}
+// tipOf is the index of the entry at globalSeq, or -1.
+func tipOf(entries []Entry, globalSeq int64) int {
+	for i, e := range entries {
+		if e.GlobalSeq == globalSeq {
+			return i
 		}
-		res.Outcome, res.Detail = BindChainBroken, fmt.Sprintf("linkage breaks at entry %d", brk)
-		return res, nil
+	}
+	return -1
+}
+
+// bind is BindAnchor after the walk, for v1 to v6: it binds a to exactly the
+// entries the walker has seen. Shared by BindAnchor and the Walker methods, so
+// the paths cannot drift apart.
+func (w *Walker) bind(a anchor.Anchor, expect Expect) (BindResult, error) {
+	if a.Version == anchor.SequenceRangeVersion {
+		// A walker binds what it has seen so far: the tip is its last entry.
+		tip := -1
+		if w.last.GlobalSeq == a.Range.EndSeq {
+			tip = w.Count() - 1
+		}
+		return w.bindV7(a, expect, nil, tip)
+	}
+	if err := w.refuseSegment(); err != nil {
+		return BindResult{}, err
+	}
+	previousAnchorHash := expect.PreviousAnchorHash
+	firstID, lastID, count := w.first.EntryID, w.last.EntryID, int64(w.Count())
+	res := w.unbound(a, expect, w.res.TombstonesFound, int64(w.res.LastTombstone+1))
+	boundProven, boundNotProven := w.boundClaims(res, count)
+	if broken, err := w.broken(&res); broken || err != nil {
+		return res, err
 	}
 	head := w.last.ChainHash
 
@@ -265,6 +279,11 @@ func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, e
 			"whether this is the first anchor of its series"
 		return res, nil
 	}
+	if expect.Subject != "" && a.Subject != expect.Subject {
+		res.Outcome = BindTenantMismatch
+		res.Detail = "the anchor is for another subject than the one expected"
+		return res, nil
+	}
 
 	// Recompute the anchor's own chain hash from what it committed to.
 	//
@@ -285,6 +304,130 @@ func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, e
 	res.Outcome, res.Bound = BindOK, true
 	res.Proven, res.NotProven = boundProven, boundNotProven
 	return res, nil
+}
+
+// bindV7 binds a v7 anchor after the walk (format-spec §9.7). tip is the
+// index, in walk order, of the entry at end_seq, or -1. entries, when given,
+// are what was walked, and decide which tombstones lie at or before the tip;
+// otherwise the tip is the walker's last entry and its counts apply.
+func (w *Walker) bindV7(a anchor.Anchor, expect Expect, entries []Entry, tip int) (BindResult, error) {
+	if err := w.refuseSegment(); err != nil {
+		return BindResult{}, err
+	}
+	tombstones, lastTomb := w.res.TombstonesFound, w.res.LastTombstone
+	if entries != nil && tip >= 0 {
+		tombstones, lastTomb = 0, -1
+		for i, e := range entries[:tip+1] {
+			if e.FormatVersion != chainformat.FormatV4 && chainformat.IsTombstone(e.EntryType, e.EntryID) {
+				tombstones, lastTomb = tombstones+1, i
+			}
+		}
+	}
+	res := w.unbound(a, expect, tombstones, int64(lastTomb+1))
+	boundProven, boundNotProven := w.boundClaims(res, a.EntryCount)
+	if broken, err := w.broken(&res); broken || err != nil {
+		return res, err
+	}
+	if w.first.GlobalSeq != a.Range.StartSeq {
+		res.Outcome = BindRangeStartMismatch
+		res.Detail = fmt.Sprintf("the anchor's range starts at global_seq %d and this chain at %d",
+			a.Range.StartSeq, w.first.GlobalSeq)
+		return res, nil
+	}
+	if tip < 0 {
+		res.Outcome = BindHeightMismatch
+		res.Detail = fmt.Sprintf("the anchor covers entries up to global_seq %d, and this chain has none there",
+			a.Range.EndSeq)
+		return res, nil
+	}
+	var head string
+	if entries != nil {
+		head = entries[tip].ChainHash
+	} else {
+		head = w.last.ChainHash
+	}
+	if expect.PreviousAnchorHash != "" && a.PreviousAnchorHash != expect.PreviousAnchorHash {
+		res.Outcome = BindPredecessorMismatch
+		res.Detail = "the anchor's previous_anchor_hash is not the predecessor expected"
+		return res, nil
+	}
+	if expect.Subject != "" && a.Subject != expect.Subject {
+		res.Outcome = BindTenantMismatch
+		res.Detail = "the anchor is for another subject than the one expected"
+		return res, nil
+	}
+	if anchor.ChainHashV7(a.PreviousAnchorHash, a.Subject, a.Range.StartSeq, a.Range.EndSeq, head) != a.ChainHash {
+		res.Outcome = BindHeadMismatch
+		res.Detail = "the recomputed head does not match the head the anchor bound"
+		return res, nil
+	}
+	res.Outcome, res.Bound = BindOK, true
+	res.Proven, res.NotProven = boundProven, boundNotProven
+	return res, nil
+}
+
+// refuseSegment refuses a walk that started from a predecessor hash. An
+// anchor's range is counted from the chain's first entry (format-spec §9.1,
+// §9.8), and an anchor bound to a segment would read as covering a chain.
+func (w *Walker) refuseSegment() error {
+	if w.opts.PreviousHash != "" {
+		return errors.New("verify: an anchor covers a chain from its first entry; " +
+			"this walk started from a predecessor hash, so it saw a segment")
+	}
+	return nil
+}
+
+// unbound is the result every outcome but a bind carries. The wording for a
+// bind is set only where the bind succeeds: every other outcome once carried
+// "the chain in front of you is the one this anchor committed to" beside an
+// outcome that said it was not.
+func (w *Walker) unbound(a anchor.Anchor, expect Expect, tombstones int, notBound int64) BindResult {
+	return BindResult{
+		EntriesCovered:  a.EntryCount,
+		Tombstones:      tombstones,
+		EntriesNotBound: notBound,
+		SubjectChecked:  expect.Subject != "",
+		Proven:          "nothing: this anchor does not describe the chain in front of you",
+		NotProven:       "that the chain is the one this anchor committed to",
+	}
+}
+
+// boundClaims is what a bind proves, and what it leaves unproven.
+func (w *Walker) boundClaims(res BindResult, count int64) (string, string) {
+	proven := "the chain in front of you is the one this anchor committed to"
+	notProven := "that the anchor is genuine — no signature was checked, so an " +
+		"adversary able to rewrite the chain could also have minted this anchor"
+	if res.Tombstones > 0 {
+		proven = boundAfterTombstone(res.EntriesNotBound, count)
+		notProven = notBoundBeforeTombstone(res.EntriesNotBound) + "; or " + notProven
+	}
+	if !res.SubjectChecked {
+		notProven += "; " + subjectNotChecked
+	}
+	return proven, notProven
+}
+
+// subjectNotChecked is what a bound result leaves open when no subject was
+// expected (format-spec §9.7).
+const subjectNotChecked = "that the anchor is about the chain you meant: no expected subject was " +
+	"given, so its subject was not checked"
+
+// broken reports a chain that did not walk clean as res's outcome. An entry
+// this build cannot recompute is not evidence of tampering, and is an error,
+// not a broken chain.
+func (w *Walker) broken(res *BindResult) (bool, error) {
+	brk := w.res.FirstBreak
+	if brk < 0 {
+		return false, nil
+	}
+	if len(w.res.Breaks) > 0 {
+		switch first := w.res.Breaks[0]; first.Type {
+		case BreakUnknownFormat, BreakFormatFieldMisuse:
+			return true, fmt.Errorf("verify: entry %d: %s", brk, first.Detail)
+		}
+	}
+	res.Outcome, res.Detail = BindChainBroken, fmt.Sprintf("linkage breaks at entry %d", brk)
+	return true, nil
 }
 
 // VerifyAnchor binds a chain to an anchor AND verifies the anchor's signature.
@@ -308,7 +451,7 @@ func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, e
 //
 //   - a: the anchor
 //   - entries: the chain, ascending
-//   - previousAnchorHash: as for BindAnchor
+//   - expect: as for BindAnchor
 //   - src: key source; nil is an error
 //
 // # Outputs
@@ -337,11 +480,11 @@ func (w *Walker) bind(a anchor.Anchor, previousAnchorHash string) (BindResult, e
 // # Assumptions
 //
 //   - src is safe for concurrent use
-func VerifyAnchor(a anchor.Anchor, entries []Entry, previousAnchorHash string, src anchor.KeySource) (BindResult, error) {
+func VerifyAnchor(a anchor.Anchor, entries []Entry, expect Expect, src anchor.KeySource) (BindResult, error) {
 	if src == nil {
 		return BindResult{}, errNoKeySource
 	}
-	res, err := BindAnchor(a, entries, previousAnchorHash)
+	res, err := BindAnchor(a, entries, expect)
 	if err != nil {
 		return res, err
 	}
@@ -382,6 +525,9 @@ func withSignature(res BindResult, a anchor.Anchor, src anchor.KeySource) (BindR
 			res.Proven = boundAfterTombstone(res.EntriesNotBound, res.EntriesCovered) +
 				", and " + trust.Establishes()
 			res.NotProven = notBoundBeforeTombstone(res.EntriesNotBound) + "; or " + res.NotProven
+		}
+		if !res.SubjectChecked {
+			res.NotProven += "; " + subjectNotChecked
 		}
 	}
 	return res, nil
@@ -435,6 +581,13 @@ func notBoundBeforeTombstone(notBound int64) string {
 // # Assumptions
 //
 //   - Anchor chain hashes are SHA-512, rendered lowercase hex.
+func validateExpect(a anchor.Anchor, expect Expect) error {
+	if a.Version == anchor.SequenceRangeVersion && expect.PreviousAnchorHash == "" {
+		return nil // optional for v7, which signs its own
+	}
+	return validatePreviousAnchorHash(expect.PreviousAnchorHash)
+}
+
 func validatePreviousAnchorHash(previousAnchorHash string) error {
 	if previousAnchorHash == "" {
 		return fmt.Errorf("verify: previousAnchorHash is required; pass "+
@@ -466,8 +619,9 @@ func validatePreviousAnchorHash(previousAnchorHash string) error {
 //
 // # Inputs
 //
-//   - a: the anchor; it must cover exactly Count() entries
-//   - previousAnchorHash: the predecessor's chain hash, or anchor.SeedAnchorHash
+//   - a: the anchor; it must end at the last entry walked (v7: end_seq is the
+//     last entry's global_seq; v1 to v6: it covers exactly Count() entries)
+//   - expect: what the caller expects; see [Expect]
 //   - src: key source; must not be nil
 //
 // # Outputs
@@ -483,7 +637,7 @@ func validatePreviousAnchorHash(previousAnchorHash string) error {
 //	for _, e := range entries {          // or a page at a time from a store
 //	    w.Add(e)
 //	    for next < len(series) && int64(w.Count()) == series[next].EntryCount {
-//	        res, err := w.VerifyAnchor(series[next], prev, keys)
+//	        res, err := w.VerifyAnchor(series[next], verify.Expect{Subject: s, PreviousAnchorHash: prev}, keys)
 //	        // …
 //	        prev = series[next].ChainHash
 //	        next++
@@ -493,20 +647,20 @@ func validatePreviousAnchorHash(previousAnchorHash string) error {
 // # Limitations
 //
 //   - As [BindAnchor]'s: both bind through the same walk.
-func (w *Walker) VerifyAnchor(a anchor.Anchor, previousAnchorHash string, src anchor.KeySource) (BindResult, error) {
+func (w *Walker) VerifyAnchor(a anchor.Anchor, expect Expect, src anchor.KeySource) (BindResult, error) {
 	if w.Count() == 0 {
 		return BindResult{}, ErrNoEntries
 	}
 	if src == nil {
 		return BindResult{}, errNoKeySource
 	}
-	if err := validatePreviousAnchorHash(previousAnchorHash); err != nil {
+	if err := validateExpect(a, expect); err != nil {
 		return BindResult{}, err
 	}
 	if err := anchor.ValidateVersionInvariants(a); err != nil {
 		return BindResult{}, fmt.Errorf("verify: malformed anchor: %w", err)
 	}
-	res, err := w.bind(a, previousAnchorHash)
+	res, err := w.bind(a, expect)
 	if err != nil {
 		return res, err
 	}

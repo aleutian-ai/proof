@@ -12,6 +12,8 @@ import (
 	"io"
 	"strings"
 	"unicode"
+
+	"github.com/aleutian-ai/proof/chainformat"
 )
 
 // entryMembers are the members of an exported entry, by their exact names.
@@ -20,11 +22,23 @@ import (
 var entryMembers = map[string]bool{
 	"entry_id": true, "entry_type": true, "timestamp": true, "format_version": true,
 	"run_id": true, "sequence_num": true, "global_seq": true, "content_hash": true,
-	"chain_hash": true,
+	"chain_hash": true, "salt": true, "leaf_hash": true, "erased": true,
 }
 
-// requiredEntryMembers are the members every entry of every format carries.
+// requiredEntryMembers are the members every v2 and v3 entry carries. A v4
+// entry is required to carry only timestamp and chain_hash here: which other
+// members it has depends on whether it is erased, and a v4 entry of the wrong
+// shape is a break the walker reports (format-spec §2.0), not a file that is
+// not entries.
 var requiredEntryMembers = []string{"entry_id", "timestamp", "content_hash", "chain_hash"}
+var requiredEntryMembersV4 = []string{"timestamp", "chain_hash"}
+
+// memberBits maps the members whose presence the walker judges to their bit.
+var memberBits = map[string]memberSet{
+	"entry_id": memberEntryID, "entry_type": memberEntryType, "run_id": memberRunID,
+	"sequence_num": memberSequenceNum, "content_hash": memberContentHash, "salt": memberSalt,
+	"leaf_hash": memberLeafHash, "erased": memberErased,
+}
 
 // DecodeEntries reads exported entries: a JSON array of entry objects, or one
 // entry object per line (JSONL).
@@ -39,7 +53,8 @@ var requiredEntryMembers = []string{"entry_id", "timestamp", "content_hash", "ch
 // chain.
 //
 // Each entry is an object that carries entry_id, timestamp, content_hash and
-// chain_hash, has no member twice, and has no member whose name folds (Unicode
+// chain_hash (a v4 entry: timestamp and chain_hash; format-spec §2.0), has no
+// member twice, and has no member whose name folds (Unicode
 // case folding) to one of the format's without being it. encoding/json alone would take the last of a
 // repeated member and match names without regard to case, so two readers could
 // see two different entries in one file. Members the format does not define
@@ -152,7 +167,7 @@ func decodeEntry(doc []byte) (Entry, error) {
 	if dec.More() {
 		return Entry{}, errors.New("it is followed by more data")
 	}
-	for _, name := range requiredEntryMembers {
+	for _, name := range requiredEntryMembersV4 {
 		if _, ok := values[name]; !ok {
 			return Entry{}, fmt.Errorf("it has no %q", name)
 		}
@@ -161,6 +176,27 @@ func decodeEntry(doc []byte) (Entry, error) {
 	for name, value := range values {
 		if err := unmarshalMember(&e, name, value); err != nil {
 			return Entry{}, fmt.Errorf("the member %q has the wrong JSON type", name)
+		}
+	}
+	// Record the members that are present with their zero value, where that
+	// is a break in this entry's format and the value alone cannot show it.
+	// Every other entry decodes with no record, equal to one built in Go.
+	zeroBreaks := memberSalt | memberLeafHash | memberErased
+	if e.FormatVersion == chainformat.FormatV4 {
+		zeroBreaks = memberRunID | memberSequenceNum | memberEntryID | memberEntryType |
+			memberContentHash | memberSalt | memberErased
+	}
+	for name := range values {
+		if bit := memberBits[name]; bit&zeroBreaks != 0 && !e.has(bit) {
+			e.members |= bit
+		}
+	}
+	if e.FormatVersion == chainformat.FormatV4 {
+		return e, nil
+	}
+	for _, name := range requiredEntryMembers {
+		if _, ok := values[name]; !ok {
+			return Entry{}, fmt.Errorf("it has no %q", name)
 		}
 	}
 	return e, nil
@@ -188,6 +224,12 @@ func unmarshalMember(e *Entry, name string, value json.RawMessage) error {
 		return json.Unmarshal(value, &e.ContentHash)
 	case "chain_hash":
 		return json.Unmarshal(value, &e.ChainHash)
+	case "salt":
+		return json.Unmarshal(value, &e.Salt)
+	case "leaf_hash":
+		return json.Unmarshal(value, &e.LeafHash)
+	case "erased":
+		return json.Unmarshal(value, &e.Erased)
 	}
 	return fmt.Errorf("no member %q", name)
 }

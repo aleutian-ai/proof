@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/keyfile"
@@ -61,7 +62,13 @@ func Example() {
 	_, _ = rand.Read(seed)
 	signer, _ := anchor.NewMLDSA65Signer(seed)
 	defer signer.Close()
-	if _, err := s.Checkpoint(ctx, signer, nil); err != nil {
+	// The record of each checkpoint series, kept OUTSIDE the sink folder: on
+	// another machine, or with a counterparty (docs/runbook.md). It is started
+	// once, for the sink's first checkpoint, and named with FileHeads after.
+	headsDir, _ := os.MkdirTemp("", "sink-example-heads")
+	defer os.RemoveAll(headsDir)
+	heads := sink.NewFileHeads(filepath.Join(headsDir, "heads.json"))
+	if _, err := s.Checkpoint(ctx, signer, nil, sink.TrackHeads(heads)); err != nil {
 		panic(err)
 	}
 	if _, err := s.EraseSubject(ctx, "u-81"); err != nil {

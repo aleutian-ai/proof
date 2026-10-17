@@ -181,7 +181,7 @@ func TestVerifyAnchor_ReportsWhatAnErasedEntryLeavesUnbound(t *testing.T) {
 		t.Errorf("tombstones = %d, entries_not_bound = %d; want 1 and 2", out.Tombstones, out.EntriesNotBound)
 	}
 
-	want, err := verify.BindAnchor(mustLoadAnchor(t, anchorPath), entries, anchor.SeedAnchorHash)
+	want, err := verify.BindAnchor(mustLoadAnchor(t, anchorPath), entries, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,8 +11,11 @@ construction, never computed by an implementation under test.
 
     python3 scripts/verdict-vectors.py
 
-writes fixtures/testdata/verify_verdict_vectors.json and its entry in
-fixtures/MANIFEST.json. Standard library only: no case needs a signature.
+writes fixtures/testdata/verify_verdict_vectors.json (v2 and v3 chains, v6
+anchors: FROZEN, its cases never change) and verify_verdict_v4_vectors.json
+(chain format v4, continued chains and v7 anchors: §2.0, §2.5, §5.0, §9.7), and
+their entries in fixtures/MANIFEST.json. Standard library only: no case needs a
+signature.
 """
 
 import copy
@@ -27,6 +30,11 @@ SEED_ANCHOR_HASH = hashlib.sha512(b"aleutian.anchor.seed.v2").hexdigest()
 SEED_ANCHOR_ID = "anchor_00000000-0000-0000-0000-000000000000"
 SUBJECT = "vector-subject"
 
+
+
+# The note every frozen file's _comment opens with.
+FROZEN = ("FROZEN: this format is verified forever and never written after v0.5.0 (docs/format-spec.md "
+          "§2.6, bundle-format.md §16); these cases will never change. ")
 
 def sha512_hex(b: bytes) -> str:
     return hashlib.sha512(b).hexdigest()
@@ -413,9 +421,414 @@ def bind_cases() -> list:
     return cases
 
 
+# ---------------------------------------------------------------------------
+# Chain format v4 and anchor v7 (format-spec §2.0, §2.5, §5.0, §9.7).
+# ---------------------------------------------------------------------------
+
+def u32(n: int) -> bytes:
+    return n.to_bytes(4, "big")
+
+
+def leaf_v4(entry_id: str, entry_type: str, content: str, salt: str) -> str:
+    """format-spec §2.0."""
+    i, t = entry_id.encode(), entry_type.encode()
+    return sha512_hex(b"aleutian.chain.leaf.v4:" + u32(len(i)) + i + u32(len(t)) + t
+                      + content.encode() + salt.encode())
+
+
+def chain_v4(prev: str, seq: int, ts_: str, leaf: str) -> str:
+    """format-spec §2.0."""
+    return sha512_hex(f"aleutian.chain.v4:{prev}|{seq}|{ts_}|{leaf}".encode())
+
+
+def anchor_chain_hash_v7(prev: str, subject: str, start: int, end: int, tip: str) -> str:
+    """format-spec §9.4, v7."""
+    sb = subject.encode()
+    return sha512_hex(b"aleutian.anchor.v7:" + prev.encode() + b"|" + u32(len(sb)) + sb + b"|"
+                      + f"{start}|{end}|{tip}".encode())
+
+
+def salt(i: int) -> str:
+    return hashlib.sha256(f"verdict v4 salt {i}".encode()).hexdigest()
+
+
+def v4_entry(i: int, seq: int, prev: str) -> dict:
+    content = sha512_hex(f"evidence {i}".encode())
+    e = {"entry_id": f"ent_{i:02d}", "entry_type": "event", "timestamp": ts(i), "format_version": 4,
+         "global_seq": seq, "content_hash": content, "salt": salt(i)}
+    e["leaf_hash"] = leaf_v4(e["entry_id"], e["entry_type"], content, e["salt"])
+    e["chain_hash"] = chain_v4(prev, seq, e["timestamp"], e["leaf_hash"])
+    return e
+
+
+def v4_chain(n: int, prefix: list = None) -> list:
+    """n v4 entries; after prefix (v2/v3 entries) when given, continuing it (§2.5)."""
+    out = copy.deepcopy(prefix or [])
+    prev = out[-1]["chain_hash"] if out else ""
+    seq = out[-1]["global_seq"] + 1 if out else 0
+    for i in range(n):
+        e = v4_entry(len(out), seq + i, prev)
+        out.append(e)
+        prev = e["chain_hash"]
+    return out
+
+
+def erase(e: dict) -> dict:
+    """format-spec §5.0: id, type, content hash and salt removed; the rest kept."""
+    for k in ("entry_id", "entry_type", "content_hash", "salt"):
+        del e[k]
+    e["erased"] = True
+    return e
+
+
+def relink_mixed(entries: list) -> list:
+    """Recompute every hash from the entries' current fields, v3 or v4, as
+    someone with write access to the store would after an edit."""
+    prev = ""
+    for e in entries:
+        if e.get("format_version") == 4:
+            # A malformed entry may lack a field; hash what it has, so that the
+            # only defect left is the one the case names.
+            if all(k in e for k in ("entry_id", "entry_type", "content_hash", "salt")):
+                leaf = leaf_v4(e["entry_id"], e["entry_type"], e["content_hash"], e["salt"])
+                if "leaf_hash" in e:
+                    e["leaf_hash"] = leaf
+            else:
+                leaf = e["leaf_hash"]
+            e["chain_hash"] = chain_v4(prev, e["global_seq"], e["timestamp"], leaf)
+        elif e.get("entry_type") != "tombstone":
+            e["chain_hash"] = chain_v3(prev, e["global_seq"], e["timestamp"], e["content_hash"])
+        prev = e["chain_hash"]
+    return entries
+
+
+V4_INTACT = {**INTACT, "erased_found": 0}
+
+
+def v4_broken(at: int, kind: str, **more) -> dict:
+    return {**V4_INTACT, "verdict": "BROKEN", "first_break": at, "first_break_type": kind, **more}
+
+
+def v4_chain_cases() -> list:
+    cases = []
+
+    def add(name, why, entries, expected, previous_hash=""):
+        cases.append({"name": name, "why": why, "previous_hash": previous_hash,
+                      "entries": entries, "expected": expected})
+
+    add("intact", "§2.0: four live v4 entries", v4_chain(4), V4_INTACT)
+
+    c = v4_chain(5)
+    erase(c[2])
+    add("erased_entry", "§5.0: an erased entry is recomputed from its leaf hash; not a break", c,
+        {**V4_INTACT, "erased_found": 1})
+    c = v4_chain(5)
+    erase(c[0])
+    erase(c[4])
+    add("first_and_last_erased", "§5.0", c, {**V4_INTACT, "erased_found": 2})
+
+    # Round 1, finding 1, against v4: rewrite everything before an erased entry
+    # and relink it, leaving the erased entry and what follows as stored.
+    c = v4_chain(5)
+    erase(c[2])
+    for e in c[:2]:
+        e["content_hash"] = sha512_hex(b"forged " + e["entry_id"].encode())
+    c[:2] = relink_mixed(copy.deepcopy(c[:2]))
+    add("entries_before_an_erased_entry_rewritten",
+        "§5.0: the attack v3 cannot detect. The erased entry is recomputed from the forged predecessor, "
+        "so it no longer matches", c, v4_broken(2, "hash_mismatch", erased_found=1))
+
+    c = v4_chain(5)
+    erase(c[2])
+    for e in c[:2]:
+        e["content_hash"] = sha512_hex(b"forged " + e["entry_id"].encode())
+    relink_mixed(c)
+    add("entries_before_an_erased_entry_rewritten_and_everything_relinked",
+        "§5.0: with the whole chain relinked it is consistent again, and the head changed: only an anchor "
+        "catches it (see bind case rewritten_and_relinked)", c, {**V4_INTACT, "erased_found": 1})
+
+    c = v4_chain(4)
+    c[1]["entry_id"] = "ent_other"
+    add("entry_id_changed", "§2.0: the id is in the leaf hash", c, v4_broken(1, "hash_mismatch"))
+    c = v4_chain(4)
+    c[1]["entry_type"] = "other"
+    add("entry_type_changed", "§2.0: the type is in the leaf hash", c, v4_broken(1, "hash_mismatch"))
+    c = v4_chain(4)
+    c[1]["salt"] = salt(99)
+    add("salt_changed", "§2.0", c, v4_broken(1, "hash_mismatch"))
+    c = v4_chain(4)
+    c[1]["leaf_hash"] = sha512_hex(b"another leaf")
+    add("stored_leaf_hash_wrong", "§5.0: a live entry's leaf hash is recomputed and compared", c,
+        v4_broken(1, "hash_mismatch"))
+    c = v4_chain(4)
+    erase(c[1])
+    c[1]["leaf_hash"] = sha512_hex(b"another leaf")
+    add("erased_leaf_hash_replaced", "§5.0: the chain hash is recomputed from the leaf hash", c,
+        v4_broken(1, "hash_mismatch", erased_found=1))
+
+    c = v4_chain(4)
+    erase(c[1])
+    add("erased_without_the_right_to",
+        "verification-model, Who may erase: THE PROPERTY. An erasure is not authenticated by the chain; "
+        "this chain verifies whoever erased the entry", c, {**V4_INTACT, "erased_found": 1})
+
+    # Shapes (§2.0, §5.5). Each chain is relinked, so the hashes agree.
+    def shaped(name, why, mutate, expected_at, kind, erased_found=0):
+        c = v4_chain(4)
+        mutate(c[1])
+        add(name, why, relink_mixed(c), v4_broken(expected_at, kind, erased_found=erased_found))
+
+    shaped("salt_uppercase", "§5.5", lambda e: e.update(salt=e["salt"].upper()), 1, "invalid_field")
+    shaped("salt_short", "§5.5", lambda e: e.update(salt=e["salt"][:62]), 1, "invalid_field")
+    shaped("salt_missing", "§2.0: a live entry carries its salt", lambda e: e.pop("salt"), 1, "invalid_field")
+    shaped("leaf_hash_missing", "§2.0", lambda e: e.pop("leaf_hash"), 1, "invalid_field")
+    shaped("entry_id_empty", "§5.5", lambda e: e.update(entry_id=""), 1, "invalid_field")
+    shaped("entry_id_control_character", "§5.5", lambda e: e.update(entry_id="a\nb"), 1, "invalid_field")
+    shaped("entry_id_257_bytes", "§5.5", lambda e: e.update(entry_id="x" * 257), 1, "invalid_field")
+    shaped("erased_with_entry_id_kept", "§2.0: an erased entry carries no id",
+           lambda e: (erase(e), e.update(entry_id="ent_01")), 1, "invalid_field", 1)
+    shaped("erased_with_salt_kept", "§2.0", lambda e: (erase(e), e.update(salt=salt(1))), 1, "invalid_field", 1)
+    shaped("erased_false", "§2.0: a live entry carries no erased member", lambda e: e.update(erased=False),
+           1, "invalid_field")
+    shaped("tombstone_type", "§2.0: v4 has no tombstones", lambda e: e.update(entry_type="tombstone"),
+           1, "format_field_misuse")
+    shaped("tomb_id", "§2.0", lambda e: e.update(entry_id="tomb_00000000-0000-0000-0000-000000000000"),
+           1, "format_field_misuse")
+    shaped("tombstone_type_and_id", "§2.0: the v3 tombstone shape, in a v4 entry",
+           lambda e: e.update(entry_type="tombstone", entry_id="tomb_00000000-0000-0000-0000-000000000000",
+                              content_hash="TOMBSTONE:" + "ab" * 32), 1, "format_field_misuse")
+    shaped("run_id_member", "§2.0: absent, not empty", lambda e: e.update(run_id=""), 1, "format_field_misuse")
+    shaped("sequence_num_member", "§2.0", lambda e: e.update(sequence_num=0), 1, "format_field_misuse")
+
+    c = v4_chain(3)
+    for e in c:
+        e["global_seq"] += 1
+    add("first_entry_not_at_zero", "§2.0: a v4 entry with no predecessor has global_seq 0", relink_mixed(c),
+        v4_broken(0, "invalid_field"))
+
+    # §2.5: continued chains.
+    v3 = chain(3, start=1)
+    add("continued_from_v3", "§2.5: a v3 chain from global_seq 1, continued in v4", v4_chain(3, v3), V4_INTACT)
+    c = v4_chain(3, chain(4))
+    tombstone(c[1])
+    add("continued_after_a_v3_tombstone", "§2.5: the v3 prefix keeps exactly its guarantee", c,
+        {**V4_INTACT, "tombstones_found": 1, "last_tombstone": 1})
+
+    c = v4_chain(3, chain(4))
+    for e in c[:1]:
+        e["content_hash"] = sha512_hex(b"forged 0")
+    c[:1] = relink(copy.deepcopy(c[:1]))
+    tombstone(c[1])
+    add("continued_v3_prefix_rewritten_before_its_tombstone",
+        "§2.5, §5.5: the v3 limitation stays in the prefix, and is reported; the v4 entries add nothing to it",
+        c, {**V4_INTACT, "tombstones_found": 1, "last_tombstone": 1})
+
+    c = v4_chain(2, chain(2))
+    nxt = entry(9, c[-1]["global_seq"] + 1, c[-1]["chain_hash"])
+    c.append(nxt)
+    add("v3_entry_after_v4", "§2.5: never back from v4", c, v4_broken(4, "format_field_misuse"))
+    c = v4_chain(2, chain(2))
+    nxt = tombstone(entry(9, c[-1]["global_seq"] + 1, c[-1]["chain_hash"]))
+    c.append(nxt)
+    add("v3_tombstone_after_v4",
+        "§2.5: the load-bearing case. A v3 tombstone's chain hash would be taken as stored and unlink "
+        "everything before it", c, v4_broken(4, "format_field_misuse"))
+
+    c = v4_chain(5)
+    erase(c[1])
+    c[3]["entry_id"] = "ent_changed"
+    erase(c[4])
+    add("erased_entries_after_a_break_are_counted", "§5.5: every entry walked is counted, after the first break too",
+        c, v4_broken(3, "hash_mismatch", erased_found=2))
+    c = v4_chain(4)
+    erase(c[1])
+    c[1]["chain_hash"] = "short"
+    add("erased_entry_with_a_malformed_chain_hash_is_not_counted",
+        "§5.5: an entry is counted only once its chain_hash is in shape (step 2)", c,
+        v4_broken(1, "invalid_field"))
+    c = v4_chain(1, chain(2))
+    c[2]["chain_hash"] = "short"
+    c.append(tombstone(entry(9, c[-1]["global_seq"] + 1, c[-1]["chain_hash"])))
+    add("v3_tombstone_after_a_v4_entry_broken_at_step_2",
+        "§2.5, §5.5: never back from v4 goes by the declared format, even after a v4 entry that broke at "
+        "step 2, so the v3 tombstone after it is refused at step 3 and not counted", c,
+        v4_broken(2, "invalid_field"))
+    c = v4_chain(4)
+    c[2]["run_id"] = ""
+    c[2]["timestamp"] = "yesterday"
+    add("misuse_before_timestamp", "§5.5: step 3 before step 5", c, v4_broken(2, "format_field_misuse"))
+    c = v4_chain(4)
+    c[2]["timestamp"] = "2026-10-12T09:00:02Z"
+    c[2].pop("salt")
+    add("timestamp_before_shape", "§5.5: step 5 before step 7", c, v4_broken(2, "invalid_timestamp"))
+    c = v4_chain(4)
+    c[2]["global_seq"] = 9
+    c[2]["chain_hash"] = "short"
+    add("sequence_gap_first", "§5.5: step 1", c, v4_broken(2, "sequence_gap"))
+
+    c = v4_chain(4)
+    add("segment_with_its_predecessor_hash", "§2.0: a segment links from the hash supplied", c[2:], V4_INTACT,
+        previous_hash=c[1]["chain_hash"])
+    c = v4_chain(4)
+    add("segment_without_its_predecessor_hash",
+        "§2.0: the first entry's global_seq is above 0, so it has a predecessor and this is a segment; "
+        "walked from nothing, it breaks the first-entry rule",
+        c[2:], v4_broken(0, "invalid_field"))
+    c = v4_chain(4)
+    add("predecessor_hash_supplied_to_a_first_entry",
+        "§2.0: an entry with a predecessor has global_seq above 0", c, v4_broken(0, "invalid_field"),
+        previous_hash=sha512_hex(b"some predecessor"))
+    return cases
+
+
+def anchor_v7_for(entries: list, start: int = None, end: int = None, subject: str = SUBJECT,
+                  prev_hash: str = SEED_ANCHOR_HASH, prev_id: str = SEED_ANCHOR_ID) -> dict:
+    start = entries[0]["global_seq"] if start is None else start
+    end = entries[-1]["global_seq"] if end is None else end
+    tip = next(e["chain_hash"] for e in entries if e["global_seq"] == end)
+    return {
+        "version": 7, "anchor_id": "anchor_77777777-7777-7777-7777-777777777777", "subject": subject,
+        "chain_hash": anchor_chain_hash_v7(prev_hash, subject, start, end, tip),
+        "range": {"start_seq": str(start), "end_seq": str(end)}, "entry_count": str(end - start + 1),
+        "previous_anchor_hash": prev_hash, "previous_anchor_id": prev_id,
+        "signing_key_id": "vector-key", "created_at_ms": 1791795600000, "signature": "",
+    }
+
+
+def v7_bind_cases() -> list:
+    """Keyless binds of v7 anchors (§9.7). expect is what the caller passes:
+    subject and previous_anchor_hash, each empty when not given."""
+    cases = []
+    c = v4_chain(5)
+
+    def add(name, why, entries, anchor, expected, subject=SUBJECT, previous_anchor_hash="", previous_hash=""):
+        cases.append({"name": name, "why": why, "entries": entries, "anchor": anchor, "previous_hash": previous_hash,
+                      "expect": {"subject": subject, "previous_anchor_hash": previous_anchor_hash},
+                      "expected": expected})
+
+    def outcome(o, bound=False, tombstones=0, not_bound=0, subject_checked=True):
+        return {"error": False, "outcome": o, "bound": bound, "tombstones": tombstones,
+                "entries_not_bound": not_bound, "subject_checked": subject_checked}
+
+    add("bound", "§9.7", c, anchor_v7_for(c), outcome("bound", True))
+    for name, idx in [("first_entry_erased", [0]), ("last_entry_erased", [4]), ("first_and_last_erased", [0, 4])]:
+        e = copy.deepcopy(c)
+        for i in idx:
+            erase(e[i])
+        add(name, "§5.0, §9.4: erasure changes nothing the anchor binds; a v6 anchor broke here", e,
+            anchor_v7_for(c), outcome("bound", True))
+
+    forged = copy.deepcopy(c)
+    erase(forged[2])
+    for e in forged[:2]:
+        e["content_hash"] = sha512_hex(b"forged " + e["entry_id"].encode())
+    relink_mixed(forged)
+    add("rewritten_and_relinked",
+        "§5.0: before an erased entry, rewritten and the whole chain relinked; it verifies alone, and the "
+        "anchor's head no longer matches", forged, anchor_v7_for(c), outcome("head_mismatch"))
+
+    add("other_subject_expected", "§9.7: a genuine anchor for another subject", c, anchor_v7_for(c),
+        outcome("tenant_mismatch"), subject="another-subject")
+    a = anchor_v7_for(c)
+    a["chain_hash"] = "ef" * 64
+    add("subject_checked_before_the_head",
+        "§9.7: two defects, a wrong head and another expected subject; the subject is step 5, the head step 6",
+        c, a, outcome("tenant_mismatch"), subject="another-subject")
+    add("predecessor_checked_before_the_subject",
+        "§9.7: two defects, another expected predecessor and another expected subject; step 4 is reported",
+        c, anchor_v7_for(c), outcome("predecessor_mismatch"), subject="another-subject",
+        previous_anchor_hash="ab" * 64)
+    broken_c = copy.deepcopy(c)
+    broken_c[3]["content_hash"] = sha512_hex(b"something else")
+    add("chain_broken", "§9.7 step 1: the chain is walked first; a break is chain_broken whatever else differs",
+        broken_c, anchor_v7_for(c), outcome("chain_broken"), subject="another-subject")
+    add("no_subject_expected", "§9.7: bound, and the result says the subject was not checked", c,
+        anchor_v7_for(c), outcome("bound", True, subject_checked=False), subject="")
+    add("other_predecessor_expected", "§9.7: the caller expected another previous anchor", c, anchor_v7_for(c),
+        outcome("predecessor_mismatch"), previous_anchor_hash="ab" * 64)
+    add("expected_predecessor_matches", "§9.7", c, anchor_v7_for(c), outcome("bound", True),
+        previous_anchor_hash=SEED_ANCHOR_HASH)
+    add("later_anchor_naming_the_seed_id", "§9.3: the seed id goes with the seed hash only", c,
+        anchor_v7_for(c, prev_hash="ab" * 64), {"error": True})
+
+    grown = v4_chain(8)
+    add("chain_grown_since_the_anchor",
+        "§9.7: the tip is the entry at end_seq; entries after it are not the anchor's business",
+        grown, anchor_v7_for(grown[:5]), outcome("bound", True))
+    add("truncated_from_the_end", "§9.7: no entry at end_seq", c[:4], anchor_v7_for(c), outcome("height_mismatch"))
+
+    kept = copy.deepcopy(c[1:])
+    for i, e in enumerate(kept):
+        e["global_seq"] = i
+    relink_mixed(kept)
+    add("truncated_from_the_front_and_relinked",
+        "§9.7: renumbered from 0 it is a whole chain again, one entry short; the tip it names is not "
+        "the one signed", kept, anchor_v7_for(c), outcome("height_mismatch"))
+
+    a = anchor_v7_for(c)
+    a["chain_hash"] = "ef" * 64
+    add("head_mismatch", "§9.4", c, a, outcome("head_mismatch"))
+
+    add("over_a_segment", "§9.8: an anchor is not bound to entries verified from a predecessor hash", c[2:],
+        anchor_v7_for(c), {"error": True}, previous_hash=c[1]["chain_hash"])
+
+    a = anchor_v7_for(c)
+    a["entry_count"] = "4"
+    add("entry_count_not_range_length", "§9.3", c, a, {"error": True})
+
+    v3 = chain(3, start=1)
+    cont = v4_chain(3, v3)
+    add("continued_chain_from_seq_1", "§2.5, §9.7: start_seq is the chain's first global_seq", cont,
+        anchor_v7_for(cont), outcome("bound", True))
+    add("range_not_from_the_first_entry", "§9.7: start_seq names the chain's first entry", cont,
+        anchor_v7_for(cont, start=2), outcome("range_start_mismatch"))
+
+    cont = v4_chain(3, chain(4))
+    tombstone(cont[1])
+    add("continued_after_a_v3_tombstone", "§2.5: the v3 prefix up to its last tombstone is reported unbound", cont,
+        anchor_v7_for(cont), outcome("bound", True, tombstones=1, not_bound=2))
+
+    forged = v4_chain(3, chain(4))
+    forged[0]["content_hash"] = sha512_hex(b"forged 0")
+    forged[:1] = relink(copy.deepcopy(forged[:1]))
+    tombstone(forged[1])
+    add("continued_v3_prefix_rewritten_before_its_tombstone",
+        "§2.5: the frozen v3 limitation, against a v7 anchor. It binds, and entries_not_bound is what tells "
+        "the caller", forged, anchor_v7_for(cont), outcome("bound", True, tombstones=1, not_bound=2))
+    return cases
+
+
+def write_v4() -> None:
+    obj = {
+        "_comment": "Verifier verdict vectors for chain format v4, continued chains and v7 anchors. Written by "
+                    "scripts/verdict-vectors.py from docs/format-spec.md (§2.0, §2.5, §5.0, §9.3, §9.7) and "
+                    "never by an implementation under test. chain_cases: as in verify_verdict_vectors.json, "
+                    "and expected.erased_found counts v4 erased entries. bind_cases: a keyless bind of a v7 "
+                    "anchor to entries (linked from previous_hash when given) with the caller's expect "
+                    "(subject, previous_anchor_hash; empty means not given); expected.error true means the "
+                    "anchor or the bind is refused; otherwise compare outcome, bound, tombstones, "
+                    "entries_not_bound and subject_checked. No case needs a key.",
+        "seed_anchor_hash": SEED_ANCHOR_HASH,
+        "seed_anchor_id": SEED_ANCHOR_ID,
+        "chain_cases": v4_chain_cases(),
+        "bind_cases": v7_bind_cases(),
+    }
+    name = "verify_verdict_v4_vectors.json"
+    raw = (json.dumps(obj, indent=2, ensure_ascii=False) + "\n").encode()
+    with open(os.path.join(TESTDATA, name), "wb") as f:
+        f.write(raw)
+    mpath = os.path.join(ROOT, "fixtures", "MANIFEST.json")
+    manifest = json.load(open(mpath))
+    manifest["vectors"][name] = {"sha256": hashlib.sha256(raw).hexdigest(), "bytes": len(raw)}
+    manifest["vectors"] = dict(sorted(manifest["vectors"].items()))
+    with open(mpath, "w") as f:
+        f.write(json.dumps(manifest, indent=2) + "\n")
+    print(f"wrote {name} ({len(raw)} bytes, {len(obj['chain_cases']) + len(obj['bind_cases'])} cases)")
+
+
 def main() -> None:
     obj = {
-        "_comment": "Verifier verdict vectors. Written by scripts/verdict-vectors.py from docs/format-spec.md "
+        "_comment": FROZEN + "Verifier verdict vectors. Written by scripts/verdict-vectors.py from docs/format-spec.md "
                     "(§4, §5.5, §9.4, §9.8) and never by an implementation under test. Each case is a valid "
                     "chain with one stated defect; `why` cites the rule. chain_cases: verify the entries "
                     "(linking the first from previous_hash, empty for a whole chain) and compare verdict, the "
@@ -445,6 +858,7 @@ def main() -> None:
         f.write(json.dumps(manifest, indent=2) + "\n")
     n = sum(len(obj[k]) for k in ("chain_cases", "entries_text_cases", "anchor_text_cases", "bind_cases"))
     print(f"wrote {name} ({len(raw)} bytes, {n} cases)")
+    write_v4()
 
 
 if __name__ == "__main__":

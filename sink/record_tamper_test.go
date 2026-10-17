@@ -45,7 +45,7 @@ func TestVerify_MiddleSpliceIsCaught(t *testing.T) {
 	key, _ := recordKeyOf(rs)
 	sig, err := signRecord(ctx, rs, key, recordFields{chainID: chain, entryID: es[1].EntryID,
 		entryType: es[1].EntryType, globalSeq: 1, prevHash: es[1].PreviousHash, timestamp: newTs,
-		contentHash: es[1].ContentHash})
+		contentHash: es[1].ContentHash, formatVersion: es[1].FormatVersion, leafHash: es[1].LeafHash})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,14 +184,17 @@ func TestVerify_DamagedSignaturesFileIsAFinding(t *testing.T) {
 	}
 }
 
-// An entry in another chain format than v3 (all this sink writes) is
-// reported: v2 hashes bind a free-form run id no signature covers.
-func TestVerify_NonV3EntryIsReported(t *testing.T) {
-	s, ring, _ := signedSink(t)
-	chain := cid(t, s, "u-1")
-	editEntry(t, s, chain, 2, func(e *store.Entry) { e.FormatVersion = 2 })
-	if cr := chainReport(t, verifyWith(t, s, ring), chain); !hasProblemWith(cr, "format v3") {
-		t.Fatalf("%+v", cr)
+// An entry in another chain format than v4 (all this sink writes) is
+// reported: a v3 entry is what a sink before v0.5.0 wrote, and v2 hashes bind
+// a free-form run id no signature covers (sink-format §10).
+func TestVerify_NonV4EntryIsReported(t *testing.T) {
+	for _, format := range []int{2, 3} {
+		s, ring, _ := signedSink(t)
+		chain := cid(t, s, "u-1")
+		editEntry(t, s, chain, 2, func(e *store.Entry) { e.FormatVersion = format })
+		if cr := chainReport(t, verifyWith(t, s, ring), chain); !hasProblemWith(cr, "format v4") {
+			t.Fatalf("v%d entry: %+v", format, cr)
+		}
 	}
 }
 

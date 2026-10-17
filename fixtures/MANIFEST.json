@@ -1,5 +1,5 @@
 {
-  "_comment": "The AleutianChain conformance vectors, and their digests. THIS FILE IS THE CONTRACT. Every implementation claiming compatibility must reproduce these vectors' expected outputs exactly. The digests exist so that a copy vendored into another repository cannot drift unnoticed: an implementation reads its local copy and checks it against these digests before trusting it. Changing a vector is a deliberate act that changes a digest here, which every other implementation then notices. A vector must never be regenerated to make a failing implementation pass -- that is the circularity these vectors exist to break. Twice this rule was broken on purpose, and the record says so: in v0.4.0, chain_vectors.json (two cases carried 64-character content hashes the format refuses) and the nonce-length reject cases of commitment_vectors.json (their stored commitment did not depend on the nonce, so a verifier with no length check passed them) were replaced, with the reason in CHANGELOG.md. The v2 values that came from the JavaScript verifier are therefore gone: chain_vectors.json is now written by scripts/spec-vectors.py, and Go, the Python SDK and the JavaScript SDK each reproduce it.",
+  "_comment": "The AleutianChain conformance vectors, and their digests. THIS FILE IS THE CONTRACT. Every implementation claiming compatibility must reproduce these vectors' expected outputs exactly. The digests exist so that a copy vendored into another repository cannot drift unnoticed: an implementation reads its local copy and checks it against these digests before trusting it. Changing a vector is a deliberate act that changes a digest here, which every other implementation then notices. A vector must never be regenerated to make a failing implementation pass -- that is the circularity these vectors exist to break. Twice this rule was broken on purpose, and the record says so: in v0.4.0, chain_vectors.json (two cases carried 64-character content hashes the format refuses) and the nonce-length reject cases of commitment_vectors.json (their stored commitment did not depend on the nonce, so a verifier with no length check passed them) were replaced, with the reason in CHANGELOG.md. The v2 values that came from the JavaScript verifier are therefore gone: chain_vectors.json is now written by scripts/spec-vectors.py, and Go, the Python SDK and the JavaScript SDK each reproduce it. FROZEN (docs/format-spec.md \u00a72.6, bundle-format.md \u00a716): chain_vectors.json, chain_v3_vectors.json, anchor_v4_canonical_vectors.json, anchor_v6_canonical_vectors.json, anchor_chain_hash_vectors.json, record_v1_vectors.json, bundle_v1_vectors.json and verify_verdict_vectors.json describe formats verified forever and never written after v0.5.0; their cases will never change. In v0.5.0 the frozen files' comments gained this note, and three bundle_v1 cases changed their example of a wrong format (bundle-format.md \u00a715 note 3); no expected value changed.",
   "vectors": {
     "anchor_chain_hash_vectors.json": {
       "sha256": "21976ad5755f7914b06f553dab75a2eb54024163f141c4e45af337e259feaac8",
@@ -10,16 +10,28 @@
       "bytes": 2872
     },
     "anchor_v6_canonical_vectors.json": {
-      "sha256": "06119826a039675962c3c821f49d23cae01fa6fcf71a4f54f0488b44a1b83b9e",
-      "bytes": 9443
+      "sha256": "2c5673dbdf478e2037f5cd15eedda0ab2bd611263e27e067ed1f67c8d9f9a6e9",
+      "bytes": 9597
+    },
+    "anchor_v7_canonical_vectors.json": {
+      "sha256": "6527b19bbdcc3d0e029a96ce204a53140236fc9a66249516715bc86cec8a914c",
+      "bytes": 190076
     },
     "bundle_v1_vectors.json": {
-      "sha256": "0f82f3d05d3f98ca1175c993b99c236c6558317deeff75775b2f16bdd177578a",
-      "bytes": 4540286
+      "sha256": "987965370263614dd67fc96e01cdb89b05c54dfe677397b79ec2064174dc47c3",
+      "bytes": 4540440
+    },
+    "bundle_v2_vectors.json": {
+      "sha256": "9ce06108a0bb999525f6fc5a1265baa3c8d43a6733347e05c7d914f88c18e88d",
+      "bytes": 10150989
     },
     "chain_v3_vectors.json": {
-      "sha256": "85c8082cd17cff698302fcc7075529383abacaafe8bdd3a7a744298e36714f78",
-      "bytes": 5733
+      "sha256": "4e8569c3dae7ef137b6fceb3164817a79af7eba72d83199423bc45efaaef0515",
+      "bytes": 5887
+    },
+    "chain_v4_vectors.json": {
+      "sha256": "3941b257607f54dea5cff366d136f0b7ed712792142aeb15323e5fb423bfc2b2",
+      "bytes": 47850
     },
     "chain_vectors.json": {
       "sha256": "7be85a1331b25d243920c754fcad32a16bdc5c8aa0341b8c25a8b29c75c121d9",
@@ -38,16 +50,24 @@
       "bytes": 11683
     },
     "record_v1_vectors.json": {
-      "sha256": "6080f350029d67b2e94c6269dadc1b79e35d75bc8d996647dd6d5b39efb0fb8c",
-      "bytes": 34446
+      "sha256": "48da67e9c7e1cf3457cd17e565893d33f41661abe9541efe75590be89589867f",
+      "bytes": 34600
+    },
+    "record_v2_vectors.json": {
+      "sha256": "3164ef7b526c6186617fa90be91023300f852852971cba100e7b1e97de15a7bb",
+      "bytes": 102292
     },
     "v3_golden_capture_request.json": {
       "sha256": "8c3d7add4cf6fe7c764d963ef59d764b8a314b9d708a22ddc48b9faab7bfedea",
       "bytes": 8554
     },
+    "verify_verdict_v4_vectors.json": {
+      "sha256": "a100be9d9204341ac841351d6b525fb272f870ffc2dd9ad5db7cebf139ae7627",
+      "bytes": 255461
+    },
     "verify_verdict_vectors.json": {
-      "sha256": "5a28a7cac4c452ec35854c8535aeb67b108d5ecdf859031d6113be7536342448",
-      "bytes": 166360
+      "sha256": "cb874fb13c26b40d56b40d9cff31f6e971f3455fabe5dd18b61594b587a4f4f2",
+      "bytes": 166514
     }
   }
 }

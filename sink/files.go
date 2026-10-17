@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/aleutian-ai/proof/internal/safebolt"
@@ -99,14 +98,7 @@ func (s *Sink) compactChecked(path string) error {
 }
 
 // toVerifyEntry is a stored entry in the form verify reads.
-func toVerifyEntry(r store.Entry) verify.Entry {
-	return verify.Entry{
-		EntryID: r.EntryID, EntryType: r.EntryType,
-		Timestamp:     r.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-		FormatVersion: r.FormatVersion, GlobalSeq: r.GlobalSeq,
-		ContentHash: r.ContentHash, ChainHash: r.ChainHash,
-	}
-}
+func toVerifyEntry(r store.Entry) verify.Entry { return verify.FromStored(r) }
 
 // deleteSources removes a chain's source positions, if a sources file exists.
 // It never creates one.
@@ -159,9 +151,8 @@ func forEachEntry(ctx context.Context, st *boltstore.Store, chain string, fn fun
 
 // compactFile rewrites a bbolt file into a fresh one, so values deleted from it
 // are gone from the live file rather than left in its free pages (bbolt never
-// zeroes them). The copy is synced and renamed over the original, then the
-// folder is synced. A crash before the rename leaves the original intact. A
-// missing file is not an error: there is nothing to rewrite.
+// zeroes them): see safebolt.CompactFile. A file that is not regular (a
+// symlink) is refused; a missing one is not an error.
 //
 // It reaches the live file only: not SSD wear-levelled blocks, filesystem
 // snapshots or journals, or backups.
@@ -169,71 +160,7 @@ func compactFile(path string, lockTimeout time.Duration) error {
 	if err := regularOrAbsent(path); err != nil {
 		return err
 	}
-	// Leftover copies of an interrupted compaction go first, even when the file
-	// itself is gone: each is a copy of a secret file.
-	dir, base := filepath.Split(path)
-	if err := removeCompactLeftovers(dir, base); err != nil {
-		return err
-	}
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	// A fresh file with an unpredictable name, created exclusively: nothing
-	// planted in the folder beforehand can receive the copy.
-	tf, err := os.CreateTemp(dir, base+".compact-*")
-	if err != nil {
-		return err
-	}
-	tmp := tf.Name()
-	if err := tf.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	src, err := safebolt.Open(path, 0o600, boltOptions(lockTimeout, true))
-	if err != nil {
-		_ = os.Remove(tmp)
-		return busy(err)
-	}
-	dst, err := safebolt.Open(tmp, 0o600, boltOptions(lockTimeout, false))
-	if err != nil {
-		src.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	// A damaged original fails the copy (ErrCorrupt) and is left as it was.
-	err = safebolt.Compact(dst, src)
-	src.Close()
-	if cerr := dst.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = syncFile(tmp)
-	}
-	if err == nil {
-		err = os.Rename(tmp, path)
-	}
-	if err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return syncFile(filepath.Dir(path))
-}
-
-// removeCompactLeftovers removes the temporary copies an interrupted compaction
-// of base left in dir: each is a copy of a secret file.
-func removeCompactLeftovers(dir, base string) error {
-	entries, err := os.ReadDir(filepath.Clean(dir))
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), base+".compact") {
-			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("remove an earlier compaction's leftover: %w", err)
-			}
-		}
-	}
-	return nil
+	return busy(safebolt.CompactFile(path, boltOptions(lockTimeout, true), boltOptions(lockTimeout, false)))
 }
 
 // created reports whether path does not exist yet, and syncNewFile makes a

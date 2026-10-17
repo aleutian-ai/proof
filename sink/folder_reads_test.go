@@ -104,7 +104,7 @@ func TestReadVerbsCreateNothing(t *testing.T) {
 	if _, err := s.Verify(context.Background(), ring); err == nil {
 		t.Fatal("Verify of a folder that does not exist succeeded")
 	}
-	if _, err := s.Checkpoint(context.Background(), signer, nil); err == nil {
+	if _, err := s.Checkpoint(context.Background(), signer, nil, UntrackedHeads()); err == nil {
 		t.Fatal("Checkpoint of a folder that does not exist succeeded")
 	}
 	if _, err := s.EraseSubject(context.Background(), "u-1"); err == nil {

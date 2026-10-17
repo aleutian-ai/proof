@@ -61,7 +61,7 @@ func TestVerifyIndex_LiveAndErased(t *testing.T) {
 	ctx := context.Background()
 	s, chains := multi(t)
 	signer, ring := newSigner(t)
-	if _, err := s.Checkpoint(ctx, signer, nil); err != nil {
+	if _, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads()); err != nil {
 		t.Fatal(err)
 	}
 	erased, err := s.EraseSubject(ctx, "u-1")
@@ -77,7 +77,7 @@ func TestVerifyIndex_LiveAndErased(t *testing.T) {
 	}
 	// The checkpoint covers the erasures because the caller confirms it made
 	// them, with the ids the erase call returned.
-	if _, err := s.Checkpoint(ctx, signer, nil, confirm(erased.Erased...)); err != nil {
+	if _, err := s.Checkpoint(ctx, signer, nil, confirm(erased.Erased...), UntrackedHeads()); err != nil {
 		t.Fatal(err)
 	}
 	if r, err = s.Verify(ctx, ring); err != nil || !r.OK() {

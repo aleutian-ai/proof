@@ -509,3 +509,95 @@ The shared set covers chain hashes and anchor canonical forms. Merkle roots,
 inclusion and consistency proofs, bundle verification, and adversarial
 malformed-input behaviour are NOT yet in it. Until they are, agreement on those
 is still coincidental — and saying so is part of the contract.
+
+---
+
+## D19 · v4 links through a salted leaf hash, and has no tombstones
+
+In v2 and v3, `content_hash` is both what links an entry into the chain and
+what erasure must remove. Erasure replaced it, the link could no longer be
+recomputed, and the verifier had to take the erased entry's chain hash on
+trust. Two external reviews showed what that costs: everything before a
+tombstone can be rewritten under a valid signed anchor, and because
+`entry_type` and `entry_id` were in no hash, any entry could be turned into a
+tombstone to do it.
+
+v4 separates the two. The chain links through a **leaf hash**, a salted
+commitment to the entry's id, type and content hash (format-spec §2.0).
+Erasure removes the salt and the three fields and keeps the leaf hash, so every
+link is recomputed and the verifier has no branch that trusts a stored value.
+The salt does what the tombstone's random value and new id did: without it,
+someone holding the original entry cannot confirm it was there.
+
+Two alternatives were considered and rejected:
+
+- **A tombstone that keeps a digest** (an unsalted `entry_digest` over the
+  fields). It closes the link, but someone holding the original entry can
+  recompute the digest and confirm the erased entry was theirs, which is the
+  correlation the tombstone design existed to prevent. The salt is what makes
+  the retained value hiding.
+- **No erasure in the chain at all; erase only the nonce of a salted
+  `content_hash`.** It needs every producer to commit with a salt, leaves the
+  id resolvable, and leaves `entry_type` and `entry_id` outside any hash.
+
+The cost accepted: an erasure is not authenticated by the chain. Anyone who can
+write the store can produce the erased shape. That was already true of
+tombstones; v4 says it plainly (verification-model.md, "Who may erase") and the
+sink authenticates erasure separately (D23).
+
+## D20 · v7 anchors name their range by sequence, and carry their predecessor's hash
+
+A v6 anchor named its range by entry id, so erasing the first or last entry of
+an anchored range, a lawful act, broke the anchor. Sequence numbers are never
+changed by erasure. v7 names `start_seq` and `end_seq`, as decimal strings so
+that a JavaScript verifier canonicalizes the same bytes.
+
+A v6 anchor also needed its predecessor's chain hash from a second file, and
+the most common misuse was passing the wrong one. v7 signs
+`previous_anchor_hash`. `verified_through`, signed since v4 and never compared
+with anything, is removed rather than given a meaning after the fact.
+
+The verifier takes the expected subject as an input, so a genuine anchor for a
+different subject is `tenant_mismatch` rather than a success.
+
+## D21 · Signatures carry a context string
+
+ML-DSA's context parameter (FIPS 204 §5.2) is part of what is signed. v7
+anchors sign with `aleutian.proof.anchor.v7`, v2 sink records with
+`aleutian.proof.record.v2`. A key reused across protocols, or across this
+project's own two signed objects, can then never produce a signature that means
+something in both. The older objects keep the empty context, because their
+signatures already exist.
+
+The context strings are the whole of the COSE decision for 1.0: the signed
+bytes are stable, so a `COSE_Sign1` wrapper can be added later without
+changing them (anchor-model.md, "Signatures and COSE"). No COSE code ships
+before 1.0.
+
+## D22 · v2 and v3 are frozen, and continued rather than migrated
+
+v2 and v3 hashes are signed into anchors that already exist, so their
+weaknesses cannot be fixed without rewriting signed history. They are
+therefore frozen: verified forever, never written after v0.5.0, their vectors
+never changed. A v2 or v3 chain is **continued** in v4: its next entry is v4
+and links from its head (format-spec §2.5). From then on every entry has v4's
+guarantee, and no v2 or v3 entry may follow, because a v3 tombstone after v4
+entries would undo it.
+
+There is no `proof migrate`. A tool that re-linked a chain would produce a
+chain that verifies and is not the one that was anchored.
+
+## D23 · A checkpoint series depends on memory outside the folder
+
+No check inside a sink folder can detect that the folder was deleted and
+started again: the evidence of the old series is what was deleted. So
+`Checkpoint` requires the caller to pass the previous checkpoint's head (its
+number and hash), or to say explicitly that this is the first checkpoint, and
+refuses a folder whose last checkpoint is not the one named. The head is
+printed in a form meant to be kept elsewhere: a counterparty, a ticket, a
+signed commit, a transparency service (runbook.md).
+
+The sink's erasure records are signed in a signing sink, and in an unsigned
+sink a checkpoint refuses an erasure that was not confirmed or explicitly
+vouched for. Both close the same hole from round 2: an erasure record anyone
+with write access could forge.

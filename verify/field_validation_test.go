@@ -162,7 +162,7 @@ func TestBindAnchor_OneTombstonePredicate(t *testing.T) {
 	forged[4].ChainHash = entries[4].ChainHash
 	forged[4].ContentHash = chainformat.TombstoneContentHashPrefix + strings.Repeat("0", 64)
 
-	res, err := BindAnchor(a, forged, anchor.SeedAnchorHash)
+	res, err := BindAnchor(a, forged, Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestBindAnchor_ReportsWhatATombstoneLeavesUnbound(t *testing.T) {
 	entries, head := buildChain(t, 5)
 	a := anchorOver(t, entries, head, anchor.SeedAnchorHash)
 
-	clean, err := BindAnchor(a, entries, anchor.SeedAnchorHash)
+	clean, err := BindAnchor(a, entries, Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil || !clean.Bound {
 		t.Fatalf("clean bind: %+v, %v", clean, err)
 	}
@@ -207,7 +207,7 @@ func TestBindAnchor_ReportsWhatATombstoneLeavesUnbound(t *testing.T) {
 	if chain.Verdict != VerdictIntact || chain.TombstonesFound != 1 || chain.LastTombstone != 2 {
 		t.Fatalf("Chain = %s, %d tombstones, last at %d", chain.Verdict, chain.TombstonesFound, chain.LastTombstone)
 	}
-	res, err := BindAnchor(a, forged, anchor.SeedAnchorHash)
+	res, err := BindAnchor(a, forged, Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestVerifyAnchor_ASignatureErrorIsNeverBound(t *testing.T) {
 	series, ring := series(t, entries, 5)
 	a := series[0]
 
-	good, err := VerifyAnchor(a, entries, anchor.SeedAnchorHash, ring)
+	good, err := VerifyAnchor(a, entries, Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err != nil || !good.Bound || !good.SignatureVerified {
 		t.Fatalf("control failed: %+v, %v", good, err)
 	}
@@ -270,7 +270,7 @@ func TestVerifyAnchor_ASignatureErrorIsNeverBound(t *testing.T) {
 	if err != nil {
 		t.Skipf("an empty key ring cannot be built: %v", err)
 	}
-	res, err := VerifyAnchor(a, entries, anchor.SeedAnchorHash, empty)
+	res, err := VerifyAnchor(a, entries, Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, empty)
 	if err == nil {
 		t.Fatal("an anchor signed by an unknown key verified")
 	}
@@ -290,7 +290,7 @@ func TestBindAnchor_OnlyABindSaysTheChainIsTheAnchors(t *testing.T) {
 	entries, head := buildChain(t, 5)
 	a := anchorOver(t, entries, head, anchor.SeedAnchorHash)
 
-	bound, err := BindAnchor(a, entries, anchor.SeedAnchorHash)
+	bound, err := BindAnchor(a, entries, Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil || !bound.Bound || !strings.Contains(bound.Proven, "is the one this anchor committed to") {
 		t.Fatalf("control failed: %+v, %v", bound, err)
 	}
@@ -304,7 +304,7 @@ func TestBindAnchor_OnlyABindSaysTheChainIsTheAnchors(t *testing.T) {
 		"range_end_mismatch": mustBind(t, a, entries[:4]),
 		"head_mismatch":      mustBind(t, wrongHead, entries),
 		"predecessor_mismatch": func() BindResult {
-			r, err := BindAnchor(a, entries, strings.Repeat("a", 128))
+			r, err := BindAnchor(a, entries, Expect{PreviousAnchorHash: strings.Repeat("a", 128)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -322,7 +322,7 @@ func TestBindAnchor_OnlyABindSaysTheChainIsTheAnchors(t *testing.T) {
 
 func mustBind(t *testing.T, a anchor.Anchor, entries []Entry) BindResult {
 	t.Helper()
-	res, err := BindAnchor(a, entries, anchor.SeedAnchorHash)
+	res, err := BindAnchor(a, entries, Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,14 +338,14 @@ func TestVerifyAnchor_NoKeySourceIsAnError(t *testing.T) {
 	var nilRing *anchor.KeyRing
 	for name, src := range map[string]anchor.KeySource{"nil interface": nil, "nil *KeyRing": nilRing} {
 		t.Run(name, func(t *testing.T) {
-			if res, err := VerifyAnchor(a, entries, anchor.SeedAnchorHash, src); err == nil || res.Bound {
+			if res, err := VerifyAnchor(a, entries, Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, src); err == nil || res.Bound {
 				t.Fatalf("VerifyAnchor: %+v, %v", res, err)
 			}
 			w := NewWalker(Options{})
 			for _, e := range entries {
 				w.Add(e)
 			}
-			if res, err := w.VerifyAnchor(a, anchor.SeedAnchorHash, src); err == nil || res.Bound {
+			if res, err := w.VerifyAnchor(a, Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, src); err == nil || res.Bound {
 				t.Fatalf("Walker.VerifyAnchor: %+v, %v", res, err)
 			}
 		})

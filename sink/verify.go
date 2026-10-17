@@ -319,7 +319,7 @@ func (s *Sink) VerifyEach(ctx context.Context, keys anchor.KeySource, fn func(Ch
 				return false, err
 			}
 			cr, err := s.verifyChain(ctx, p.st, p.sec, p.sig, rc, p.f, chain, keys, row,
-				chainChecks{heads: cfg.heads, requireCheckpoint: cfg.requireCheckpoint})
+				chainChecks{heads: cfg.heads, requireCheckpoint: cfg.requireCheckpoint, signing: p.signing})
 			if err != nil {
 				return false, err
 			}
@@ -1018,6 +1018,7 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 	// a signed record could be spliced in, or the front cut off, with the
 	// keyless chain hashes recomputed. The first break only.
 	prevChainHash, linkProblem, formatProblem := "", "", ""
+	lastSigned := false // the last entry walked has a signature row
 	err = forEachEntry(ctx, st, chain, func(e store.Entry) {
 		if linkProblem == "" {
 			switch {
@@ -1030,8 +1031,9 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 			}
 		}
 		prevChainHash = e.ChainHash
-		if formatProblem == "" && e.FormatVersion != chainformat.FormatV3 {
-			formatProblem = fmt.Sprintf("entry %d is not in chain format v3, which is all this sink writes", i)
+		if formatProblem == "" && e.FormatVersion != chainformat.FormatV4 {
+			formatProblem = fmt.Sprintf("entry %d is not in chain format v4, which is all this sink writes "+
+				"(a chain from a sink before v0.5.0: docs/sink-format.md §10)", i)
 		}
 		ve := toVerifyEntry(e)
 		w.Add(ve)
@@ -1041,6 +1043,7 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		if contentErr == nil {
 			contentErr = s.checkEntry(&cr, sec, ve, i, lastErasure, prevSeq, unmatched)
 		}
+		lastSigned = sigUnmatched[e.EntryID]
 		delete(sigUnmatched, e.EntryID)
 		if rc != nil && contentErr == nil {
 			contentErr = rc.check(&tally, sig, chain, e)
@@ -1077,6 +1080,12 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 	}
 	if cr.Index == IndexErasedUnanchored && series != nil && len(series.Problems()) == 0 && int(covered) == total {
 		cr.Index = IndexErased
+	}
+	// An erasure no checkpoint covers, without a signature, in a sink that
+	// signs every erasure it makes: written by something else (sink-format
+	// §9.4). The forged tail erasure of review round 2.
+	if cr.Index == IndexErasedUnanchored && x.signing && !lastSigned {
+		cr.Problems = append(cr.Problems, erasureUnsigned)
 	}
 
 	// A content or nonce row matching no entry was never committed: a commit
@@ -1121,6 +1130,12 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 	return cr, nil
 }
 
+// erasureUnsigned is the problem of an erasure entry with no signature row in
+// a sink that signs its records.
+const erasureUnsigned = "erasure-unsigned: the chain ends with an erasure that no checkpoint covers and that " +
+	"has no record signature, in a sink that signs every record it writes, its erasures included. This sink " +
+	"did not write it: treat the chain as tampered with"
+
 // VerifyOption configures one Verify call.
 type VerifyOption func(*verifyConfig)
 
@@ -1137,6 +1152,9 @@ type chainChecks struct {
 	heads CheckpointHeads
 	// requireCheckpoint makes a chain no verified checkpoint covers a problem.
 	requireCheckpoint bool
+	// signing: the folder says the sink signs its records (sink-format §9.2),
+	// so an erasure entry without a signature row was not written by it.
+	signing bool
 }
 
 // WithCheckpointHeads makes Verify compare every chain's checkpoint series
@@ -1334,7 +1352,8 @@ func (rc *recordChecker) check(t *signatureTally, sig *signaturesStore, chain st
 		return nil
 	}
 	f := recordFields{chainID: chain, entryID: e.EntryID, entryType: e.EntryType, globalSeq: e.GlobalSeq,
-		prevHash: e.PreviousHash, timestamp: e.Timestamp, contentHash: e.ContentHash, keyID: row.keyID}
+		prevHash: e.PreviousHash, timestamp: e.Timestamp, contentHash: e.ContentHash, keyID: row.keyID,
+		formatVersion: e.FormatVersion, leafHash: e.LeafHash}
 	if err := verifyRecordSignature(pub, f, row.sig); err != nil {
 		t.bad++
 		first(&t.firstBad)

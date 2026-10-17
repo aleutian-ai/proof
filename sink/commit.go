@@ -521,6 +521,9 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 		// file; and the append refuses anything else (ExpectChainHash).
 		n, prev := int64(0), ""
 		if tailHash, tail, err := st.ReadTail(ctx, p.chain); err == nil {
+			if err := requireV4Tail(ctx, st, p.chain, tail); err != nil {
+				return err
+			}
 			n, prev = tail+1, tailHash
 		} else if !errors.Is(err, store.ErrEmptyChain) {
 			return fmt.Errorf("chain %s: read tail: %w", p.chain, err)
@@ -543,15 +546,18 @@ func (s *Sink) commitPairs(ctx context.Context, l chainsAppender, st *boltstore.
 			rows[p.chain][id] = secret{content: content, nonce: nonce}
 			stamp := now.Add(time.Duration(i) * time.Microsecond)
 			seq := n + int64(i)
-			h, err := chainformat.ComputeChainHashV3(prev, seq, stamp, c)
+			// v4 (format-spec §2.0): this writer mints the salt, so the
+			// leaf and chain hash are known before the append, and pinned.
+			salt, leaf, h, err := predictV4(prev, seq, stamp, id, EntryTypeEvent, c)
 			if err != nil {
 				return fmt.Errorf("predict an entry's chain hash: %w", err)
 			}
 			inputs[i] = linker.Input{EntryID: id, EntryType: EntryTypeEvent,
-				Timestamp: stamp, ContentHash: c, IngestedAt: stamp, ExpectChainHash: h}
+				Timestamp: stamp, ContentHash: c, IngestedAt: stamp, Salt: salt, ExpectChainHash: h}
 			if rs != nil {
 				toSign = append(toSign, recordFields{chainID: p.chain, entryID: id, entryType: EntryTypeEvent,
-					globalSeq: seq, prevHash: prev, timestamp: stamp, contentHash: c})
+					globalSeq: seq, prevHash: prev, timestamp: stamp, contentHash: c,
+					formatVersion: chainformat.FormatV4, leafHash: leaf})
 			}
 			prev = h
 			if r.Source != "" {
@@ -692,4 +698,37 @@ func appendLanded(ctx context.Context, st *boltstore.Store, batches []linker.Cha
 		return true, nil
 	}
 	return false, fmt.Errorf("%d of %d chains hold this call's entries", landed, len(batches))
+}
+
+// predictV4 is a sink entry's v4 salt, leaf hash and chain hash, decided
+// before the append so that the entry can be signed, and then pinned on it
+// (linker ExpectChainHash, with the salt passed as linker Input.Salt).
+func predictV4(prev string, seq int64, stamp time.Time, id, entryType, contentHash string) (
+	salt, leaf, chainHash string, err error) {
+	if salt, err = chainformat.NewSaltV4(); err != nil {
+		return "", "", "", err
+	}
+	if leaf, err = chainformat.ComputeLeafHashV4(id, entryType, contentHash, salt); err != nil {
+		return "", "", "", err
+	}
+	chainHash, err = chainformat.ComputeChainHashV4(prev, seq, stamp, leaf)
+	return salt, leaf, chainHash, err
+}
+
+// ErrPreV4Sink is returned when a chain's last entry is not chain format v4:
+// the folder was written by a sink before v0.5.0, which this one does not
+// continue (docs/sink-format.md §10).
+var ErrPreV4Sink = errors.New("sink: this chain was written by a sink before v0.5.0 (chain format v3), " +
+	"which this version does not continue; export it with v0.4.x first (docs/sink-format.md §10)")
+
+// requireV4Tail refuses to append after an entry that is not v4.
+func requireV4Tail(ctx context.Context, st *boltstore.Store, chain string, tailSeq int64) error {
+	rows, err := st.Range(ctx, chain, tailSeq, tailSeq, 1)
+	if err != nil {
+		return fmt.Errorf("chain %s: read tail: %w", chain, err)
+	}
+	if len(rows) == 1 && rows[0].FormatVersion != chainformat.FormatV4 {
+		return ErrPreV4Sink
+	}
+	return nil
 }

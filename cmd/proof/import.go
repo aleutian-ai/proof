@@ -301,5 +301,8 @@ func toStored(chainID string, e verify.Entry) store.Entry {
 		Timestamp:     ts,
 		ContentHash:   e.ContentHash,
 		ChainHash:     e.ChainHash,
+		Salt:          e.Salt,
+		LeafHash:      e.LeafHash,
+		Erased:        e.Erased,
 	}
 }

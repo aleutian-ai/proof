@@ -160,7 +160,10 @@ func TestCommit_ThenVerifyIsIntact(t *testing.T) {
 
 // TestCommit_IsBatchIndependent pins v3's whole reason for existing, at the CLI
 // level: two appends and one append of the concatenation must produce the same
-// chain. Under --format-v2 they must NOT, since v2 binds the batch.
+// chain. Under --format 2 they must NOT, since v2 binds the batch. (v4 is
+// batch-independent too, but mints a random salt per entry, so two runs never
+// produce the same bytes; linker.TestAppendChains_MatchesAppend pins it with
+// fixed salts.)
 func TestCommit_IsBatchIndependent(t *testing.T) {
 	split := func(t *testing.T, flags ...string) string {
 		db := newDB(t, "split")
@@ -182,14 +185,14 @@ func TestCommit_IsBatchIndependent(t *testing.T) {
 	}
 
 	t.Run("v3 is batch-independent", func(t *testing.T) {
-		if split(t) != single(t) {
+		if split(t, "--format", "3") != single(t, "--format", "3") {
 			t.Error("two appends and one append produced different v3 chains; " +
 				"v3 exists precisely so they do not")
 		}
 	})
 
 	t.Run("v2 is NOT, and that is why v3 exists", func(t *testing.T) {
-		if split(t, "--format-v2") == single(t, "--format-v2") {
+		if split(t, "--format", "2") == single(t, "--format", "2") {
 			t.Error("v2 appears batch-independent; it binds run_id and a batch-local " +
 				"sequence, so this test is no longer proving the difference")
 		}
@@ -256,8 +259,9 @@ func TestImport_RoundTripIsByteIdentical(t *testing.T) {
 		name  string
 		flags []string
 	}{
-		{"v3", nil},
-		{"v2", []string{"--format-v2"}},
+		{"v4", nil},
+		{"v3", []string{"--format", "3"}},
+		{"v2", []string{"--format", "2"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			src := newDB(t, "src")
@@ -739,8 +743,10 @@ func TestCommit_BatchesMatchOneAppend(t *testing.T) {
 		inputs = append(inputs, li)
 	}
 
+	// v3, whose hashes a second run reproduces; v4's salts make every run differ.
 	batched := newDB(t, "batched")
-	code, out, stderr := runWithStdin(t, strings.Join(lines, "\n")+"\n", cmdCommit, "--db", batched, "--chain", "c")
+	code, out, stderr := runWithStdin(t, strings.Join(lines, "\n")+"\n", cmdCommit, "--db", batched, "--chain", "c",
+		"--format", "3")
 	if code != exitOK {
 		t.Fatalf("commit: exit %d: %s", code, stderr)
 	}
@@ -759,7 +765,7 @@ func TestCommit_BatchesMatchOneAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, err := linker.New(s)
+	l, err := linker.New(s, linker.WithFormatV3())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -780,7 +786,7 @@ func TestCommit_BatchesMatchOneAppend(t *testing.T) {
 	// small a batch is.
 	v2 := newDB(t, "v2")
 	if code, _, e := runWithStdin(t, strings.Join(lines, "\n")+"\n", cmdCommit,
-		"--db", v2, "--chain", "c", "--format-v2"); code != exitOK {
+		"--db", v2, "--chain", "c", "--format", "2"); code != exitOK {
 		t.Fatalf("v2 commit: %s", e)
 	}
 	runs := map[string]bool{}

@@ -67,7 +67,7 @@ func Example() {
 		fmt.Println("ring:", err)
 		return
 	}
-	res, err := verify.VerifyAnchor(signed, entries, anchor.SeedAnchorHash, ring)
+	res, err := verify.VerifyAnchor(signed, entries, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err != nil {
 		fmt.Println("verify:", err)
 		return
@@ -75,22 +75,22 @@ func Example() {
 
 	fmt.Println("version:         ", signed.Version)
 	fmt.Println("entries:         ", signed.EntryCount)
-	fmt.Println("verified through:", signed.VerifiedThrough)
+	fmt.Println("range:           ", signed.Range.StartSeq, "to", signed.Range.EndSeq)
 	fmt.Println("bound:           ", res.Bound)
 	fmt.Println("signature:       ", res.SignatureVerified)
 	fmt.Println("establishes:     ", res.Trust.Establishes())
 
 	// Output:
-	// version:          6
+	// version:          7
 	// entries:          3
-	// verified through: 3
+	// range:            0 to 2
 	// bound:            true
 	// signature:        true
 	// establishes:      the chain's own holder attests to it; no third party is involved
 }
 
-// ExampleAnchor_brokenChainIsRefused shows the guarantee that makes
-// verified_through worth anything.
+// ExampleAnchor_brokenChainIsRefused shows the guarantee that makes an anchor
+// worth anything: it is never produced over a chain that does not verify.
 func ExampleAnchor_brokenChainIsRefused() {
 	entries := exampleChain(3)
 	entries[1].ContentHash = strings.Repeat("ff", 64) // someone edited an entry

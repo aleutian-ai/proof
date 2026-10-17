@@ -13,8 +13,20 @@ import (
 	"unicode/utf8"
 )
 
-// FormatID is the bundle's `format` member (bundle-format §4.1).
-const FormatID = "aleutian.proof.bundle.v1"
+// FormatV1 and FormatV2 are the bundle's `format` member (bundle-format §4.1,
+// §16). A bundle is one or the other throughout: v1 carries chain format v3
+// and v6 checkpoints, v2 chain format v4 and v7 checkpoints.
+const (
+	FormatV1 = "aleutian.proof.bundle.v1"
+	FormatV2 = "aleutian.proof.bundle.v2"
+)
+
+// valuesV1 and valuesV2 are §5's JSON value limit for each format (§16: a v2
+// entry has two more values).
+const (
+	valuesV1 = 15_000_000
+	valuesV2 = 17_000_000
+)
 
 // The reasons a bundle is unreadable (bundle-format §9.1).
 const (
@@ -62,6 +74,8 @@ const (
 	kindDisclosed
 	kindCheckpoint
 	kindRange
+	kindCheckpointV7 // bundle v2's checkpoint text (§16)
+	kindRangeV7
 )
 
 // elemKind is what an array's elements are, by the array's position.
@@ -95,22 +109,35 @@ const (
 	ckAll = 1<<(ckVersion+1) - 1
 )
 
+// The v2 members of an entry (§16), in their own block: the block above counts
+// the checkpoint members from iota.
+const (
+	entrySalt      = 9
+	entryLeafHash  = 10
+	entryV2Members = 1<<entrySalt | 1<<entryLeafHash
+)
+
 // memberNames lists each object's defined members. A member's index is its
 // bit in the mask object returns.
 var memberNames = [...][]string{
 	kindOther:           nil,
 	kindBundle:          {"format", "chains"},
 	kindChain:           {"chain_id", "entries", "checkpoints"},
-	kindEntry:           {"entry_id", "entry_type", "global_seq", "previous_hash", "timestamp", "content_hash", "chain_hash", "record_signature", "disclosed"},
+	kindEntry:           {"entry_id", "entry_type", "global_seq", "previous_hash", "timestamp", "content_hash", "chain_hash", "record_signature", "disclosed", "salt", "leaf_hash"},
 	kindRecordSignature: {"key_id", "signature"},
 	kindDisclosed:       {"content", "nonce"},
 	kindCheckpoint: {"anchor_id", "chain_hash", "created_at_ms", "entry_count", "previous_anchor_id", "range",
 		"signature", "signing_key_id", "subject", "verified_through", "version"},
 	kindRange: {"start_entry_id", "end_entry_id"},
+	kindCheckpointV7: {"anchor_id", "chain_hash", "created_at_ms", "entry_count", "previous_anchor_id", "range",
+		"signature", "signing_key_id", "subject", "previous_anchor_hash", "version"},
+	kindRangeV7: {"start_seq", "end_seq"},
 }
 
-// entryCaps is the longest in-shape value of each string member of an entry.
-var entryCaps = [...]int{maxEntryID, maxEntryType, maxGlobalSeq, maxHash, maxTimestamp, maxHash, maxHash}
+// entryCaps is the longest in-shape value of each string member of an entry,
+// by member index (7 and 8 are objects).
+var entryCaps = [...]int{maxEntryID, maxEntryType, maxGlobalSeq, maxHash, maxTimestamp, maxHash, maxHash, 0, 0,
+	maxNonce, maxHash}
 
 // Limits are the §5 limits. The zero value of a field means its §5 value.
 type Limits struct {
@@ -126,8 +153,12 @@ type Limits struct {
 	CheckpointBytes int
 	// Depth is the deepest nesting; the top-level value is depth 1.
 	Depth int
-	// Values is the most JSON values in the bundle, at every depth.
+	// Values is the most JSON values in the bundle, at every depth. Zero
+	// means §5's value for the bundle's format: 15,000,000 for v1,
+	// 17,000,000 for v2 (§16).
 	Values int
+
+	valuesExplicit bool // Values was set by the caller, for every format
 }
 
 // rawPair is the two string members of a `record_signature` (key_id,
@@ -145,6 +176,8 @@ type rawEntry struct {
 	timestamp    string
 	contentHash  string
 	chainHash    string
+	salt         string // v2
+	leafHash     string // v2
 	sig          *rawPair
 	disclosed    *rawPair
 }
@@ -188,6 +221,12 @@ type reader struct {
 	overCount  bool
 	topObject  bool
 	formatOK   bool
+	version    int // 1 or 2, from `format`, once it is read
+
+	// Entries with any v2 member, and entries without both: the format may
+	// come after the entries, so which is a structure violation is decided
+	// when the read ends.
+	withV2Members, lackingV2Members int
 
 	// What is built while build holds.
 	build        bool
@@ -224,7 +263,8 @@ type reader struct {
 // # Outputs
 //
 //   - Limits: 256 MiB, 100,000 chains, 1,000,000 entries, 100,000 checkpoints,
-//     1 MiB per checkpoint text, depth 8, and 15,000,000 JSON values.
+//     1 MiB per checkpoint text, depth 8, and 17,000,000 JSON values (the
+//     v2 limit; a v1 bundle is held to 15,000,000).
 //
 // # Example
 //
@@ -247,13 +287,14 @@ func DefaultLimits() Limits {
 		Checkpoints:     100_000,
 		CheckpointBytes: 1 << 20,
 		Depth:           8,
-		Values:          15_000_000,
+		Values:          valuesV2,
 	}
 }
 
 // withDefaults fills every unset limit with its §5 value.
 func (l Limits) withDefaults() Limits {
 	d := DefaultLimits()
+	l.valuesExplicit = l.Values > 0 && l.Values != valuesV2
 	for _, f := range []struct{ have, def *int }{
 		{&l.BundleBytes, &d.BundleBytes}, {&l.Chains, &d.Chains}, {&l.Entries, &d.Entries},
 		{&l.Checkpoints, &d.Checkpoints}, {&l.CheckpointBytes, &d.CheckpointBytes},
@@ -271,28 +312,36 @@ func (l Limits) withDefaults() Limits {
 // readBundle reads a bundle. It returns the chains and an empty reason, or the
 // one reason of §9.1 the bundle is unreadable for: the lowest-numbered of all
 // that apply.
-func readBundle(data []byte, lim Limits) ([]rawChain, string) {
+func readBundle(data []byte, lim Limits) ([]rawChain, int, string) {
 	if len(data) > lim.BundleBytes {
-		return nil, ReasonTooLarge
+		return nil, 0, ReasonTooLarge
 	}
 	r := newReader(data, lim)
 	r.build = true
 	if !r.document() {
-		return nil, ReasonJSON
+		return nil, 0, ReasonJSON
+	}
+	// The findings that depend on the format, known only now: v1's lower
+	// value limit, and members of the other format.
+	if r.version != 2 && !lim.valuesExplicit && r.values > valuesV1 {
+		r.overValues = true
+	}
+	if (r.version == 1 && r.withV2Members > 0) || (r.version == 2 && r.lackingV2Members > 0) {
+		r.structure = true
 	}
 	switch {
 	case r.overValues:
-		return nil, ReasonTooLarge
+		return nil, 0, ReasonTooLarge
 	case r.duplicate:
-		return nil, ReasonDuplicateKey
+		return nil, 0, ReasonDuplicateKey
 	case r.topObject && !r.formatOK:
-		return nil, ReasonFormat
+		return nil, 0, ReasonFormat
 	case r.structure:
-		return nil, ReasonStructure
+		return nil, 0, ReasonStructure
 	case r.overCount:
-		return nil, ReasonTooLarge
+		return nil, 0, ReasonTooLarge
 	}
-	return r.chains, ""
+	return r.chains, r.version, ""
 }
 
 // newReader returns a reader over b that tracks unknown member names.
@@ -543,8 +592,14 @@ func (r *reader) member(kind objectKind, idx int) bool {
 	switch kind {
 	case kindBundle:
 		if idx == 0 {
-			s, isString, ok := r.stringValue(len(FormatID), true)
-			r.formatOK = isString && s == FormatID
+			s, isString, ok := r.stringValue(len(FormatV2), true)
+			switch {
+			case isString && s == FormatV1:
+				r.version = 1
+			case isString && s == FormatV2:
+				r.version = 2
+			}
+			r.formatOK = r.version != 0
 			if !r.formatOK {
 				r.stopBuilding()
 			}
@@ -591,7 +646,7 @@ func (r *reader) member(kind objectKind, idx int) bool {
 			r.entry.disclosed.set(idx, s)
 		}
 		return ok
-	case kindCheckpoint, kindRange:
+	case kindCheckpoint, kindRange, kindCheckpointV7, kindRangeV7:
 		return r.checkpointMember(kind, idx)
 	}
 	return r.skipValue()
@@ -769,6 +824,12 @@ func (r *reader) element(elem elemKind) bool {
 		if seen&entryRequired != entryRequired {
 			r.violate()
 		}
+		if seen&entryV2Members != 0 {
+			r.withV2Members++
+		}
+		if seen&entryV2Members != entryV2Members {
+			r.lackingV2Members++
+		}
 		if r.build {
 			r.chain.entries = append(r.chain.entries, r.entry)
 			r.entry = rawEntry{}
@@ -943,6 +1004,10 @@ func (e *rawEntry) field(idx int) *string {
 		return &e.timestamp
 	case 5:
 		return &e.contentHash
+	case entrySalt:
+		return &e.salt
+	case entryLeafHash:
+		return &e.leafHash
 	}
 	return &e.chainHash
 }

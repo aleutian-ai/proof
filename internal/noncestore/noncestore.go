@@ -32,7 +32,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -76,7 +75,7 @@ func PathFor(dbPath string) string { return dbPath + ".nonces" }
 // file it is read through once, read-only, and refused with ErrCorrupt if it
 // is damaged, before anything is written.
 func Open(path string, lockTimeout time.Duration) (*Store, error) {
-	lock, err := lockFile(path, syscall.LOCK_EX, lockTimeout)
+	lock, err := lockFile(path, true, lockTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
 	}
@@ -105,7 +104,7 @@ func Open(path string, lockTimeout time.Duration) (*Store, error) {
 // lock. Nothing is created or changed. A file without the nonce bucket is
 // refused rather than read.
 func OpenReadOnly(path string, lockTimeout time.Duration) (*Store, error) {
-	lock, err := lockFile(path, syscall.LOCK_SH, lockTimeout)
+	lock, err := lockFile(path, false, lockTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("noncestore: open %s: %w", path, err)
 	}
@@ -146,46 +145,25 @@ func (s *Store) Close() error {
 // every OpenReadOnly shared, and Compact exclusively from before the copy until
 // after the rename, so nothing can open the nonce file while it is replaced.
 //
-// how is syscall.LOCK_EX or LOCK_SH. It waits up to timeout (forever when
+// exclusive picks an exclusive or a shared lock. It waits up to timeout (forever when
 // timeout is zero, as bbolt's own lock does) for the lock.
-func lockFile(path string, how int, timeout time.Duration) (*os.File, error) {
-	f, err := os.OpenFile(path+lockSuffix, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+func lockFile(path string, exclusive bool, timeout time.Duration) (*os.File, error) {
+	f, err := safebolt.LockFile(path, exclusive, timeout)
+	if errors.Is(err, safebolt.ErrLockHeld) {
+		return nil, fmt.Errorf("lock the nonce file: %w", ErrLocked)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("open the lock file: %w", err)
+		return nil, fmt.Errorf("lock the nonce file: %w", err)
 	}
-	deadline := time.Now().Add(timeout)
-	for {
-		err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
-		if err == nil {
-			return f, nil
-		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) {
-			f.Close()
-			return nil, fmt.Errorf("lock the nonce file: %w", err)
-		}
-		if timeout > 0 && time.Now().After(deadline) {
-			f.Close()
-			return nil, fmt.Errorf("lock the nonce file: %w", ErrLocked)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return f, nil
 }
 
 // unlockFile releases and closes a lock taken by lockFile. nil is a no-op.
-func unlockFile(f *os.File) {
-	if f == nil {
-		return
-	}
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	_ = f.Close()
-}
+func unlockFile(f *os.File) { safebolt.UnlockFile(f) }
 
 // afterCopy, when set, runs between the copy and the rename. Tests only: it is
 // how a writer is made to arrive in that window.
 var afterCopy func()
-
-// lockSuffix names the lock file beside a nonce file.
-const lockSuffix = ".lock"
 
 // ErrLocked means another process held the nonce file past the lock timeout.
 var ErrLocked = errors.New("noncestore: the nonce file is in use by another process")
@@ -400,7 +378,7 @@ const compactSuffix = ".compact-"
 //   - As [Forget]'s.
 func Compact(path string, lockTimeout time.Duration) error {
 	// Held from before the copy until after the rename: see lockFile.
-	lock, err := lockFile(path, syscall.LOCK_EX, lockTimeout)
+	lock, err := lockFile(path, true, lockTimeout)
 	if err != nil {
 		return fmt.Errorf("noncestore: compact %s: %w", path, err)
 	}
@@ -414,7 +392,7 @@ func Compact(path string, lockTimeout time.Duration) error {
 		return err
 	}
 	for _, e := range leftovers {
-		if e.Name() == base+lockSuffix {
+		if e.Name() == base+safebolt.LockSuffix {
 			continue
 		}
 		if strings.HasPrefix(e.Name(), base+compactSuffix) {

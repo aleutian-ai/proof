@@ -10,8 +10,10 @@
 // SEEDS: 32 bytes from which the signing key and public key are derived, which
 // is the form [github.com/aleutian-ai/proof/keyfile] reads and writes.
 //
-// Signatures use an EMPTY context string — "pure" ML-DSA per FIPS 204 §5.3 —
-// matching what [github.com/aleutian-ai/proof/anchor] has always verified.
+// Signatures are "pure" ML-DSA per FIPS 204 §5.2. [Sign] and [Verify] use the
+// EMPTY context string, which is what v1 to v6 anchors and v1 sink records are
+// signed with; [SignWithContext] and [VerifyWithContext] take one, as v7
+// anchors and v2 sink records are (docs/decisions.md D21).
 //
 // Signing is DETERMINISTIC: the same seed and message always produce the same
 // signature. FIPS 204 permits both; deterministic removes a dependence on the
@@ -19,8 +21,8 @@
 //
 // # Limitations
 //
-//   - No context strings. Adding one later is an API addition, but signatures
-//     made with a context do not verify without it, so this is a format choice.
+//   - A context string is at most 255 bytes (FIPS 204). A signature made with
+//     one context verifies with that context only.
 //   - Seed residue cannot be fully eliminated. This package zeroizes every
 //     buffer it owns, but circl's key objects keep their own copy of the seed
 //     and the expanded key and expose no way to wipe them, so a copy survives
@@ -439,4 +441,135 @@ func seedArray(set ParameterSet, seed []byte) (*[32]byte, error) {
 	var out [32]byte
 	copy(out[:], seed)
 	return &out, nil
+}
+
+// MaxContextSize is the longest context string FIPS 204 allows, in bytes.
+const MaxContextSize = 255
+
+// SignWithContext signs msg under seed with the FIPS 204 context string ctx.
+//
+// # Description
+//
+// [Sign] with a context. The context is part of what is signed: the signature
+// verifies only with the same context, so a key used for two kinds of message,
+// each with its own context, can never produce a signature that means
+// something in both. Deterministic, as [Sign] is.
+//
+// # Inputs
+//
+//   - set, seed, msg: as for [Sign]
+//   - ctx: the context string, at most [MaxContextSize] bytes; empty is [Sign]
+//
+// # Outputs
+//
+//   - []byte: the signature, set.SignatureSize() bytes
+//   - error: ErrUnsupportedParameterSet, ErrInvalidKey, a context that is too
+//     long, or a signing failure
+//
+// # Example
+//
+//	sig, err := mldsa.SignWithContext(mldsa.MLDSA65, seed, canonical, []byte("aleutian.proof.anchor.v7"))
+//
+// # Limitations
+//
+//   - As [Sign].
+//
+// # Assumptions
+//
+//   - The caller has decided what the signature is over, and in which context.
+func SignWithContext(set ParameterSet, seed, msg, ctx []byte) ([]byte, error) {
+	if len(ctx) > MaxContextSize {
+		return nil, fmt.Errorf("mldsa: a context is at most %d bytes, got %d", MaxContextSize, len(ctx))
+	}
+	s, err := seedArray(set, seed)
+	if err != nil {
+		return nil, err
+	}
+	defer mem.Zeroize(s[:])
+
+	sig := make([]byte, set.SignatureSize())
+	switch set {
+	case MLDSA44:
+		_, priv := mldsa44.NewKeyFromSeed(s)
+		err = mldsa44.SignTo(priv, msg, ctx, false, sig)
+	case MLDSA65:
+		_, priv := mldsa65.NewKeyFromSeed(s)
+		err = mldsa65.SignTo(priv, msg, ctx, false, sig)
+	case MLDSA87:
+		_, priv := mldsa87.NewKeyFromSeed(s)
+		err = mldsa87.SignTo(priv, msg, ctx, false, sig)
+	default:
+		return nil, fmt.Errorf("%w: %d", ErrUnsupportedParameterSet, int(set))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("mldsa: sign: %w", err)
+	}
+	return sig, nil
+}
+
+// VerifyWithContext reports whether sig is a valid signature over msg under
+// pub with the context string ctx.
+//
+// # Description
+//
+// [Verify] with a context. The context comes from the CALLER, who knows what
+// kind of message this is, never from the message or the signature.
+//
+// # Inputs
+//
+//   - set, pub, msg, sig: as for [Verify]
+//   - ctx: the context string the signature must have been made with
+//
+// # Outputs
+//
+//   - error: nil if valid; ErrUnsupportedParameterSet, ErrInvalidKey, or
+//     ErrInvalidSignature (a context longer than 255 bytes is one)
+//
+// # Example
+//
+//	err := mldsa.VerifyWithContext(mldsa.MLDSA65, pub, canonical, sig, []byte("aleutian.proof.anchor.v7"))
+//
+// # Limitations
+//
+//   - As [Verify].
+//
+// # Assumptions
+//
+//   - As [Verify].
+func VerifyWithContext(set ParameterSet, pub, msg, sig, ctx []byte) error {
+	if set.PublicKeySize() == 0 {
+		return fmt.Errorf("%w: %d", ErrUnsupportedParameterSet, int(set))
+	}
+	if len(pub) != set.PublicKeySize() {
+		return fmt.Errorf("%w: %s public key must be %d bytes, got %d",
+			ErrInvalidKey, set, set.PublicKeySize(), len(pub))
+	}
+	if len(sig) != set.SignatureSize() || len(ctx) > MaxContextSize {
+		return ErrInvalidSignature
+	}
+	var ok bool
+	switch set {
+	case MLDSA44:
+		var p mldsa44.PublicKey
+		if err := p.UnmarshalBinary(pub); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidKey, err)
+		}
+		ok = mldsa44.Verify(&p, msg, ctx, sig)
+	case MLDSA65:
+		var p mldsa65.PublicKey
+		if err := p.UnmarshalBinary(pub); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidKey, err)
+		}
+		ok = mldsa65.Verify(&p, msg, ctx, sig)
+	default:
+		var p mldsa87.PublicKey
+		if err := p.UnmarshalBinary(pub); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidKey, err)
+		}
+		ok = mldsa87.Verify(&p, msg, ctx, sig)
+	}
+	if !ok {
+		return ErrInvalidSignature
+	}
+	return nil
 }

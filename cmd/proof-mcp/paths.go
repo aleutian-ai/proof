@@ -141,25 +141,29 @@ func (r fileRoot) read(path string, limit int64) ([]byte, error) {
 	return readRegular(f, path, limit)
 }
 
-// realDir returns the real path of a directory inside the root.
-//
-// It is for bundle.VerifyDir, which takes a path and not an open directory. Call
-// it only after a read under the same directory has succeeded: that read is what
-// refuses a symbolic link leaving the root without saying whether its target
-// exists.
-func (r fileRoot) realDir(path string) (string, error) {
+// openDir opens a directory inside the root as an os.Root of its own, for
+// bundle.VerifyDir, which reads every file through it. The directory is opened
+// through the launch root, so a symbolic link that leaves the root is refused
+// by the operating system's own containment, not by a path comparison. The
+// caller closes it.
+func (r fileRoot) openDir(path string) (*os.Root, error) {
 	rel, err := r.rel(path)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Join(r.real, rel))
+	root, err := os.OpenRoot(r.real)
 	if err != nil {
-		return "", errOutsideRoot
+		return nil, fmt.Errorf("open the --root directory: %w", err)
 	}
-	if back, err := filepath.Rel(r.real, resolved); err != nil || !filepath.IsLocal(back) {
-		return "", errOutsideRoot
+	defer root.Close()
+	sub, err := root.OpenRoot(rel)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%s: %w", path, fs.ErrNotExist)
+		}
+		return nil, errOutsideRoot
 	}
-	return resolved, nil
+	return sub, nil
 }
 
 // readRegular reads an open file, refusing anything that is not a regular file

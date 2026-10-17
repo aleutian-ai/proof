@@ -15,9 +15,9 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/aleutian-ai/proof/anchor"
+	"github.com/aleutian-ai/proof/internal/osfile"
 )
 
 // CheckpointHeads remembers, per chain, how many checkpoints exist and the
@@ -94,6 +94,10 @@ type headsDocument struct {
 type HeadsFile struct {
 	path string
 
+	// start: made by NewFileHeads, so the file must not exist yet when it is
+	// first read; started: that first read found it absent.
+	start, started bool
+
 	mu     sync.Mutex
 	loaded bool
 	stamp  os.FileInfo // the file the cache was read from; nil when it was absent
@@ -145,6 +149,24 @@ type HeadsFile struct {
 //     only.
 func FileHeads(path string) *HeadsFile { return &HeadsFile{path: path} }
 
+// ErrHeadsFileMissing is returned when a heads file named by FileHeads does
+// not exist. A missing record of a series is what deleting it looks like, so it
+// is never taken as an empty one: start a record with NewFileHeads.
+var ErrHeadsFileMissing = errors.New("sink: checkpoint heads: the heads file does not exist; it is the record " +
+	"that a series was not restarted, so a missing one is refused. Start one with NewFileHeads " +
+	"(`proof sink checkpoint --heads FILE --first`) only when this sink has no record yet")
+
+// ErrHeadsFileExists is returned when NewFileHeads names a file that exists.
+var ErrHeadsFileExists = errors.New("sink: checkpoint heads: the heads file already exists; a record is " +
+	"started once (use FileHeads, without --first)")
+
+// NewFileHeads is FileHeads for a record that does not exist yet: the first
+// checkpoint of a sink, the one moment the writer is trusted on its word
+// (docs/sink-format.md §5.2). The file must not exist when it is first read
+// (ErrHeadsFileExists); it is created by the first SetHead, and from then on
+// this HeadsFile is FileHeads.
+func NewFileHeads(path string) *HeadsFile { return &HeadsFile{path: path, start: true} }
+
 // Path returns the file's path.
 func (h *HeadsFile) Path() string { return h.path }
 
@@ -158,8 +180,10 @@ func (h *HeadsFile) Path() string { return h.path }
 // # Outputs
 //
 //   - count, lastHash: the recorded head
-//   - ok: false when the file does not exist or records none for chain
-//   - error: the file could not be read, is a symlink, or is not a heads file
+//   - ok: false when the file records none for chain (or, from NewFileHeads,
+//     does not exist yet)
+//   - error: ErrHeadsFileMissing, ErrHeadsFileExists, or the file could not
+//     be read, is a symlink, or is not a heads file
 //
 // # Example
 //
@@ -272,9 +296,14 @@ func (h *HeadsFile) load() error {
 	}
 	fi, err := os.Lstat(h.path)
 	switch {
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, os.ErrNotExist) && (h.started || (h.start && !h.loaded)):
+		h.started = true
 		h.loaded, h.stamp, h.heads = true, nil, map[string]headRecord{}
 		return nil
+	case errors.Is(err, os.ErrNotExist):
+		return ErrHeadsFileMissing
+	case err == nil && h.start && !h.started:
+		return ErrHeadsFileExists
 	case err != nil:
 		return fmt.Errorf("sink: checkpoint heads: %w", err)
 	case !fi.Mode().IsRegular():
@@ -285,7 +314,7 @@ func (h *HeadsFile) load() error {
 		h.stamp.ModTime().Equal(fi.ModTime()) {
 		return nil
 	}
-	f, err := os.OpenFile(h.path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := osfile.OpenNoFollow(h.path, os.O_RDONLY|osfile.NonBlock, 0)
 	if err != nil {
 		return fmt.Errorf("sink: checkpoint heads: %w (a symlink is never followed)", err)
 	}

@@ -81,14 +81,15 @@ func TestAnchor_BuildSignVerify_Genesis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Anchor: %v", err)
 	}
-	if a.Version != anchor.SubjectVersion {
-		t.Errorf("version = %d, want %d (v6)", a.Version, anchor.SubjectVersion)
+	if a.Version != anchor.SequenceRangeVersion {
+		t.Errorf("version = %d, want %d (v7)", a.Version, anchor.SequenceRangeVersion)
 	}
-	if a.PreviousAnchorID != anchor.SeedAnchorID {
-		t.Errorf("PreviousAnchorID = %q, want the seed sentinel", a.PreviousAnchorID)
+	if a.PreviousAnchorID != anchor.SeedAnchorID || a.PreviousAnchorHash != anchor.SeedAnchorHash {
+		t.Errorf("predecessor %q / %.16s…, want the seed id and hash", a.PreviousAnchorID, a.PreviousAnchorHash)
 	}
-	if a.EntryCount != 5 || a.VerifiedThrough != 5 {
-		t.Errorf("EntryCount=%d VerifiedThrough=%d, want 5/5", a.EntryCount, a.VerifiedThrough)
+	if a.EntryCount != 5 || a.VerifiedThrough != 0 || a.Range.StartSeq != 0 || a.Range.EndSeq != 4 {
+		t.Errorf("EntryCount=%d VerifiedThrough=%d range %d..%d, want 5, 0, 0..4",
+			a.EntryCount, a.VerifiedThrough, a.Range.StartSeq, a.Range.EndSeq)
 	}
 	if a.Signature != "" {
 		t.Error("Anchor returned a signature; it produces UNSIGNED anchors")
@@ -98,7 +99,7 @@ func TestAnchor_BuildSignVerify_Genesis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignAnchor: %v", err)
 	}
-	res, err := verify.VerifyAnchor(signed, entries, anchor.SeedAnchorHash,
+	res, err := verify.VerifyAnchor(signed, entries, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash},
 		ringFor(t, signer, signed.SigningKeyID))
 	if err != nil {
 		t.Fatalf("VerifyAnchor: %v", err)
@@ -137,7 +138,7 @@ func TestAnchor_BuildSignVerify_Chained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignAnchor: %v", err)
 	}
-	res, err := verify.VerifyAnchor(signed, laterEntries, first.ChainHash,
+	res, err := verify.VerifyAnchor(signed, laterEntries, verify.Expect{PreviousAnchorHash: first.ChainHash},
 		ringFor(t, signer, signed.SigningKeyID))
 	if err != nil {
 		t.Fatalf("VerifyAnchor: %v", err)
@@ -148,7 +149,7 @@ func TestAnchor_BuildSignVerify_Chained(t *testing.T) {
 
 	// And it must NOT bind against the seed — otherwise it carries no history
 	// and the first anchor could be dropped.
-	spoofed, err := verify.BindAnchor(signed, laterEntries, anchor.SeedAnchorHash)
+	spoofed, err := verify.BindAnchor(signed, laterEntries, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil {
 		t.Fatalf("BindAnchor: %v", err)
 	}
@@ -187,11 +188,8 @@ func TestAnchor_ChainHashIsRecomputed(t *testing.T) {
 		t.Fatal("the anchor's chain hash equals the tip entry's; it was copied, not recomputed")
 	}
 
-	want, err := anchor.ChainHash(anchor.SeedAnchorHash, testSubject,
-		entries[0].EntryID, entries[len(entries)-1].EntryID, tip)
-	if err != nil {
-		t.Fatalf("expected hash: %v", err)
-	}
+	want := anchor.ChainHashV7(anchor.SeedAnchorHash, testSubject,
+		entries[0].GlobalSeq, entries[len(entries)-1].GlobalSeq, tip)
 	if a.ChainHash != want {
 		t.Errorf("chain hash = %s…, want %s…", a.ChainHash[:16], want[:16])
 	}
@@ -356,7 +354,7 @@ func TestAnchor_TamperingIsCaughtEndToEnd(t *testing.T) {
 	t.Run("an entry is edited", func(t *testing.T) {
 		bad := append([]verify.Entry(nil), entries...)
 		bad[3].ContentHash = strings.Repeat("ff", 64)
-		res, err := verify.VerifyAnchor(signed, bad, anchor.SeedAnchorHash, ring)
+		res, err := verify.VerifyAnchor(signed, bad, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 		if err != nil {
 			t.Fatalf("VerifyAnchor: %v", err)
 		}
@@ -377,7 +375,7 @@ func TestAnchor_TamperingIsCaughtEndToEnd(t *testing.T) {
 				prev, kept[i].GlobalSeq, ts, kept[i].ContentHash)
 			prev = kept[i].ChainHash
 		}
-		res, err := verify.VerifyAnchor(signed, kept, anchor.SeedAnchorHash, ring)
+		res, err := verify.VerifyAnchor(signed, kept, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 		if err != nil {
 			t.Fatalf("VerifyAnchor: %v", err)
 		}
@@ -399,7 +397,7 @@ func TestAnchor_TamperingIsCaughtEndToEnd(t *testing.T) {
 			t.Run(m.name, func(t *testing.T) {
 				tampered := signed
 				m.mutate(&tampered)
-				res, err := verify.VerifyAnchor(tampered, entries, anchor.SeedAnchorHash, ring)
+				res, err := verify.VerifyAnchor(tampered, entries, verify.Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 
 				// Either outcome is acceptable — a malformed anchor errors, a
 				// well-formed but altered one fails the signature. What is NOT

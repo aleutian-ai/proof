@@ -110,6 +110,36 @@ type ContextSigner interface {
 	SignContext(ctx context.Context, msg []byte) ([]byte, error)
 }
 
+// ContextStringSigner is a ContextSigner that can also sign with an ML-DSA
+// context string (FIPS 204 §5.2), which a v7 anchor is signed with
+// ([ContextV7]).
+//
+// The "Context" in ContextSigner is Go's context.Context, for cancellation;
+// the context STRING here is part of what is signed. A signer that has only
+// SignContext signs with the empty one, which is all v1 to v6 need, and
+// [SignCanonical] refuses to sign a v7 anchor with it rather than produce a
+// signature no verifier accepts.
+type ContextStringSigner interface {
+	ContextSigner
+
+	// SignWithContext signs msg, the whole message, with the ML-DSA context
+	// string mldsaContext (at most 255 bytes). It must abort if ctx is
+	// cancelled before the signature is produced.
+	SignWithContext(ctx context.Context, msg []byte, mldsaContext string) ([]byte, error)
+}
+
+// SignerOpts carries an ML-DSA context string through crypto.Signer's Sign,
+// whose opts parameter is the only place one fits. HashFunc is zero: ML-DSA
+// signs the message, never a digest. [MLDSA65Signer.Sign] honours it; a
+// crypto.Signer that ignores it signs with the empty context, and
+// [SignCanonical]'s check of every signature it is handed refuses the result.
+type SignerOpts struct {
+	Context string
+}
+
+// HashFunc returns zero: the message is signed as it is.
+func (SignerOpts) HashFunc() crypto.Hash { return 0 }
+
 // PublicKey is a raw ML-DSA-65 public key returned by Public.
 //
 // # Description
@@ -448,7 +478,13 @@ func (s *MLDSA65Signer) Sign(rand io.Reader, msg []byte, opts crypto.SignerOpts)
 		return nil, ErrSignerClosed
 	}
 
-	sig, err := mldsa.Sign(mldsa.MLDSA65, s.seed, msg)
+	var mctx []byte
+	if o, ok := opts.(SignerOpts); ok {
+		mctx = []byte(o.Context)
+	} else if o, ok := opts.(*SignerOpts); ok && o != nil {
+		mctx = []byte(o.Context)
+	}
+	sig, err := mldsa.SignWithContext(mldsa.MLDSA65, s.seed, msg, mctx)
 	if err != nil {
 		return nil, fmt.Errorf("anchor: sign: %w", err)
 	}
@@ -487,10 +523,16 @@ func (s *MLDSA65Signer) Sign(rand io.Reader, msg []byte, opts crypto.SignerOpts)
 //
 //   - msg is already canonical.
 func (s *MLDSA65Signer) SignContext(ctx context.Context, msg []byte) ([]byte, error) {
+	return s.SignWithContext(ctx, msg, "")
+}
+
+// SignWithContext is SignContext with an ML-DSA context string; it makes
+// *MLDSA65Signer a [ContextStringSigner].
+func (s *MLDSA65Signer) SignWithContext(ctx context.Context, msg []byte, mldsaContext string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("anchor: context: %w", err)
 	}
-	return s.Sign(nil, msg, crypto.Hash(0))
+	return s.Sign(nil, msg, SignerOpts{Context: mldsaContext})
 }
 
 // Close zeroizes the seed and makes the signer refuse to sign.
@@ -532,7 +574,7 @@ func (s *MLDSA65Signer) Close() error {
 // boundary, dropping cancellation.
 //
 // The field is named and unexported rather than embedded, so the adapter
-// satisfies ContextSigner and nothing else: an embedded crypto.Signer would
+// satisfies ContextStringSigner and nothing else: an embedded crypto.Signer would
 // re-expose Sign with arbitrary SignerOpts and let a caller route straight past
 // the adapter.
 type cryptoSignerAdapter struct {
@@ -549,7 +591,18 @@ func (a cryptoSignerAdapter) Public() crypto.PublicKey { return a.inner.Public()
 // PKCS#11 wrappers read from it. Handing nil into code this package did not
 // write would turn a foreign signer's correct behaviour into a panic inside a
 // library.
-func (a cryptoSignerAdapter) SignContext(_ context.Context, msg []byte) ([]byte, error) {
+func (a cryptoSignerAdapter) SignContext(ctx context.Context, msg []byte) ([]byte, error) {
+	return a.SignWithContext(ctx, msg, "")
+}
+
+// SignWithContext passes the context string as [SignerOpts]. A wrapped signer
+// that ignores those opts signs with the empty context, and SignCanonical
+// refuses what it returns. With the empty context the opts are crypto.Hash(0),
+// exactly what was always passed.
+func (a cryptoSignerAdapter) SignWithContext(_ context.Context, msg []byte, mldsaContext string) ([]byte, error) {
+	if mldsaContext != "" {
+		return a.inner.Sign(cryptorand.Reader, msg, SignerOpts{Context: mldsaContext})
+	}
 	return a.inner.Sign(cryptorand.Reader, msg, crypto.Hash(0))
 }
 

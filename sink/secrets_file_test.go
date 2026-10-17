@@ -72,7 +72,7 @@ func TestAnchorsSymlinkedFolders(t *testing.T) {
 			if _, err := s.Commit(ctx, events("u-81", 1)); err != nil {
 				t.Fatal(err)
 			}
-			_, _ = s.Checkpoint(ctx, signer, nil)
+			_, _ = s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 			if outside != "" && len(listAll(t, outside)) != len(before) {
 				t.Fatal("Checkpoint wrote through a symlinked folder")
 			}

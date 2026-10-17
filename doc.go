@@ -20,7 +20,8 @@
 // in order to check the work — and the tools that produce it: a linker, a bbolt
 // store, the sink, and the proof CLI. The subpackages are:
 //
-//   - [chainformat], [canonical]:     hash linkage and deterministic encoding
+//   - [chainformat], [canonical]:     chain formats v4 (current), v3 and v2
+//     (frozen), and deterministic encoding
 //   - [commitment]:                   salted commitments for unencrypted content
 //   - [linker]:                       commit entries to a chain
 //   - [anchor], [anchor/build]:       sign and check chain checkpoints (ML-DSA-65)
@@ -34,6 +35,24 @@
 //   - [keyfile], [mldsa]:             standard key files; ML-DSA signatures
 //   - [xwing], [mlkem], [keywrap]:    post-quantum KEM primitives and the
 //     platform's wrapped-key format. The chain does not use them.
+//
+// # What is public
+//
+// The compatibility promise covers the packages above and their exported
+// identifiers, the error values and the codes a result reports
+// ([verify.BreakType], [verify.BindOutcome], the [exportbundle] problem codes),
+// the formats in docs/, the proof CLI's verbs, flags and exit codes, and the
+// proof-mcp tools' names and argument schemas. Tests pin the codes, the exit
+// codes and the MCP tool list. Not covered: everything under internal/,
+// store/storetest (a test suite for adapter authors, which may grow), and
+// examples/. While the major version is 0 a minor release may still break the
+// promise, and the changelog says how.
+//
+// # Platforms
+//
+// Linux and macOS. The stores need flock and O_NOFOLLOW; on other platforms
+// the operations that open a store return an error saying so, and verifying an
+// exported file works anywhere.
 //
 // # Scope of the guarantee
 //

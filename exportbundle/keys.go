@@ -11,8 +11,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"syscall"
 
+	"github.com/aleutian-ai/proof/internal/osfile"
 	"github.com/aleutian-ai/proof/keyfile"
 	"github.com/aleutian-ai/proof/mldsa"
 )
@@ -264,7 +264,7 @@ func (k PublicKey) ID() string { return k.id }
 func readRegular(path string, limit int) ([]byte, error) {
 	// Non-blocking, so that opening a FIFO returns instead of waiting for a
 	// writer; the check below then refuses it.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|osfile.NonBlock, 0)
 	if err != nil {
 		return nil, err
 	}

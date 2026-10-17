@@ -44,8 +44,14 @@ type vectorFile struct {
 // loadVectors reads the conformance vectors and their keys.
 func loadVectors(t testing.TB) (vectorFile, map[string]PublicKey) {
 	t.Helper()
+	return loadVectorsFrom(t, fixtures.BundleV1Vectors())
+}
+
+// loadVectorsFrom reads a conformance vector file of the v1 file's shape.
+func loadVectorsFrom(t testing.TB, raw []byte) (vectorFile, map[string]PublicKey) {
+	t.Helper()
 	var vf vectorFile
-	if err := json.Unmarshal(fixtures.BundleV1Vectors(), &vf); err != nil {
+	if err := json.Unmarshal(raw, &vf); err != nil {
 		t.Fatalf("bundle vectors: %v", err)
 	}
 	keys := make(map[string]PublicKey, len(vf.Keys))
@@ -161,9 +167,18 @@ func canonicalValue(t testing.TB, dec *json.Decoder) string {
 	return "null"
 }
 
-// Every conformance case, compared as the whole §9 result (bundle-format §15).
+// Every conformance case, compared as the whole §9 result (bundle-format §15;
+// v2, §16).
 func TestVectors_EveryCase(t *testing.T) {
-	vf, keys := loadVectors(t)
+	t.Run("v1", func(t *testing.T) { everyCase(t, fixtures.BundleV1Vectors(), vectorCases) })
+	t.Run("v2", func(t *testing.T) { everyCase(t, fixtures.BundleV2Vectors(), vectorCasesV2) })
+}
+
+// vectorCasesV2 is how many cases bundle_v2_vectors.json holds.
+const vectorCasesV2 = 192
+
+func everyCase(t *testing.T, raw []byte, vectorCases int) {
+	vf, keys := loadVectorsFrom(t, raw)
 	if len(vf.Cases) != vectorCases {
 		t.Fatalf("the vector file holds %d cases, want %d", len(vf.Cases), vectorCases)
 	}

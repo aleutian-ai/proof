@@ -550,7 +550,7 @@ func (s *Sink) eraseChain(ctx context.Context, st *boltstore.Store, sec *secrets
 		}
 		_, err = l.Append(ctx, chain, []linker.Input{{EntryID: id, EntryType: EntryTypeErasure,
 			Timestamp: pre.stamp, ContentHash: erasureHash(pre.record), IngestedAt: pre.stamp,
-			ExpectChainHash: pre.hash}})
+			Salt: pre.salt, ExpectChainHash: pre.hash}})
 		if err != nil && !errors.Is(err, linker.ErrHeadStateStale) {
 			// A store can report an error after its commit reached the disk:
 			// only remove the rows if the entry is PROVEN not on the chain. If
@@ -594,6 +594,7 @@ type presigned struct {
 	stamp  time.Time
 	record []byte
 	hash   string // its chain hash, pinned on the append
+	salt   string // its v4 salt, minted here so the hash is known
 	sig    []byte // nil when the sink does not sign
 }
 
@@ -626,16 +627,20 @@ func (s *Sink) presignErasures(ctx context.Context, st *boltstore.Store, rs *rec
 		if err != nil {
 			return nil, err
 		}
+		if requireV4Tail(ctx, st, chain, tailSeq) != nil {
+			continue // a pre-v0.5.0 chain: eraseChain fails on this chain alone
+		}
 		record := erasureRecord(tailSeq)
 		c := erasureHash(record)
-		h, err := chainformat.ComputeChainHashV3(tailHash, tailSeq+1, now, c)
+		salt, leaf, h, err := predictV4(tailHash, tailSeq+1, now, id, EntryTypeErasure, c)
 		if err != nil {
 			continue // a malformed stored tail: eraseChain fails on this chain alone
 		}
-		out[chain] = presigned{id: id, seq: tailSeq + 1, stamp: now, record: record, hash: h}
+		out[chain] = presigned{id: id, seq: tailSeq + 1, stamp: now, record: record, hash: h, salt: salt}
 		if rs != nil {
 			jobs = append(jobs, recordFields{chainID: chain, entryID: id, entryType: EntryTypeErasure,
-				globalSeq: tailSeq + 1, prevHash: tailHash, timestamp: now, contentHash: c})
+				globalSeq: tailSeq + 1, prevHash: tailHash, timestamp: now, contentHash: c,
+				formatVersion: chainformat.FormatV4, leafHash: leaf})
 		}
 	}
 	if len(jobs) > 0 {

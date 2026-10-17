@@ -11,7 +11,10 @@
 // bundle. It is behind the bundlefixture build tag: never built into a
 // release or an image.
 //
-//	go run -tags bundlefixture ./scripts/bundlefixture > scripts/bundlefixture/real_export.json
+//	go run -tags bundlefixture ./scripts/bundlefixture > scripts/bundlefixture/real_export_v2.json
+//
+// It exports what the sink writes now, bundle v2. real_export.json is the v1
+// export it wrote before v0.5.0, kept as the v1 vectors' real-export case.
 //
 // Chain ids, entry ids, nonces and timestamps are random, so a regenerated
 // fixture differs: regenerate deliberately, then rerun bundle-vectors.py.
@@ -24,6 +27,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/sink"
@@ -67,6 +71,12 @@ func run() error {
 		return err
 	}
 	defer os.RemoveAll(dir)
+	headsDir, err := os.MkdirTemp("", "bundlefixture-heads-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(headsDir)
+	heads := sink.TrackHeads(sink.NewFileHeads(filepath.Join(headsDir, "heads.json")))
 
 	rs, err := sink.NewMLDSA65RecordSigner(recordSeed)
 	if err != nil {
@@ -100,16 +110,25 @@ func run() error {
 	for _, p := range pairs {
 		chainOf[p.Subject] = p.Chain
 	}
-	if _, err := s.Checkpoint(ctx, cp, nil); err != nil {
+	if _, err := s.Checkpoint(ctx, cp, nil, heads); err != nil {
 		return err
 	}
 	// Erase u-2, then checkpoint again: only u-2's chain has new entries, so
 	// only it gets a second checkpoint, which covers its erasure.
-	if _, err := s.EraseSubject(ctx, "u-2"); err != nil {
+	erased, err := s.EraseSubject(ctx, "u-2")
+	if err != nil {
 		return err
 	}
-	if _, err := s.Checkpoint(ctx, cp, nil); err != nil {
+	// The erase run confirms its own erasure, as `proof sink erase --key` does:
+	// a checkpoint signs over no erasure it cannot attribute.
+	done, err := s.Checkpoint(ctx, cp, nil, heads, sink.ConfirmErasures(erased.Erased...))
+	if err != nil {
 		return err
+	}
+	for _, d := range done {
+		if d.Problem != "" {
+			return fmt.Errorf("checkpoint %s: %s", d.Chain, d.Problem)
+		}
 	}
 
 	var buf bytes.Buffer

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -76,9 +77,17 @@ func writeEntriesFile(t *testing.T, path string, entries []verify.Entry) {
 	}
 }
 
-// runVerify executes `proof verify`, capturing output.
+// fixtureSubject is the subject newVerifyFixture's anchors are for.
+const fixtureSubject = "acct-7f3a"
+
+// runVerify executes `proof verify`, capturing output. An --anchor without a
+// --subject is given the fixture's subject, which a v7 anchor requires;
+// TestVerifyAnchor_SubjectIsRequiredAndChecked runs without one.
 func runVerify(t *testing.T, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
+	if slices.Contains(args, "--anchor") && !slices.Contains(args, "--subject") {
+		args = append(args, "--subject", fixtureSubject)
+	}
 	outF, _ := os.CreateTemp(t.TempDir(), "stdout")
 	errF, _ := os.CreateTemp(t.TempDir(), "stderr")
 	code = cmdVerify(args, outF, errF)
@@ -143,6 +152,9 @@ func TestVerifyAnchor_ThreeClaims(t *testing.T) {
 func TestVerifyAnchor_CatchesTruncation(t *testing.T) {
 	f := newVerifyFixture(t, 5)
 
+	// The first entry dropped and the rest renumbered from 0 and re-linked: a
+	// v4 chain whose first entry is not at 0 breaks linkage by itself, so a
+	// truncator who wants it to verify has to renumber.
 	entries := readFixtureEntries(t, f.anchorFixture)
 	kept := append([]verify.Entry(nil), entries[1:]...)
 	prev := ""
@@ -151,8 +163,9 @@ func TestVerifyAnchor_CatchesTruncation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}
-		kept[i].ChainHash = chainformat.ComputeChainHashV3Unchecked(
-			prev, kept[i].GlobalSeq, ts, kept[i].ContentHash)
+		kept[i].GlobalSeq = int64(i)
+		kept[i].ChainHash = chainformat.ComputeChainHashV4Unchecked(
+			prev, kept[i].GlobalSeq, ts, kept[i].LeafHash)
 		prev = kept[i].ChainHash
 	}
 	truncated := filepath.Join(f.dir, "truncated.json")
@@ -171,7 +184,8 @@ func TestVerifyAnchor_CatchesTruncation(t *testing.T) {
 		t.Errorf("exit %d, want %d — an anchor that does not describe the chain is a "+
 			"broken verdict, not a success", code, exitBroken)
 	}
-	if !strings.Contains(out, "range_start_mismatch") {
+	// The anchor's range ends at global_seq 4, and no entry is left there.
+	if !strings.Contains(out, "height_mismatch") {
 		t.Errorf("the truncation was not identified:\n%s", out)
 	}
 }
@@ -201,9 +215,13 @@ func TestVerifyAnchor_FlagsMayFollowTheFilename(t *testing.T) {
 	}
 }
 
-// TestVerifyAnchor_AssumedGenesisIsReported: a missing predecessor must never
-// masquerade as tamper evidence.
-func TestVerifyAnchor_AssumedGenesisIsReported(t *testing.T) {
+// TestVerifyAnchor_AChainedV7AnchorNeedsNoPredecessorFile: a v7 anchor signs
+// its predecessor's hash, so a later anchor binds without --previous, and
+// nothing is assumed. Given a predecessor, it is compared: the wrong one is a
+// predecessor_mismatch, never a head mismatch that reads as tampering. (A v6
+// anchor checked without --previous was checked as the first of its series;
+// that path is TestVerifyAnchor_PreviousHashAlternative's.)
+func TestVerifyAnchor_AChainedV7AnchorNeedsNoPredecessorFile(t *testing.T) {
 	f := newVerifyFixture(t, 3)
 
 	// A second anchor, chained from the first.
@@ -214,19 +232,18 @@ func TestVerifyAnchor_AssumedGenesisIsReported(t *testing.T) {
 		t.Fatalf("second anchor: %s", stderr)
 	}
 
-	// Checked WITHOUT --previous: it cannot bind, and the output must explain
-	// that the likely cause is the missing input rather than an attacker.
 	code, out, _ := runVerify(t, f.entriesPath, "--anchor", secondPath)
-	if code != exitBroken {
-		t.Fatalf("exit %d, want broken", code)
-	}
-	for _, want := range []string{"no --previous was given", "rather than tampering"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the output does not explain the assumption (%q):\n%s", want, out)
-		}
+	if code != exitOK || strings.Contains(out, "no --previous was given") {
+		t.Fatalf("a chained v7 anchor without --previous: exit %d\n%s", code, out)
 	}
 
-	// And with --previous it binds.
+	// Given the wrong predecessor, it is told apart from tampering.
+	code, out, _ = runVerify(t, f.entriesPath, "--anchor", secondPath, "--previous", secondPath)
+	if code != exitBroken || !strings.Contains(out, string(verify.BindPredecessorMismatch)) {
+		t.Fatalf("the wrong predecessor: exit %d\n%s", code, out)
+	}
+
+	// And with the right one it binds.
 	code, out, _ = runVerify(t, f.entriesPath, "--anchor", secondPath, "--previous", f.anchorPath)
 	if code != exitOK {
 		t.Fatalf("a chained anchor did not verify with its predecessor (exit %d):\n%s", code, out)
@@ -366,8 +383,8 @@ func TestVerifyAnchor_JSONCarriesBothResults(t *testing.T) {
 	if !got.Anchor.Anchor.Bound || !got.Anchor.Anchor.SignatureVerified {
 		t.Errorf("the JSON anchor result is wrong: %+v", got.Anchor)
 	}
-	if !got.Anchor.AssumedGenesis {
-		t.Error("assumed_genesis should be true when no predecessor was supplied")
+	if got.Anchor.AssumedGenesis {
+		t.Error("assumed_genesis is true for a v7 anchor, which carries its predecessor's hash")
 	}
 
 	// And without --anchor the block must be ABSENT rather than present-and-empty,
@@ -445,5 +462,28 @@ func TestVerifyAnchor_BindsWhateverMaxBreaksIs(t *testing.T) {
 		if code != exitOK || !strings.Contains(out, "ANCHOR BOUND") || !strings.Contains(out, "INTACT, ANCHORED") {
 			t.Errorf("--max-breaks %s: exit %d\n%s%s", max, code, out, stderr)
 		}
+	}
+}
+
+// TestVerifyAnchor_SubjectIsRequiredAndChecked: a v7 anchor is verified
+// against the subject the caller expects. Without one it is a usage error;
+// with another it is a genuine anchor for another chain, and does not bind.
+func TestVerifyAnchor_SubjectIsRequiredAndChecked(t *testing.T) {
+	f := newVerifyFixture(t, 3)
+	outF, _ := os.CreateTemp(t.TempDir(), "stdout")
+	errF, _ := os.CreateTemp(t.TempDir(), "stderr")
+	code := cmdVerify([]string{f.entriesPath, "--anchor", f.anchorPath}, outF, errF)
+	errF.Close()
+	e, _ := os.ReadFile(errF.Name())
+	if code != exitUsage || !strings.Contains(string(e), "--subject is required") {
+		t.Fatalf("no --subject: exit %d, %s", code, e)
+	}
+	code, out, _ := runVerify(t, f.entriesPath, "--anchor", f.anchorPath, "--subject", "another-chain")
+	if code != exitBroken || !strings.Contains(out, string(verify.BindTenantMismatch)) {
+		t.Fatalf("another subject: exit %d\n%s", code, out)
+	}
+	code, out, _ = runVerify(t, f.entriesPath, "--anchor", f.anchorPath, "--subject", fixtureSubject)
+	if code != exitOK || !strings.Contains(out, "ANCHOR BOUND") {
+		t.Fatalf("its own subject: exit %d\n%s", code, out)
 	}
 }

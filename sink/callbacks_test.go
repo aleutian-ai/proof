@@ -23,6 +23,9 @@ func (panickingKeys) PublicKey(string) ([]byte, anchor.Trust, error) { panic(err
 type panickingSigner struct{ anchor.ContextSigner }
 
 func (panickingSigner) SignContext(context.Context, []byte) ([]byte, error) { panic(errCallersBug) }
+func (panickingSigner) SignWithContext(context.Context, []byte, string) ([]byte, error) {
+	panic(errCallersBug)
+}
 
 type publicPanics struct{}
 
@@ -51,15 +54,15 @@ func TestCallersPanic_IsNotReportedAsADamagedFile(t *testing.T) {
 	}
 	for name, call := range map[string]func() error{
 		"Checkpoint: the signer signing": func() error {
-			_, err := s.Checkpoint(ctx, panickingSigner{signer}, ring)
+			_, err := s.Checkpoint(ctx, panickingSigner{signer}, ring, UntrackedHeads())
 			return err
 		},
 		"Checkpoint: the signer's public key": func() error {
-			_, err := s.Checkpoint(ctx, publicPanics{}, nil)
+			_, err := s.Checkpoint(ctx, publicPanics{}, nil, UntrackedHeads())
 			return err
 		},
 		"Checkpoint: the trusted keys": func() error {
-			_, err := s.Checkpoint(ctx, signer, panickingKeys{})
+			_, err := s.Checkpoint(ctx, signer, panickingKeys{}, UntrackedHeads())
 			return err
 		},
 		"Verify: the record keys": func() error {
@@ -114,7 +117,7 @@ func TestCallersPanic_IsNotReportedAsADamagedFile(t *testing.T) {
 	if _, err := s.Export(ctx, ExportSelection{All: true}, io.Discard); err != nil {
 		t.Fatalf("export afterwards: %v", err)
 	}
-	if _, err := s.Checkpoint(ctx, signer, nil, TrackHeads(FileHeads(filepath.Join(t.TempDir(), "h.json")))); err != nil {
+	if _, err := s.Checkpoint(ctx, signer, nil, TrackHeads(NewFileHeads(filepath.Join(t.TempDir(), "h.json")))); err != nil {
 		t.Fatalf("checkpoint afterwards: %v", err)
 	}
 }

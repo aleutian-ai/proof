@@ -108,7 +108,7 @@ func TestVerdictVectors(t *testing.T) {
 			if err := json.Unmarshal(c.Anchor, &a); err != nil {
 				t.Fatalf("the case's anchor does not parse: %v", err)
 			}
-			res, err := BindAnchor(a, c.Entries, c.PreviousAnchorHash)
+			res, err := BindAnchor(a, c.Entries, Expect{PreviousAnchorHash: c.PreviousAnchorHash})
 			if c.Expected.Error {
 				if err == nil {
 					t.Fatalf("accepted a malformed anchor: %+v", res)

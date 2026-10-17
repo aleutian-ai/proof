@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/fixtures"
 )
 
@@ -28,6 +29,8 @@ func validRecordFields() recordFields {
 		timestamp:   time.Date(2026, 9, 30, 12, 0, 0, 123456000, time.UTC),
 		contentHash: strings.Repeat("ab", 64),
 		keyID:       "3fb85abc3e8bae42952ee9194ae1f615",
+
+		formatVersion: chainformat.FormatV3, // the record.v1 vectors' envelope
 	}
 }
 
@@ -77,6 +80,7 @@ func fieldsFromStrings(m map[string]string) (recordFields, error) {
 		chainID: m["chain_id"], entryID: m["entry_id"], entryType: m["entry_type"],
 		globalSeq: seq, prevHash: m["previous_hash"], timestamp: ts,
 		contentHash: m["content_hash"], keyID: m["signing_key_id"],
+		formatVersion: chainformat.FormatV3, leafHash: m["leaf_hash"],
 	}, nil
 }
 
@@ -216,5 +220,94 @@ func TestRecordEnvelope_TimestampEncoding(t *testing.T) {
 	}
 	if !bytes.Contains(base, []byte("2026-09-30T12:00:00.123456Z")) {
 		t.Fatalf("timestamp not in the §4 form: %q", base)
+	}
+}
+
+// recordV2File is fixtures/testdata/record_v2_vectors.json.
+type recordV2File struct {
+	Domain  string `json:"domain"`
+	Context string `json:"context"`
+	Key     struct {
+		SeedHex      string `json:"seed_hex"`
+		PublicKeyHex string `json:"public_key_hex"`
+	} `json:"key"`
+	Vectors []struct {
+		Name   string            `json:"name"`
+		Fields map[string]string `json:"fields"`
+		Hex    string            `json:"envelope_hex"`
+		UnixNs string            `json:"timestamp_unix_ns"`
+	} `json:"vectors"`
+	Reject []struct {
+		Name   string            `json:"name"`
+		Fields map[string]string `json:"fields"`
+	} `json:"reject"`
+	Signatures []struct {
+		Vector string `json:"vector"`
+		Valid  bool   `json:"valid"`
+		Note   string `json:"note"`
+		SigHex string `json:"signature_hex"`
+		EnvHex string `json:"envelope_hex"`
+	} `json:"signatures"`
+}
+
+// TestRecordEnvelopeV2_Vectors: the record.v2 envelope, its refusals, and
+// signatures made in Python with its context, verified as a sink verifies.
+func TestRecordEnvelopeV2_Vectors(t *testing.T) {
+	var file recordV2File
+	if err := json.Unmarshal(fixtures.RecordV2Vectors(), &file); err != nil {
+		t.Fatal(err)
+	}
+	if file.Context != RecordContextV2 || len(file.Vectors) < 7 || len(file.Reject) < 10 || len(file.Signatures) < 5 {
+		t.Fatalf("context %q, %d vectors, %d reject, %d signatures: the file was truncated",
+			file.Context, len(file.Vectors), len(file.Reject), len(file.Signatures))
+	}
+	v2 := func(m map[string]string) (recordFields, error) {
+		f, err := fieldsFromStrings(m)
+		f.formatVersion = chainformat.FormatV4
+		return f, err
+	}
+	envelopes := map[string][]byte{}
+	for _, v := range file.Vectors {
+		t.Run(v.Name, func(t *testing.T) {
+			f, err := v2(v.Fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if v.UnixNs != "" {
+				ns, _ := strconv.ParseInt(v.UnixNs, 10, 64)
+				f.timestamp = time.Unix(0, ns)
+			}
+			got, err := recordEnvelope(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if hex.EncodeToString(got) != v.Hex {
+				t.Fatalf("envelope differs from the independent vector\n got %x\nwant %s", got, v.Hex)
+			}
+			envelopes[v.Name] = got
+		})
+	}
+	for _, r := range file.Reject {
+		t.Run("reject: "+r.Name, func(t *testing.T) {
+			f, err := v2(r.Fields)
+			if err != nil {
+				return // refused when read strictly
+			}
+			if _, err := recordEnvelope(f); err == nil {
+				t.Error("encoded a record every implementation must refuse")
+			}
+		})
+	}
+	pub, _ := hex.DecodeString(file.Key.PublicKeyHex)
+	for i, s := range file.Signatures {
+		env := envelopes[s.Vector]
+		if s.EnvHex != "" {
+			env, _ = hex.DecodeString(s.EnvHex)
+		}
+		sig, _ := hex.DecodeString(s.SigHex)
+		err := verifyRecordEnvelope(pub, env, sig)
+		if (err == nil) != s.Valid {
+			t.Errorf("signature %d (%s, %s): verified %v, want %v", i, s.Vector, s.Note, err == nil, s.Valid)
+		}
 	}
 }

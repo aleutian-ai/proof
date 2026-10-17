@@ -1,6 +1,10 @@
-# Sink export bundle: `aleutian.proof.bundle.v1`
+# Sink export bundle: `aleutian.proof.bundle.v1` and `.v2`
 
-**Status: NORMATIVE, revision 3.2** (accepted by the owner 2026-10-07).
+**Status: NORMATIVE, revision 4** (2026-10-17). Revision 4 adds **bundle v2**
+(§16): chain format v4 entries, v7 checkpoints and `record.v2` signatures. It
+changes no v1 rule; v1 is frozen (verified, never written after v0.5.0), and
+§1 to §15 define it. §16 lists, section by section, what v2 changes.
+Revision 3.2 was accepted by the owner 2026-10-07.
 Revision 2 applied a four-agent review (28 findings) and the owner's decisions
 U1–U3; revision 3 applied the re-review. Revision 3.1 (2026-10-08) states
 what the two independent verifiers (the Python and JavaScript SDKs') found unstated: §3
@@ -442,7 +446,7 @@ names.
 3. `too-large`: over the value limit (§5);
 4. `duplicate-key`;
 5. `format`: the top level is an object, and `format` is missing or not
-   exactly the v1 string;
+   exactly the v1 or the v2 string (§16);
 6. `structure`: any other §4 violation (a non-object top level, an unknown or
    missing member, a wrong type, empty `entries`);
 7. `too-large`: over a count limit.
@@ -649,3 +653,116 @@ structure reaches depth 6 at most (an entry's `record_signature`), so depth 8
 can only occur inside a member of the wrong type: the vector shows that the
 grammar accepts it, because the bundle is then unreadable as `structure`, not
 `json`. Neither change alters any rule.
+
+**Note 3** (2026-10-17, revision 4). Three v1 cases used
+`aleutian.proof.bundle.v2` as their example of a wrong `format`. Revision 4
+made that string a valid format (§16), so those cases would have read
+`structure` instead. Their example is now `aleutian.proof.bundle.v0`, which
+will never be a format; no rule and no other case changed.
+
+## 16. Version 2: `aleutian.proof.bundle.v2`
+
+A v2 bundle is a sink's evidence as v0.5.0 writes it: every entry chain format
+v4 (format-spec §2.0), every checkpoint a v7 anchor (format-spec §9), every
+record signature over the `record.v2` envelope (sink-format §9.1). It is read
+and checked exactly as §1 to §15 say for v1, with these changes and no others.
+The result is the same `aleutian.proof.bundle-result.v1`, with the same codes:
+v2 adds no problem code, trust value, verdict or erasure state.
+
+**§1 (what `ok` proves).** A checkpoint now fixes **every** entry's
+`entry_id` and `entry_type`, not only its range's ends: the leaf hash covers
+both, and the chain hash covers the leaf hash. Under checkpoint trust alone, a
+v2 bundle's inner entry ids are evidence, not labels.
+
+**§3 (grammar).** Unchanged, except that numbers in checkpoint text are only
+`version` and `created_at_ms` (§4.4 below).
+
+**§4.1.** `format` is exactly `aleutian.proof.bundle.v2`. A bundle never mixes
+formats: every entry of a v2 bundle is v4, every checkpoint v7.
+
+**§4.3 (an entry).** Two more members, both required, both strings:
+
+| Member | Shape |
+|---|---|
+| `salt` | 64 lowercase hex |
+| `leaf_hash` | 128 lowercase hex |
+
+`entry_type` stays "any string" for the shape check, and its value is hashed
+as given. A v2 entry carries no `format_version`: the bundle's `format` says it
+is v4. An entry is **well-formed** (§7.1 step 3) when `entry_id`,
+`global_seq`, `previous_hash`, `timestamp`, `content_hash`, `chain_hash`,
+`salt` and `leaf_hash` are all in shape. (`entry_type` still does not count:
+the leaf hash covers it as the stored string, whatever it is.) Sink entries are never erased in
+place (format-spec §5.0): the sink erases by appending an erasure entry and
+destroying content and nonces (sink-format §4.3), so a v2 entry has no
+`erased` member.
+
+**§4.4 (checkpoint text).** The text of a **v7 anchor**, at most 1 MiB, with
+exactly these members; anything else is `checkpoint-malformed` (step a):
+
+| Member | Type | Shape |
+|---|---|---|
+| `version` | number | exactly 7 |
+| `anchor_id` | string | non-empty, no `\|` |
+| `chain_hash` | string | 128 lowercase hex |
+| `created_at_ms` | number | ≥ 0 (advisory) |
+| `entry_count` | string | format-spec §2.1 decimal, ≥ 1 |
+| `previous_anchor_hash` | string | 128 lowercase hex |
+| `previous_anchor_id` | string | non-empty, no `\|` |
+| `range` | object | exactly `start_seq` and `end_seq`, each a string in format-spec §2.1's decimal grammar; `start_seq` is `"0"`; `entry_count` = `end_seq` + 1 |
+| `signature` | string | canonical base64 of exactly 3309 bytes |
+| `signing_key_id` | string | 32 lowercase hex |
+| `subject` | string | non-empty, no `\|` |
+
+`previous_anchor_id` is the seed id exactly when `previous_anchor_hash` is the
+seed hash (format-spec §9.3), or `checkpoint-malformed`.
+
+**§5 (limits).** A v2 entry has two more values, so the JSON value limit is
+**17,000,000** for a bundle whose `format` is exactly the v2 string: no bundle
+within the other limits has more than 16,500,003 (3 + 4 per chain + 16 per
+entry + 1 per checkpoint). Every other bundle, a v1 one or one whose `format`
+is missing or unknown, is held to 15,000,000.
+
+**§7.2 (links), step 3.** First, `leaf_hash` equals the leaf hash v4
+(format-spec §2.0) over the entry's own `entry_id`, `entry_type`,
+`content_hash` and `salt`, as the stored strings; then `chain_hash` equals
+chain hash v4 over its own `previous_hash`, `global_seq`, `timestamp` and
+stored `leaf_hash`. Either failing is problem `chain-hash`, once per entry.
+
+**§7.3 to §7.5.** Unchanged. (The erasure hash is still domain-separated: it is
+what makes a relabelled erasure detectable without trusting the label.)
+
+**§7.6 (checkpoints).**
+
+| Step | v2 check | Problem |
+|---|---|---|
+| a | the text satisfies §3 and the v2 §4.4 | `checkpoint-malformed` |
+| b | unchanged | `checkpoint-subject` |
+| c | `previous_anchor_id` is the previous checkpoint's `anchor_id` and `previous_anchor_hash` its `chain_hash` (the seed id and seed hash for *k* = 0); `entry_count` greater than the previous checkpoint's | `checkpoint-sequence` |
+| d | unchanged | `checkpoint-overreach` |
+| e | entries 0 … `entry_count`−1 are all well-formed, and `chain_hash` equals the v7 anchor chain hash (format-spec §9.4) over `previous_anchor_hash`, the chain id, `"0"`, `end_seq`, and entry `end_seq`'s stored `chain_hash` | `checkpoint-binding` |
+| f | unchanged | `checkpoint-unknown-key` |
+| g | the signature verifies as ML-DSA-65, pure, with the context `aleutian.proof.anchor.v7`, over the v7 canonical bytes (format-spec §9.2) | `checkpoint-bad-signature` |
+
+**§7.7 (record signatures).** The envelope is `aleutian.proof.record.v2`
+(sink-format §9.1): fields 0x01 to 0x08 as for v1, then 0x09 the entry's stored
+`leaf_hash`. The signature verifies as ML-DSA-65, pure, with the context
+`aleutian.proof.record.v2`. A v2 entry whose `leaf_hash` is out of shape is
+malformed, so it gets `bad-signature` without verifying.
+
+**§13.** v2 means chain format v4, v7 anchors, the `record.v2` envelope and
+ML-DSA-65, and nothing else.
+
+**§14.** One row changes: under checkpoint trust, inner entry ids and types
+are authenticated in v2 (§1 above).
+
+**§15.** A v2 implementation conforms when it reproduces every case of
+`fixtures/testdata/bundle_v2_vectors.json` as well as the v1 file. The v2 file
+MUST contain at least: an `ok` bundle under each trust combination; one case
+per problem code that v2 can produce; a swapped inner `entry_id` under
+checkpoint-only trust (`failed`, `chain-hash`, where v1 reads it as `ok`), and a
+changed `entry_type` or `salt` (`chain-hash`, besides any §7.4 problem a
+changed type also has); a v6 checkpoint in a v2 bundle and a v1-shaped entry in a v2 bundle
+(each refused); a v7 checkpoint signed with the empty context and a record
+signature made over the v1 envelope (each refused); and a bundle exported by
+`proof sink export` from a real sink.

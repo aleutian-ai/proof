@@ -43,7 +43,7 @@ created demo.db
   "committed": 5,
   "first_seq": 0,
   "last_seq": 4,
-  "head_hash": "08a3d94e3b3f351483642273ab1e4a0318bf9e95c49a5cd0a21b16737f9bc8988996f9fe66cdfe1bd944840fbee3763541483cf176598ea58fe02bb177aa2c7b"
+  "head_hash": "b84501d7820a909f2325a3b4824c5d75806164e25460008022b404b322f95605fa626f2de702082b29b63b29ceafdfcb45923fa107f76a97c8f1bb135cf116c9"
 }
 
 $ proof verify entries.json
@@ -58,18 +58,22 @@ $ proof verify tampered.json
 BROKEN — first break at entry 2
 
   [2] hash_mismatch        ent_002
-       expected 19a80aef54b57ad64b0cec0532ac72b7…
-       actual   61863b5ef3be12a0c185ae1555701f9b…
+       expected 49a069093fe0a722655a27d9b5e82aa8…
+       actual   f8055ed3ae0b4c441ae4b9fab4cca2de…
   [3] hash_mismatch        ent_003
-       expected fcde110bf30fe281042f969fd06691b8…
-       actual   9dda32f8d174fc701ebbab239febb666…
+       expected 7896d215bc47fde9cd0532032164c0d5…
+       actual   13dfaa9589640b7b43e50f2ed7d0926b…
   [4] hash_mismatch        ent_004
-       expected f9840a1a41752eb581d54c4a4a9ca496…
-       actual   08a3d94e3b3f351483642273ab1e4a03…
+       expected 9e12215cf0d3c60de8db0177ac9a36fe…
+       actual   b84501d7820a909f2325a3b4824c5d75…
 
   Note: one altered entry breaks every entry after it, so the
   count above is the blast radius. Entry 2 is the place to look.
 ```
+
+Your hashes will differ from these, on every run: each entry gets a fresh
+random salt when it is committed (chain format v4, below), so the same input
+never produces the same chain twice. Everything else prints as shown.
 
 The first verify exits `0` and the second exits `1`. `INTACT` is the weakest of
 three claims this tool makes; the next section says what it does not cover.
@@ -90,78 +94,67 @@ and the difference is the whole design.
 | **\+ an anchor, no key**<br>`verify.BindAnchor`<br>`… --anchor a.json` | The chain is the one that anchor committed to — including where it *started*, so **truncation is caught**. | That the anchor is genuine. |
 | **\+ the anchor's signature**<br>`verify.VerifyAnchor`<br>`… --anchor a.json --key pub.pem` | The anchor was signed by the holder of a key you named. | That the anchor reached you by a path its subject could not rewrite. |
 
-### Known limitations of the current formats
+### What chain format v4 closed, and what is left
 
-These are holes in chain format v3, anchor v6 and the sink as they are today.
-The verifiers report the exposure where they can. None of them detects the
-attack. Read them before relying on a verdict.
+v0.5.0 writes **chain format v4** and **anchor v7** (format-spec §2.0, §9).
+Three holes that two external reviews found in v3 and v6 are closed by
+construction, not reported around:
 
-1. **An erased entry is an unverified link.** A tombstone keeps the erased
-   entry's chain hash, and a verifier takes that hash as stored, because the
-   content hash it was computed from is gone. So nothing links the entries
-   before a tombstone to the entries after it. Anyone who can write the store
-   can replace every entry before a tombstone, or before an entry they turn
-   into one, and the chain still verifies as `INTACT` and still binds to a
-   valid signed anchor. The result says how many entries are exposed
-   (`last_tombstone`, `entries_not_bound`) and its wording covers only the
-   entries after the last tombstone. A chain with no tombstone is not affected
-   unless an attacker adds one, which they can (see 2).
-2. **`entry_id` and `entry_type` are in no hash.** Either can be changed
-   without a break. `entry_type` and the `tomb_` id prefix are what mark an
-   entry as erased.
-3. **Erasing the first or last entry of an anchored range breaks that
-   anchor.** Erasure replaces the entry's id, and an anchor names its range by
-   the first and last entry ids.
-4. **An anchor series cannot show that it is complete.** Delete the latest
+- **Every link is checked, erased entries included.** v4 links through a
+  salted *leaf hash* over the entry's id, type and content hash. Erasure
+  removes the salt and those fields and keeps the leaf hash, so an erased entry
+  is recomputed like any other, and rewriting anything before it breaks the
+  chain. (In v3 a tombstone's chain hash was taken on trust, and everything
+  before it could be replaced under a valid signed anchor.)
+- **`entry_id` and `entry_type` are hashed.** Changing either is a break.
+- **Erasure does not break anchors.** v7 names its range by sequence number,
+  which erasure never changes, and signs its predecessor's hash, so a verifier
+  needs no second file. v7 signatures carry a context string
+  (`aleutian.proof.anchor.v7`), so a key used elsewhere cannot produce one.
+
+What is still true, and should be read before relying on a verdict:
+
+1. **v2 and v3 chains keep their limits, for good.** Their hashes are signed
+   into anchors that exist, so they are frozen (format-spec §2.6): verified
+   forever, never rewritten. A v3 tombstone's chain hash is still taken as
+   stored, so the entries before a chain's last tombstone are reported as not
+   bound (`last_tombstone`, `entries_not_bound`), and v2 does not hash
+   `global_seq`. The remedy is to **continue** such a chain: its next entry is
+   v4, and from there every entry has v4's guarantee (format-spec §2.5).
+   There is no migration tool, by design: a re-linked chain verifies and is not
+   the one that was anchored.
+2. **An erasure proves an entry existed, not who erased it.** Anyone who can
+   write the store can produce the erased shape; the chain stays intact and the
+   anchor stays bound. The sink authenticates its own erasures (signed in a
+   signing sink, and never checkpointed unless confirmed); a bare chain does
+   not ([verification-model.md](docs/verification-model.md), "Who may erase").
+3. **An anchor series cannot show that it is complete.** Delete the latest
    anchors and the shorter series verifies. Keep anchors where the chain's
-   writer cannot rewrite them. Anchors are signed with an empty ML-DSA context
-   string, so a signing key must not be used for anything else.
-5. **The sink cannot tell an erasure it made from one written into its
-   folder, except by who checkpoints it.** An erasure record carries no key.
-   Someone with write access to the folder can append one at the end of a chain
-   and remove the chain's index row; it verifies as `erased-unanchored`, as a
-   real erasure does before its checkpoint. Three things that followed from
-   that are now closed, and each has a remainder that is not:
-   - *A routine checkpoint no longer covers it.* `proof sink checkpoint` signs
-     over an erasure only when the same run made it on that chain
-     (`proof sink erase --key`, `erase --resume --key`), its record signature
-     verifies (`checkpoint --record-trust`, on a sink that signs), or the
-     operator names the chain and vouches for it
-     (`checkpoint --confirm-erased-chain <chain id>`, for an erasure that
-     missed its own run's checkpoint). An erase run does not vouch for an
-     erasure entry it found already on a chain the index still bound to a
-     subject. A forged erasure stays `erased (not yet checkpointed)`.
-     **Not closed:** the events it covered are still gone and are not
-     restored, and `checkpoint` reports that chain on every run until someone
-     vouches for it, which the sink cannot check: an operator who vouches for
-     an erasure they did not make signs the forgery. And an erase run
-     completes whatever the index marks as an interrupted erasure: someone who
-     can write the index can mark a chain pending, and the next erase run then
-     erases it and checkpoints it as its own.
-   - *A deleted checkpoint series is noticed, if its head is kept elsewhere.*
-     With `--heads FILE` on `checkpoint` and `verify` (a file outside the sink
-     folder), a series that is shorter than it was, or was started again, is a
-     failure and is not extended. **Not closed:** without `--heads` nothing
-     changed: the next checkpoint starts a new series and verification passes
-     (`verify --require-checkpoint` only catches a chain left with no
-     checkpoint at all). Someone who can also rewrite the heads file is not
-     stopped (see 6), and a chain removed whole, with its checkpoints, is not
-     noticed through it.
-   - *Rows written into `.sources` no longer make new records vanish.* A record
-     is a duplicate only if the entry its source points at holds the same
-     content; otherwise `commit` refuses it (`ErrSourceConflict`) and nothing
-     is acknowledged. `verify` reports a source position that points at no
-     entry, and an entry with more than one. **Not closed:** someone who knows
-     a future record's exact bytes can still make it read as a duplicate, by
-     also rewriting the stored content, or by pointing its source at an entry
-     that already holds those bytes (events that repeat byte for byte).
-
-   `proof sink repair` deletes rows that match no entry, which is what a commit
-   that crashed leaves, and also what removing entries leaves. It leaves a
-   chain alone when a checkpoint, a recorded head (`--heads`) or, for a chain
-   with no entries, a record signature says the chain held more. **Not
-   closed:** on a chain no checkpoint covers, entries removed from the end
-   leave nothing that says so, and repair then deletes their content.
+   writer cannot rewrite them. The sink makes the external record mandatory:
+   `proof sink checkpoint` requires `--heads FILE`, a record of each series
+   kept outside the folder, and refuses a series that is shorter than it, or
+   restarted ([runbook.md](docs/runbook.md), "Where to keep checkpoint heads").
+   It is only worth where you keep it: a writer who can also rewrite the heads
+   is not stopped, and a chain removed whole, with its checkpoints, is not
+   noticed through it.
+4. **The sink cannot attribute an erasure in a sink that does not sign.** A
+   forged erasure at the end of a chain, with its index row removed, reads
+   `erased (not yet checkpointed)`, as a real one does before its checkpoint.
+   `checkpoint` never signs over it unless the erase run confirmed it, its
+   record signature verifies, or the operator vouches for the chain by name; in
+   a sink that signs, `verify` reports it (`erasure-unsigned`). **Not closed:**
+   the events it covered are gone; an operator who vouches for an erasure they
+   did not make signs the forgery; and someone who can write the subject index
+   can mark a chain pending, which the next erase run then completes as its
+   own.
+5. **Rows written into `.sources` cannot make new records vanish, mostly.** A
+   record is a duplicate only if the entry its source points at holds the same
+   content; otherwise `commit` refuses it (`ErrSourceConflict`). **Not
+   closed:** someone who knows a future record's exact bytes can still make it
+   read as a duplicate, by rewriting the stored content too, or by pointing its
+   source at an entry that already holds those bytes. `proof sink repair` deletes
+   rows that match no entry, and on a chain no checkpoint covers, entries
+   removed from the end leave nothing that says so.
 6. **An operator who controls the evidence store and every signing key the
    verifier trusts can rewrite history and produce a newly valid one.** Only
    earlier checkpoints kept or witnessed outside the operator's reach make that
@@ -170,21 +163,17 @@ attack. Read them before relying on a verdict.
    covered.** No command panics or hangs on a file that is cut short or whose
    pages were overwritten: `sink verify` exits 1 and everything else exits 3.
    Every open first checks the sizes and counts in the file's meta pages and
-   freelist header against the file's length (a freelist claiming more entries
-   than the file could hold once made the process run out of memory), commands
-   that write read each file through before writing to it (`--skip-check` on
-   the sink verbs skips that), and every call into the storage layer is
-   guarded. In a long-lived process, a file that fails inside the storage layer
-   is abandoned rather than closed: its lock is released, but its memory map
-   stays until the process exits. **Not covered:** a file deliberately crafted
-   beyond that. Pages that point back at each other are followed without end,
-   and a count or offset inside a data page is believed as written; either can
-   hang the process or end it. These files are a store's own, not an
-   interchange format: verify someone else's evidence as an exported bundle,
-   never by opening their files.
+   freelist header against the file's length, commands that write read each
+   file through before writing to it (`--skip-check` on the sink verbs skips
+   that), and every call into the storage layer is guarded. **Not covered:** a
+   file deliberately crafted beyond that, which can hang the process or end it.
+   These files are a store's own, not an interchange format: verify someone
+   else's evidence as an exported bundle, never by opening their files.
+8. **Linux and macOS only.** The stores lock files with `flock` and open them
+   with `O_NOFOLLOW`; on Windows the commands that open a store report that the
+   platform is unsupported. Verifying an exported file needs neither.
 
-A next format version is drafted to close 1 to 3 and tighten 4. It is not
-implemented. Details: [verification-model.md](docs/verification-model.md),
+Details: [verification-model.md](docs/verification-model.md),
 [sink-format.md §6](docs/sink-format.md).
 
 ### Why linkage alone cannot see truncation
@@ -229,7 +218,7 @@ See [docs/verification-model.md](docs/verification-model.md) and
 $ go install github.com/aleutian-ai/proof/cmd/proof@latest
 ```
 
-The outputs shown here are from v0.4.1. `proof version` prints what your
+The outputs shown here are from v0.5.0. `proof version` prints what your
 binary was built from; in a clone, `go install ./cmd/proof` builds the tree.
 
 `testdata/demo/entries.json` is a five-entry chain that ships with the
@@ -253,14 +242,14 @@ $ proof verify testdata/demo/entries-tampered.json
 BROKEN — first break at entry 2
 
   [2] hash_mismatch        ent_002
-       expected 19a80aef54b57ad64b0cec0532ac72b7…
-       actual   61863b5ef3be12a0c185ae1555701f9b…
+       expected c260239caea088429270e02dc4a2a6d4…
+       actual   a7038212db08c231b279fdc468213e86…
   [3] hash_mismatch        ent_003
-       expected fcde110bf30fe281042f969fd06691b8…
-       actual   9dda32f8d174fc701ebbab239febb666…
+       expected cb9ec3e171872eac56d6edfa3d1b3670…
+       actual   47a95a07cc1917a7484e21fb05d53db9…
   [4] hash_mismatch        ent_004
-       expected f9840a1a41752eb581d54c4a4a9ca496…
-       actual   08a3d94e3b3f351483642273ab1e4a03…
+       expected 608c1cbf0340502bd064fc22306f164b…
+       actual   ad4cb788e3311701da339ae119939aa2…
 
   Note: one altered entry breaks every entry after it, so the
   count above is the blast radius. Entry 2 is the place to look.
@@ -308,12 +297,12 @@ $ proof anchor --db chain.db --chain demo \
       --subject acct-pseudonym-7f3a \
       --key ml-dsa-65-private.pem --out anchor.json
 
-anchored 4 entries
+anchored 5 entries
 
-  anchor id   anchor_d7b286b6-6b36-45a1-83be-dbef73b2e4e9
+  anchor id   anchor_e6540b42-60ab-4eae-afcd-aea14d927208
   subject     acct-pseudonym-7f3a
-  range       ent_000 … ent_003
-  key id      e38207ddb2d82ffe9ff0ffda06085a36
+  range       global_seq 0 … 4
+  key id      13c8130c3202ecb43afa55c67c885e7e
   previous    (none — this is the first anchor in the chain)
 
   Proven:     these entries link, and nothing was edited under you.
@@ -325,17 +314,17 @@ anchored 4 entries
 
 **It verifies the chain before it will describe it**, and refuses a broken one
 with exit code `1` — the same code `proof verify` uses, so a script treats "this
-chain is broken" identically whichever verb found it. `verified_through` is
-therefore a claim this tool established rather than one it repeated.
+chain is broken" identically whichever verb found it. It writes a **v7 anchor**:
+its range is the entries' sequence numbers, which erasure never changes, and it
+is signed with the context string `aleutian.proof.anchor.v7`.
 
 `--subject` is required and has no default. It is inside the signed bytes, so it
 can never be erased or corrected: use a stable pseudonym or an opaque id, never
 a name, an email address or a device hostname.
 
-Pass `--previous <anchor.json>` for every anchor after the first. The output then
-prints the predecessor's chain hash, because a verifier needs it and **cannot
-recover it from the new anchor alone** — an anchor names its predecessor by id,
-not by hash.
+Pass `--previous <anchor.json>` for every anchor after the first. The new anchor
+then carries the predecessor's id and chain hash inside its signature, so a
+verifier needs only the new anchor to bind it.
 
 Without `--out` the anchor goes to stdout and the summary to stderr, so
 `proof anchor … > anchor.json` gives a clean file.
@@ -353,7 +342,7 @@ $ proof commit --db chain.db --chain demo  < entries.jsonl
 $ proof export --db chain.db --chain demo --out e.jsonl --jsonl
 $ proof anchor --db chain.db --chain demo --subject acct-7f3a \
       --key ml-dsa-65-private.pem --out a.json
-$ proof verify e.jsonl --anchor a.json --key ml-dsa-65-public.pem
+$ proof verify e.jsonl --anchor a.json --subject acct-7f3a --key ml-dsa-65-public.pem
 ```
 
 `export` and `anchor` only read the database and never create one, and neither
@@ -371,15 +360,16 @@ $ head -1 testdata/demo/input.jsonl
 
 | Field | What it is |
 |---|---|
-| `entry_id` | your name for the entry; one id names one entry in a chain |
-| `entry_type` | your label for the kind of entry; it is stored, and it is in no hash |
+| `entry_id` | your name for the entry; one id names one entry in a chain. Hashed, 1 to 256 bytes |
+| `entry_type` | your label for the kind of entry. Hashed, 1 to 256 bytes |
 | `timestamp` | when the event happened, RFC 3339; it is hashed |
 | `ingested_at` | when you received it, RFC 3339; it orders the batch and is not stored |
 | `content_hash` | the SHA-512 of the evidence, as 128 lowercase hex characters. `proof` never sees the evidence |
 
-`entry_id`, `timestamp`, `ingested_at` and `content_hash` are required, and a
-line that lacks one or has it in another form is refused by line number, with
-nothing committed. The message names the field and never repeats its value:
+All five are required, and a line that lacks one or has it in another form is
+refused by line number, with nothing committed. `commit` writes chain format v4
+and mints each entry's salt itself; `--format 3` (or `2`) still writes the
+frozen formats for one more release, with a deprecation warning. The message names the field and never repeats its value:
 
 ```console
 $ echo '{"entry_id":"ent_x","entry_type":"event","timestamp":"yesterday","ingested_at":"2026-10-13T09:00:00Z","content_hash":"abc"}' | proof commit --db demo.db --chain demo
@@ -394,8 +384,8 @@ believing their hashes were preserved.
 `import` **carries** them. It verifies the batch, refuses to write into an
 occupied sequence range, and then stores every hashed field verbatim, so
 `export → import → export` is byte-identical. It deliberately does not use the
-linker: re-linking would renumber from the target's tail, and v3 binds
-`global_seq`, so identical entries would acquire different hashes.
+linker: re-linking would renumber from the target's tail and mint new salts, so
+identical entries would acquire different hashes.
 
 Importing a *segment* needs `--previous-hash`, because its first entry links
 from a predecessor rather than from nothing.
@@ -406,7 +396,7 @@ The demo chain ships with an anchor over its five entries and the public key
 that verifies it:
 
 ```console
-$ proof verify testdata/demo/entries.json --anchor testdata/demo/anchor.json --key testdata/demo/anchor-public.pem
+$ proof verify testdata/demo/entries.json --anchor testdata/demo/anchor.json --subject demo-chain --key testdata/demo/anchor-public.pem
 INTACT, ANCHORED — 5 entries
 
 ANCHOR BOUND — 5 entries covered
@@ -421,15 +411,29 @@ That key came from the same directory as the chain and the anchor, which is the
 case "NOT proven" describes: it shows the three files agree, and nothing about
 who made them.
 
-This is the truncation case made concrete. Drop entries from the front, re-link
-what remains, and `proof verify` alone reports **INTACT** — correctly, because
-linkage genuinely cannot see it. Add `--anchor` and the same file comes back
-`range_start_mismatch`, exit `1`.
+This is the truncation case made concrete. Drop entries from the front,
+renumber and re-link what remains, and `proof verify` alone reports **INTACT** —
+correctly, because linkage genuinely cannot see it. (Without renumbering, v4
+catches it: a chain's first entry is at sequence 0.) Add `--anchor` and the
+same file comes back `height_mismatch`, exit `1`: the anchor covers a sequence
+the chain no longer has.
 
-`--previous <anchor.json>` is needed for any anchor that is not the first in its
-chain (`--previous-hash <hex>` if you kept the hash but not the file). Omit it
-and the output **says** it assumed a genesis anchor, so a mismatch points at the
-missing input rather than at an imaginary attacker.
+`--subject` is required for a v7 anchor: it is what the anchor must be about,
+and without it a genuine anchor for another chain would bind. Another subject
+is `tenant_mismatch`, exit `1`. A v7 anchor carries its predecessor's hash, so
+`--previous <anchor.json>` (or `--previous-hash <hex>`) is optional: given, it
+must match. For an older anchor it is needed for any anchor that is not the
+first in its chain, and the output says when it assumed a genesis anchor.
+
+Erasing entries does not change this. `proof erase --db chain.db --chain demo
+--seq 2` removes that entry's id, type, content hash and salt and rewrites the
+database file so their bytes are gone; the export still verifies and the anchor
+still binds:
+
+```console
+$ proof verify after.json --anchor a.json --subject acct-pseudonym-7f3a --key ml-dsa-65-public.pem
+INTACT, ANCHORED — 5 entries, 1 erased
+```
 
 `--key-trust` decides what success means — `platform`, `provided` or `self` —
 and the result always states what that establishes rather than saying "verified".
@@ -608,14 +612,14 @@ $ go get github.com/aleutian-ai/proof
 ```go
 import "github.com/aleutian-ai/proof/chainformat"
 
-hash, err := chainformat.ComputeChainHashV3(previousHash, globalSeq, ts, contentHash)
+salt, _ := chainformat.NewSaltV4()
+leaf, err := chainformat.ComputeLeafHashV4(entryID, entryType, contentHash, salt)
+hash, err := chainformat.ComputeChainHashV4(previousHash, globalSeq, ts, leaf)
 ```
 
-v3 is the current format and the one to build against. v2 exists, is still
-verified, and is never rewritten — it bound the *batch* an entry was written in,
-so a chain depended on the API calls that produced it rather than on its own
-contents. v3 binds the entry's position in the chain instead. See
-[D15](docs/decisions.md).
+v4 is the current format and the one to build against; `linker` mints the salt
+for you. v2 and v3 are frozen: verified forever, never rewritten, and continued
+in v4 from a chain's next entry. See [D19 and D22](docs/decisions.md).
 
 ### As an MCP server
 
@@ -663,13 +667,23 @@ Later, whoever runs the server can prove or erase one entry:
 
 ```console
 $ proof disclose --db evidence.db --chain agent-actions --entry mcp-… --content action.txt
-$ proof forget   --db evidence.db --chain agent-actions --entry mcp-…
+$ proof erase    --db evidence.db --chain agent-actions --seq 7
 ```
+
+`erase` removes the entry's id, type, content hash and salt, forgets its
+nonce, and rewrites both files; the chain still verifies and anchors still
+bind. (`proof forget` destroys only the nonce, and is what a v3 entry gets.)
+
+`verify_anchor` takes an optional `subject`: the subject the anchor must be
+for. Without it, the result's `not_proven` says the subject was not checked,
+because a genuine anchor for another chain would bind too. `compute_chain_hash`
+takes `format_version` 4 (from an entry's id, type, content hash and salt, or
+an erased entry's leaf hash alone), 3 or 2.
 
 **Know what crosses the model boundary.** The content an agent commits passes
 through the conversation, so the model provider sees it. The server keeps the
 nonce out of the transcript, but it cannot recall content that is already there.
-Erasing an entry (`proof forget`) makes it unopenable from this machine; it does
+Erasing an entry (`proof erase`) makes it unopenable from this machine; it does
 not reach provider transcripts, backups, or anyone it was disclosed to. For
 content you may need to erase fully, compute a salted commitment yourself and
 send `content_hash`. Erasure also removes content, not the fact that an entry
@@ -705,17 +719,17 @@ it came from:
 ring, _ := anchor.NewKeyRing(anchor.TrustProvided, map[string][]byte{
     "aleutian-ml-dsa-65-2026-v1": publicKey,
 })
-res, _ := verify.VerifyAnchor(a, entries, anchor.SeedAnchorHash, ring)
+res, _ := verify.VerifyAnchor(a, entries, verify.Expect{Subject: "acct-7f3a"}, ring)
 fmt.Println(res.Trust.Establishes())
 ```
 
-The third argument is the **previous anchor's chain hash**. An anchor commits to
-its predecessor's hash but names that predecessor only by id, so the hash cannot
-be recovered from the anchor in front of you — you need the previous anchor, or
-a record of its hash. Pass `anchor.SeedAnchorHash` for the first anchor in a
-chain and `prev.ChainHash` for every one after it. It is a required argument
-rather than a default because defaulting it made the verifier silently
-genesis-only, and a correct chained anchor came back looking like tampering.
+The third argument is what **you** expect, which an anchor cannot say about
+itself. `Subject` is what the anchor must be about: a genuine anchor for
+another subject is `tenant_mismatch`, and with none given the result says the
+subject was not checked. `PreviousAnchorHash` is the predecessor's chain hash:
+optional for a v7 anchor, which signs its own (given, it must match), and
+required for an older one, whose hash names its predecessor only by id (pass
+`anchor.SeedAnchorHash` for the first).
 
 | Level | Establishes |
 |---|---|
@@ -765,10 +779,18 @@ type ContextSigner interface {
     Public() crypto.PublicKey
     SignContext(ctx context.Context, msg []byte) ([]byte, error)
 }
+
+type ContextStringSigner interface {
+    ContextSigner
+    SignWithContext(ctx context.Context, msg []byte, mldsaContext string) ([]byte, error)
+}
 ```
 
-Cloud KMS, an HSM, a PKCS#11 token, a keychain — implement that, or wrap an
-existing `crypto.Signer` with `anchor.FromCryptoSigner`. `proof` holds no
+Cloud KMS, an HSM, a PKCS#11 token, a keychain — implement those, or wrap an
+existing `crypto.Signer` with `anchor.FromCryptoSigner`. A v7 anchor is signed
+with the ML-DSA context string `aleutian.proof.anchor.v7`, so its signer must
+be a `ContextStringSigner`; one that ignores the context produces a signature
+`SignAnchor` refuses rather than returns. `proof` holds no
 credentials and opens no connections.
 
 `crypto.Signer` is deliberately **not** embedded in that interface: nothing here
@@ -817,21 +839,26 @@ $ npm test -- conformanceVectors             →  1 failed
 
 Agreement is also tested on real artifacts, not only constants: a v3 chain from
 `proof commit` and a v6 anchor signed by `proof anchor` with a real ML-DSA-65
-key both verify in Python and JavaScript. Those fixtures must never be
+key both verify in Python and JavaScript (as of vector set v0.4.1). Those fixtures must never be
 regenerated by the SDK that checks them — they are evidence precisely because
 another implementation produced them.
 
-> **What this does not yet establish.** The three agree on chain hash v2/v3,
-> anchor v3/v4/v6, the verifier verdict vectors and the export-bundle vectors.
-> Not under the shared set: Merkle roots and inclusion proofs, an anchor
+> **All three pass every file of this release's set**, chain format v4, anchor
+> v7 and bundle v2 included. The Python and JavaScript verifiers were written
+> from the specifications without reading the Go code.
+> [docs/conformance.md](docs/conformance.md) lists, per implementation and per
+> vector file, what each passes.
+>
+> **What this does not yet establish.** Not under the shared set:
+> Merkle roots and inclusion proofs, an anchor
 > *series* (the verdict vectors need no key, and a series needs signatures),
 > and the two input forms only the SDKs read (the hosted platform's
 > `{"entries": [...]}` wrapper and camelCase member names).
 >
 > Who writes each vector file: `scripts/independent-vectors.py`,
-> `scripts/spec-vectors.py`, `scripts/verdict-vectors.py` and
-> `scripts/bundle-vectors.py`, each computing its values in Python from the
-> spec. No Go test writes one. Five files (`merkle_golden.json`,
+> `scripts/spec-vectors.py`, `scripts/v4-vectors.py`,
+> `scripts/verdict-vectors.py` and `scripts/bundle-vectors.py`, each computing
+> its values in Python from the spec. No Go test writes one. Five files (`merkle_golden.json`,
 > `v3_golden_capture_request.json`, `anchor_chain_hash_vectors.json`,
 > `chain_vectors.json`, `commitment_vectors.json`) were first written by an
 > implementation or by hand; `spec-vectors.py` reproduced the first three byte
@@ -886,7 +913,7 @@ should not need a newer toolchain because of a storage engine they never use.
 ## Packages
 
 ```
-chainformat     leaf encoding, chain hash linkage, tombstones   ← the core
+chainformat     leaf encoding, chain hash and leaf hash v4, v2/v3 tombstones   ← the core
 commitment      salted commitments for unencrypted content (format-spec §8)
 canonical       deterministic JSON encoding
 linker          sequence assignment + hash linkage — the append path
@@ -911,7 +938,7 @@ keywrap         versioned wrapped-key wire format
 
 sink            one chain per key in a folder: idempotent commits, per-chain
                 checkpoints, verification, erasure (docs/sink-format.md)
-cmd/proof       CLI — init · commit · export · import · anchor · verify · keygen · disclose · forget · sink
+cmd/proof       CLI — init · commit · export · import · anchor · verify · keygen · disclose · erase · forget · sink
 cmd/proof-mcp   MCP server (separate module: its SDK needs Go 1.25)
 
 examples/       composition, not features — encrypted-artifact; integrations/nats,
@@ -923,29 +950,33 @@ examples/       composition, not features — encrypted-artifact; integrations/n
 
 ## Erasure
 
-A chain that cannot forget is a chain that cannot comply. When an entry's content
-is erased, the entry stays in position and its content hash is replaced by a
-random tombstone value:
+A chain that cannot forget is a chain that cannot comply. In chain format v4,
+erasing an entry removes its id, type, content hash and salt, and keeps its
+position, timestamp, **leaf hash** and chain hash:
 
 ```
-[1]→[2]→[3']→[4]→[5]     3' keeps its ORIGINAL chain_hash
-          └─ content_hash replaced by 32 random bytes
+[0]→[1]→[2']→[3]→[4]     2' keeps its leaf_hash and chain_hash; id, type,
+          │              content hash and salt are gone
+          └─ chain_hash = H(previous_hash | seq | ts | leaf_hash)  ← recomputed
 ```
 
-The linkage survives, so a lawful erasure stays distinguishable from a row that
-merely vanished.
+The leaf hash is a salted commitment to the erased fields, so it reveals
+nothing about them once the salt is gone, and the chain hash is recomputed from
+it like any other entry's: **every link is still checked**, and anchors over
+the range still bind. `proof erase --db … --chain … --seq N` does it, forgets
+the entry's nonce if it had one, and rewrites the files so the removed bytes
+are not left in free pages. What it cannot reach: backups, snapshots, earlier
+exports, and anyone the entry was disclosed to.
 
-**A tombstone's chain hash is not reproducible from its own fields**, and a
-verifier that recomputes it will report a false break on every erased entry.
-That is deliberate: anchors sign the chain hash, so recomputing on erasure would
-invalidate every anchor over that range — exercising a right to erasure would
-destroy the proof that the data ever existed.
+An erased entry proves an entry existed at that position, not who erased it
+(see the limitations above).
 
-> **Implementing a verifier?** Skip hash recomputation for tombstones; validate
-> the format only. This rule is easy to miss and expensive to get wrong — three
-> independent SDKs got it wrong the same way, because it had been written down in
-> exactly one implementation's comments. It is now in
-> [docs/format-spec.md](docs/format-spec.md).
+> **Implementing a verifier?** In v4, recompute an erased entry from its stored
+> leaf hash; never skip it. In v2 and v3 the rule is the opposite: a tombstone's
+> chain hash is not reproducible from its fields, so validate its format and
+> carry its stored hash forward. Three independent SDKs once got the v3 rule
+> wrong the same way, because it had been written down in exactly one
+> implementation's comments. Both are in [docs/format-spec.md](docs/format-spec.md) §5.
 
 ---
 
@@ -957,18 +988,18 @@ contain a source-incompatible change, and every one is called out there.
 `proof version` prints what a binary was built from.
 
 **Three implementations are held to one set of vectors.** Go (this module),
-Python and JavaScript reproduce chain hash v3 and anchor v6, give the same
-verdict on the verifier verdict vectors (whole chains, entries files, anchor
-text, keyless binds), and give the same result on every export-bundle vector.
+Python and JavaScript reproduce every vector file, chain format v4, anchor v7
+and bundle v2 included, and give the same verdict on every verdict and bundle
+vector ([docs/conformance.md](docs/conformance.md)). Runs on Linux and macOS.
 The formats are specified in [docs/format-spec.md](docs/format-spec.md) and
 [docs/bundle-format.md](docs/bundle-format.md); the Go code is one
 implementation of them, not their definition.
 
 | | |
 |---|---|
-| ✅ built | format core · `anchor` (verify, sign and build) · `verify` (chains, anchors, anchor series) · `linker` · `sink` (commit, checkpoint, verify, erase, export) · `exportbundle` and `proof sink verify-bundle` · CLI · MCP server (7 read-only tools + `commit` with `--db`) |
-| ⚠️ known limitations | [listed above](#known-limitations-of-the-current-formats), and not softened: read them before relying on a verdict |
-| ⏳ not yet | the next chain and anchor format versions (drafted, not implemented) · the monorepo and SDKs consuming this instead of their own copies |
+| ✅ built | chain format v4 and anchor v7 · format core · `anchor` (verify, sign and build) · `verify` (chains, anchors, anchor series) · `linker` · `sink` (commit, checkpoint, verify, erase, export) · `exportbundle` and `proof sink verify-bundle` (bundle v1 and v2) · CLI · MCP server (7 read-only tools + `commit` with `--db`) |
+| ⚠️ known limitations | [listed above](#what-chain-format-v4-closed-and-what-is-left), and not softened: read them before relying on a verdict |
+| ⏳ not yet | the monorepo and SDKs consuming this instead of their own copies · the SDKs' v4/v7 releases (in the monorepo, not yet published) |
 
 `scripts/release-check.sh` is the gate a tree passes before it is tagged:
 formatting, `go vet` and the tests for both modules, the vectors regenerated
@@ -1038,7 +1069,8 @@ module cannot answer and does not pretend to.
 | [docs/verification-model.md](docs/verification-model.md) | Understanding what a verdict means |
 | [docs/anchor-model.md](docs/anchor-model.md) | What an anchor proves, and what its provenance must be |
 | [docs/decisions.md](docs/decisions.md) | Why the design is the way it is |
-| [docs/runbook.md](docs/runbook.md) | Working on this repository |
+| [docs/conformance.md](docs/conformance.md) | Which implementation passes which vector file |
+| [docs/runbook.md](docs/runbook.md) | Working on this repository, and where to keep checkpoint heads |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability |
 
 ---

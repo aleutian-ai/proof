@@ -52,12 +52,7 @@ func Example() {
 	rows, _ := st.Range(context.Background(), "consents", 0, 10, 0)
 	entries := make([]verify.Entry, len(rows))
 	for i, r := range rows {
-		entries[i] = verify.Entry{
-			EntryID: r.EntryID, EntryType: r.EntryType,
-			Timestamp:     r.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-			FormatVersion: r.FormatVersion, GlobalSeq: r.GlobalSeq,
-			ContentHash: r.ContentHash, ChainHash: r.ChainHash,
-		}
+		entries[i] = verify.FromStored(r)
 	}
 
 	// 2. DISCLOSE record 1 only: its content and its nonce. Record 0 stays hidden.

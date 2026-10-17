@@ -400,7 +400,7 @@ func TestComputeChainHash(t *testing.T) {
 	// The v3 expectation comes from a chain the LINKER wrote, not from inputs this
 	// test invents — so the tool is checked against what proof commit produces.
 	st := memory.New()
-	l, err := linker.New(st)
+	l, err := linker.New(st, linker.WithFormatV3())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestComputeChainHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rows[1].FormatVersion != chainformat.FormatV3 {
-		t.Fatalf("the linker wrote format %d; this test assumes v3 is its default", rows[1].FormatVersion)
+		t.Fatalf("the linker wrote format %d; this test asked for v3", rows[1].FormatVersion)
 	}
 	v3ts := rows[1].Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z")
 
@@ -446,6 +446,38 @@ func TestComputeChainHash(t *testing.T) {
 		}
 		return m
 	}
+	// The v4 expectation also comes from a chain the linker wrote.
+	st4 := memory.New()
+	l4, err := linker.New(st4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l4.Append(context.Background(), "c", batch); err != nil {
+		t.Fatal(err)
+	}
+	rows4, err := st4.Range(context.Background(), "c", 0, 10, 0)
+	if err != nil || rows4[1].FormatVersion != chainformat.FormatV4 {
+		t.Fatalf("v4 chain: %v", err)
+	}
+	v4 := func(extra map[string]any) map[string]any {
+		m := map[string]any{
+			"format_version": 4, "previous_hash": rows4[0].ChainHash,
+			"timestamp":  rows4[1].Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
+			"global_seq": "1", "entry_id": rows4[1].EntryID, "entry_type": rows4[1].EntryType,
+			"content_hash": rows4[1].ContentHash, "salt": rows4[1].Salt,
+		}
+		for k, v := range extra {
+			if v == nil {
+				delete(m, k)
+			} else {
+				m[k] = v
+			}
+		}
+		return m
+	}
+	erased := map[string]any{"entry_id": nil, "entry_type": nil, "content_hash": nil, "salt": nil,
+		"leaf_hash": rows4[1].LeafHash}
+
 	v2 := func(extra map[string]any) map[string]any {
 		m := map[string]any{
 			"format_version": 2, "previous_hash": "", "timestamp": v2ts,
@@ -474,7 +506,14 @@ func TestComputeChainHash(t *testing.T) {
 		{name: "v2", args: v2(nil), wantHash: v2want, wantFormat: 2},
 
 		{name: "format_version missing", args: v3(map[string]any{"format_version": nil}), wantErr: "missing properties: [\"format_version\"]"},
-		{name: "format_version unknown", args: v3(map[string]any{"format_version": 4}), wantErr: "format_version must be 2 or 3"},
+		{name: "format_version unknown", args: v3(map[string]any{"format_version": 5}), wantErr: "format_version must be 4, 3 or 2"},
+		{name: "v4 reproduces the linker", args: v4(nil), wantHash: rows4[1].ChainHash, wantFormat: 4},
+		{name: "v4 erased, from its leaf hash", args: v4(erased), wantHash: rows4[1].ChainHash, wantFormat: 4},
+		{name: "v4 erased with its id kept", args: v4(map[string]any{"leaf_hash": rows4[1].LeafHash}), wantErr: "leaf_hash alone"},
+		{name: "v4 without a salt", args: v4(map[string]any{"salt": nil}), wantErr: "salt"},
+		{name: "v4 tombstone type", args: v4(map[string]any{"entry_type": "tombstone"}), wantErr: "no tombstone"},
+		{name: "v4 first entry not at 0", args: v4(map[string]any{"previous_hash": ""}), wantErr: "globalSeq 0"},
+		{name: "v4 inputs on v3", args: v3(map[string]any{"salt": rows4[1].Salt}), wantErr: "v4 inputs"},
 		{name: "v3 without global_seq", args: v3(map[string]any{"global_seq": nil}), wantErr: "global_seq is required"},
 		{name: "v3 with a run_id", args: v3(map[string]any{"run_id": "r"}), wantErr: "does not bind run_id"},
 		{name: "v3 with a sequence_num", args: v3(map[string]any{"sequence_num": "5"}), wantErr: "does not bind run_id or sequence_num"},

@@ -168,25 +168,62 @@ go get <dep> && cat go.mod          # did the `go` line move?
 
 ---
 
+## Operating a sink
+
+### Where to keep checkpoint heads
+
+`proof sink checkpoint` requires `--heads FILE`: a record of each chain's
+checkpoint count and last checkpoint hash. It is the only thing that shows a
+checkpoint series was not deleted and started again (docs/decisions.md D23),
+so it is only worth what its location is worth. In order of preference:
+
+1. **A counterparty.** Whoever relies on the evidence keeps a copy of each
+   head after each checkpoint: the other agent in an agent-to-agent exchange
+   (its own chain is the natural place), the customer, the auditor. They hold
+   what the operator cannot rewrite.
+2. **A transparency service or signed commit.** Append each new heads file to
+   a log the operator cannot rewrite (a signed Git commit on a repository
+   others mirror, an RFC 3161 timestamp, a transparency log).
+3. **A ticket or a second machine** under different credentials from the sink
+   host's. Weaker, but it still survives the sink folder being rewritten.
+
+Never inside the sink folder (refused) or on the same volume with the same
+credentials: that protects nothing.
+
+`--first` starts the file, once, for a sink's first checkpoint, and refuses if
+the file exists. A missing file is otherwise refused, never read as empty:
+deleting the record is what a restarted series looks like. If the file really
+is lost, restore it from the counterparty's copy; starting a new one with
+`--first` is a fresh trust-on-first-use, and should be recorded as such.
+
+---
+
 ## Known traps
 
 **Timestamps.** Hash input. Never route one through a millisecond representation
 before hashing — the failure appears later as an unverifiable chain, not as an
 error where the mistake was made.
 
-**Tombstones.** Never recompute their chain hash. Three shipped SDKs got this
-wrong. See format-spec §5.
+**Tombstones (v2 and v3).** Never recompute their chain hash. Three shipped
+SDKs got this wrong. See format-spec §5. **Erased v4 entries are the
+opposite:** always recompute them, from their stored leaf hash (§5.0). A
+verifier that skips them has left a link unchecked.
 
-**`sequence_num` vs `global_seq` — depends on the format.** v3 (the default)
-hashes `global_seq`, the chain-wide position, and does NOT hash `run_id` or
+**`sequence_num` vs `global_seq` — depends on the format.** v4 (the default)
+and v3 hash `global_seq`, the chain-wide position, and do NOT hash `run_id` or
 `sequence_num`. v2 is the reverse: it hashes `run_id` and `sequence_num`, the
 position within a batch, and not `global_seq`. Using one format's field under the
 other changes every hash.
 
-**Several checkpoints.** A checkpoint is verified against the chain as it was
-when signed: pass it `entries[:a.EntryCount]`, not the whole current chain.
-Entries added after a checkpoint make it fail to bind — correctly. Found by
-`examples/encrypted-artifact`, the first code to verify more than one.
+**Salts.** A v4 salt is minted by whatever computes the entry's hash first: the
+linker, or a writer above it (the sink) that passes it as `linker.Input.Salt`.
+Never take one from the producer of the content, and never derive one.
+
+**Several checkpoints.** A v1 to v6 checkpoint is verified against the chain as
+it was when signed: pass it `entries[:a.EntryCount]`, not the whole current
+chain. A v7 checkpoint names its range by sequence and binds to a chain that
+has grown since. Found by `examples/encrypted-artifact`, the first code to
+verify more than one.
 
 **Merkle leaves.** Hex-decode `content_hash` before leaf-hashing. Hashing the hex
 text produces roots nobody else can reproduce.

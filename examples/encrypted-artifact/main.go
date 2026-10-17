@@ -385,6 +385,12 @@ func cmdVerify(dir string) error {
 	if err != nil {
 		return err
 	}
+	// The subject this folder's checkpoints must be about, so that a genuine
+	// checkpoint for another chain is not taken for this one's.
+	subject, err := os.ReadFile(filepath.Join(dir, "subject"))
+	if err != nil {
+		return err
+	}
 	previousHash := anchor.SeedAnchorHash
 	for i, a := range anchors {
 		ring, err := anchor.NewKeyRing(anchor.TrustProvided, map[string][]byte{a.SigningKeyID: pub})
@@ -397,7 +403,7 @@ func cmdVerify(dir string) error {
 			return fmt.Errorf("checkpoint %04d claims %d entries; the chain has %d",
 				i+1, a.EntryCount, len(entries))
 		}
-		br, err := verify.VerifyAnchor(a, entries[:a.EntryCount], previousHash, ring)
+		br, err := verify.VerifyAnchor(a, entries[:a.EntryCount], verify.Expect{Subject: string(subject), PreviousAnchorHash: previousHash}, ring)
 		if err != nil {
 			return fmt.Errorf("checkpoint %04d: %w", i+1, err)
 		}
@@ -573,12 +579,7 @@ func readChain(dir string) ([]verify.Entry, error) {
 	}
 	entries := make([]verify.Entry, len(rows))
 	for i, r := range rows {
-		entries[i] = verify.Entry{
-			EntryID: r.EntryID, EntryType: r.EntryType,
-			Timestamp:     r.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-			FormatVersion: r.FormatVersion, GlobalSeq: r.GlobalSeq,
-			ContentHash: r.ContentHash, ChainHash: r.ChainHash,
-		}
+		entries[i] = verify.FromStored(r)
 	}
 	return entries, nil
 }

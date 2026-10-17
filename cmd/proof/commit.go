@@ -88,12 +88,29 @@ func cmdCommit(args []string, stdout, stderr *os.File) int {
 	fs.SetOutput(stderr)
 	dbPath := fs.String("db", "", "chain database path")
 	chainID := fs.String("chain", "", "chain id to append to")
-	formatV2 := fs.Bool("format-v2", false, "produce v2 entries, for a verifier released before v3")
+	format := fs.Int("format", chainformat.FormatV4, "chain format to write: 4; 3 and 2 are deprecated")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if *dbPath == "" || *chainID == "" {
 		fmt.Fprintln(stderr, "proof commit: --db and --chain are required")
+		return exitUsage
+	}
+	var opts []linker.Option
+	switch *format {
+	case chainformat.FormatV4:
+	case chainformat.FormatV3, chainformat.FormatV2:
+		// Frozen formats (format-spec §2.6): still written for one release, for
+		// something that must produce bytes an older verifier accepts.
+		fmt.Fprintf(stderr, "proof commit: warning: --format %d is deprecated and is removed in the release "+
+			"after v0.5.0. v2 and v3 are frozen; write v4 (docs/format-spec.md §2.6)\n", *format)
+		if *format == chainformat.FormatV3 {
+			opts = append(opts, linker.WithFormatV3())
+		} else {
+			opts = append(opts, linker.WithFormatV2())
+		}
+	default:
+		fmt.Fprintf(stderr, "proof commit: --format %d: this build writes 4 (and, deprecated, 3 or 2)\n", *format)
 		return exitUsage
 	}
 
@@ -105,6 +122,20 @@ func cmdCommit(args []string, stdout, stderr *os.File) int {
 	if len(inputs) == 0 {
 		fmt.Fprintln(stderr, "proof commit: no entries on stdin")
 		return exitUsage
+	}
+	// v4 hashes the id and type, so both have a shape (format-spec §2.0).
+	// Checked here, before a database is opened, so the line is named.
+	if *format == chainformat.FormatV4 {
+		for i, in := range inputs {
+			if err := chainformat.ValidateEntryFieldV4("entry_id", in.EntryID); err != nil {
+				fmt.Fprintf(stderr, "proof commit: line %d: %v\n", i+1, err)
+				return exitUsage
+			}
+			if err := chainformat.ValidateEntryFieldV4("entry_type", in.EntryType); err != nil {
+				fmt.Fprintf(stderr, "proof commit: line %d: %v\n", i+1, err)
+				return exitUsage
+			}
+		}
 	}
 
 	s, err := boltstore.Open(*dbPath)
@@ -133,10 +164,6 @@ func cmdCommit(args []string, stdout, stderr *os.File) int {
 		return exitUsage
 	}
 
-	var opts []linker.Option
-	if *formatV2 {
-		opts = append(opts, linker.WithFormatV2())
-	}
 	l, err := linker.New(s, opts...)
 	if err != nil {
 		fmt.Fprintf(stderr, "proof commit: %v\n", err)
@@ -144,10 +171,10 @@ func cmdCommit(args []string, stdout, stderr *os.File) int {
 	}
 
 	// v2 binds a run id and a position in the run into every hash, and one
-	// invocation is one run: it is written in one call. v3 hashes do not
-	// depend on how entries are grouped, so it is written in batches.
+	// invocation is one run: it is written in one call. v3 and v4 hashes do not
+	// depend on how entries are grouped, so they are written in batches.
 	batch := commitBatch
-	if *formatV2 {
+	if *format == chainformat.FormatV2 {
 		batch = len(inputs)
 	}
 	res, err := appendBatched(ctx.Background(), l, *chainID, inputs, batch)
@@ -168,6 +195,9 @@ func cmdCommit(args []string, stdout, stderr *os.File) int {
 		}
 		if errors.Is(err, linker.ErrChainBusy) {
 			return exitBusy
+		}
+		if errors.Is(err, linker.ErrFormatRegression) {
+			return exitUsage
 		}
 		return exitIOError
 	}

@@ -18,7 +18,7 @@ import (
 // index (and the content, which is the event itself) holds it.
 func TestSubjectNotInShareableArtifacts(t *testing.T) {
 	s, signer, _ := setup(t)
-	if _, err := s.Checkpoint(context.Background(), signer, nil); err != nil {
+	if _, err := s.Checkpoint(context.Background(), signer, nil, UntrackedHeads()); err != nil {
 		t.Fatal(err)
 	}
 	shareable := []string{s.DBPath()}

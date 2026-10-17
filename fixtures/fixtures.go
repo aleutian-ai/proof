@@ -289,3 +289,68 @@ var verifyVerdictVectors []byte
 //
 //   - []byte: the fixture JSON. Read-only; see the package Assumptions.
 func VerifyVerdictVectors() []byte { return verifyVerdictVectors }
+
+// chainV4Vectors, anchorV7Vectors and verifyVerdictV4Vectors were written by
+// scripts/v4-vectors.py and scripts/verdict-vectors.py from docs/format-spec.md
+// alone (§2.0, §2.5, §5.0, §9).
+//
+//go:embed testdata/chain_v4_vectors.json
+var chainV4Vectors []byte
+
+//go:embed testdata/anchor_v7_canonical_vectors.json
+var anchorV7Vectors []byte
+
+//go:embed testdata/verify_verdict_v4_vectors.json
+var verifyVerdictV4Vectors []byte
+
+// ChainV4Vectors returns the chain format v4 vectors as raw JSON: leaf hashes
+// and chain hashes, erased entries, a chain continued from v3, and inputs that
+// must be refused.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+func ChainV4Vectors() []byte { return chainV4Vectors }
+
+// AnchorV7Vectors returns the anchor v7 vectors as raw JSON: canonical bytes,
+// anchor chain hashes, signatures made with the v7 context, and anchor texts
+// that must be refused.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+func AnchorV7Vectors() []byte { return anchorV7Vectors }
+
+// VerifyVerdictV4Vectors returns the verdict vectors for v4 chains, chains
+// continued from v3, and keyless binds of v7 anchors.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+func VerifyVerdictV4Vectors() []byte { return verifyVerdictV4Vectors }
+
+// bundleV2Vectors and recordV2Vectors were written by scripts/bundle-vectors.py
+// and scripts/v4-vectors.py from docs/bundle-format.md §16 and
+// docs/sink-format.md §9.1 alone.
+//
+//go:embed testdata/bundle_v2_vectors.json
+var bundleV2Vectors []byte
+
+//go:embed testdata/record_v2_vectors.json
+var recordV2Vectors []byte
+
+// BundleV2Vectors returns the aleutian.proof.bundle.v2 conformance cases, in
+// the shape of BundleV1Vectors.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+func BundleV2Vectors() []byte { return bundleV2Vectors }
+
+// RecordV2Vectors returns the aleutian.proof.record.v2 envelope vectors, in
+// the shape of RecordV1Vectors, with signatures made with its context.
+//
+// # Outputs
+//
+//   - []byte: the fixture JSON. Read-only; see the package Assumptions.
+func RecordV2Vectors() []byte { return recordV2Vectors }

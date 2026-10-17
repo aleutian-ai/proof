@@ -62,20 +62,7 @@ func exported(t *testing.T, s store.Store) []verify.Entry {
 	}
 	out := make([]verify.Entry, len(rows))
 	for i, r := range rows {
-		out[i] = verify.Entry{
-			EntryID:       r.EntryID,
-			EntryType:     r.EntryType,
-			Timestamp:     r.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-			FormatVersion: r.FormatVersion,
-			GlobalSeq:     r.GlobalSeq,
-			ContentHash:   r.ContentHash,
-			ChainHash:     r.ChainHash,
-		}
-		// v2 binds these; v3 does not, and a v3 entry carrying them is rejected.
-		if chainformat.NormalizeFormatVersion(r.FormatVersion) == chainformat.FormatV2 {
-			out[i].RunID = r.RunID
-			out[i].SequenceNum = r.SequenceNum
-		}
+		out[i] = verify.FromStored(r)
 	}
 	return out
 }
@@ -308,13 +295,13 @@ func TestBatchingDoesNotChangeHashes_V3(t *testing.T) {
 	a, b := input("e00", 0), input("e01", time.Second)
 
 	one := memory.New()
-	lOne, _ := linker.New(one) // v3 is the default
+	lOne, _ := linker.New(one, linker.WithFormatV3())
 	if _, err := lOne.Append(context.Background(), chainID, []linker.Input{a, b}); err != nil {
 		t.Fatalf("single batch append: %v", err)
 	}
 
 	two := memory.New()
-	lTwo, _ := linker.New(two)
+	lTwo, _ := linker.New(two, linker.WithFormatV3())
 	if _, err := lTwo.Append(context.Background(), chainID, []linker.Input{a}); err != nil {
 		t.Fatalf("first append: %v", err)
 	}
@@ -348,7 +335,7 @@ func TestBatchingDoesNotChangeHashes_V3(t *testing.T) {
 // carries one anyway would look as though the value were attested.
 func TestV3EntriesCarryNoRunID(t *testing.T) {
 	s := memory.New()
-	l, _ := linker.New(s)
+	l, _ := linker.New(s, linker.WithFormatV3())
 	res, err := l.Append(context.Background(), chainID, []linker.Input{input("e00", 0), input("e01", time.Second)})
 	if err != nil {
 		t.Fatalf("append: %v", err)
@@ -381,7 +368,7 @@ func TestV3EntriesCarryNoRunID(t *testing.T) {
 // verifier must not let one pass as though they were.
 func TestV3EntryWithRunIDIsRejected(t *testing.T) {
 	s := memory.New()
-	l, _ := linker.New(s)
+	l, _ := linker.New(s, linker.WithFormatV3())
 	if _, err := l.Append(context.Background(), chainID, []linker.Input{input("e00", 0)}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -422,14 +409,27 @@ func TestMixedFormatChainVerifies(t *testing.T) {
 	if _, err := lV2.Append(context.Background(), chainID, []linker.Input{input("e00", 0), input("e01", time.Second)}); err != nil {
 		t.Fatalf("v2 append: %v", err)
 	}
-	lV3, _ := linker.New(s)
+	lV3, _ := linker.New(s, linker.WithFormatV3())
 	if _, err := lV3.Append(context.Background(), chainID, []linker.Input{input("e02", 2*time.Second)}); err != nil {
 		t.Fatalf("v3 append: %v", err)
 	}
+	lV4, _ := linker.New(s)
+	if _, err := lV4.Append(context.Background(), chainID, []linker.Input{input("e03", 3*time.Second)}); err != nil {
+		t.Fatalf("v4 append: %v", err)
+	}
+	// Never back from v4 (format-spec §2.5): refused before anything is written.
+	for name, back := range map[string]*linker.Linker{"v3": lV3, "v2": lV2} {
+		if _, err := back.Append(context.Background(), chainID, []linker.Input{input("e04", 4*time.Second)}); !errors.Is(err, linker.ErrFormatRegression) {
+			t.Errorf("a %s append after a v4 entry: %v, want ErrFormatRegression", name, err)
+		}
+	}
 
 	rows := exported(t, s)
-	if len(rows) != 3 {
-		t.Fatalf("got %d entries, want 3", len(rows))
+	if len(rows) != 4 {
+		t.Fatalf("got %d entries, want 4", len(rows))
+	}
+	if rows[3].FormatVersion != chainformat.FormatV4 || rows[3].Salt == "" {
+		t.Errorf("the fourth entry is format %d, salt %q; want v4 with a salt", rows[3].FormatVersion, rows[3].Salt)
 	}
 	if rows[0].RunID == "" {
 		t.Error("the v2 entries lost their run id")
@@ -445,8 +445,8 @@ func TestMixedFormatChainVerifies(t *testing.T) {
 	if got.Verdict != verify.VerdictIntact {
 		t.Errorf("a v2-then-v3 chain did not verify: %q, breaks %+v", got.Verdict, got.Breaks)
 	}
-	if got.EntriesVerified != 3 {
-		t.Errorf("verified %d entries, want 3", got.EntriesVerified)
+	if got.EntriesVerified != 4 {
+		t.Errorf("verified %d entries, want 4", got.EntriesVerified)
 	}
 }
 
@@ -455,7 +455,7 @@ func TestMixedFormatChainVerifies(t *testing.T) {
 // wrong answer about whether the chain is intact.
 func TestUnknownFormatIsReportedNotGuessed(t *testing.T) {
 	s := memory.New()
-	l, _ := linker.New(s)
+	l, _ := linker.New(s, linker.WithFormatV3())
 	if _, err := l.Append(context.Background(), chainID, []linker.Input{input("e00", 0)}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestTombstoneEntriesLink(t *testing.T) {
 		t.Fatalf("generate tombstone content hash: %v", err)
 	}
 	s := memory.New()
-	l, _ := linker.New(s)
+	l, _ := linker.New(s, linker.WithFormatV3()) // tombstones are v2 and v3 only
 	ctx := context.Background()
 
 	batch := []linker.Input{input("e00", 0), input("e01", time.Second), input("e02", 2*time.Second)}
@@ -660,7 +660,9 @@ func TestAppendIsOrderStableRegardlessOfCallerOrder(t *testing.T) {
 	mk := func(order []int) []verify.Entry {
 		s := memory.New()
 		fixedRun := func() (string, error) { return "fixed-run-id-for-comparison", nil }
-		l, _ := linker.New(s, linker.WithRunIDFunc(fixedRun))
+		n := 0
+		countedSalt := func() (string, error) { n++; return fmt.Sprintf("%064x", n), nil }
+		l, _ := linker.New(s, linker.WithRunIDFunc(fixedRun), linker.WithSaltFunc(countedSalt))
 		var batch []linker.Input
 		for _, i := range order {
 			batch = append(batch, input(fmt.Sprintf("e%02d", i), time.Duration(i)*time.Second))

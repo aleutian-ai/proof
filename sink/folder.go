@@ -13,12 +13,12 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
-	"syscall"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
 
 	"github.com/aleutian-ai/proof/anchor"
+	"github.com/aleutian-ai/proof/internal/osfile"
 )
 
 // A sink folder may come from someone else's archive, and the evidence file may
@@ -214,7 +214,7 @@ func (f *folder) readSmall(name string, max int64) (data []byte, missing bool, p
 	if afterLstat != nil {
 		afterLstat(name)
 	}
-	h, err := f.root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	h, err := f.root.OpenFile(name, os.O_RDONLY|osfile.NonBlock, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, true, "", nil
 	}
@@ -326,7 +326,7 @@ func boltOptions(lockTimeout time.Duration, readOnly bool) *bolt.Options {
 // and O_NONBLOCK (a FIFO cannot hang it; no effect on a regular file), then a
 // check that what was opened is a regular file.
 func openRegularNoFollow(path string, flag int, mode os.FileMode) (*os.File, error) {
-	f, err := os.OpenFile(path, flag|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, mode)
+	f, err := osfile.OpenNoFollow(path, flag|osfile.NonBlock, mode)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w (a symlink is never followed)", filepath.Base(path), err)
 	}

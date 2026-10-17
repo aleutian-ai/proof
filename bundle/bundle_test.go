@@ -187,7 +187,7 @@ func TestVerifyDir_IntactBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := VerifyDir(dir, files, root, 0)
+	res, err := VerifyDir(rootOf(t, dir), files, root, 0)
 	if err != nil {
 		t.Fatalf("VerifyDir: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestVerifyDir_DetectsASwappedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := VerifyDir(dir, files, root, 0)
+	res, err := VerifyDir(rootOf(t, dir), files, root, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestVerifyDir_DetectsMissingAndUnlistedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := VerifyDir(dir, files, "", 0)
+	res, err := VerifyDir(rootOf(t, dir), files, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestVerifyDir_ReportsEveryProblemNotJustTheFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	res, err := VerifyDir(dir, files, "", 0)
+	res, err := VerifyDir(rootOf(t, dir), files, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestVerifyDir_RejectsPathTraversal(t *testing.T) {
 		"nested/../../outside.secret",
 	} {
 		t.Run(evil, func(t *testing.T) {
-			res, err := VerifyDir(inner, []FileEntry{
+			res, err := VerifyDir(rootOf(t, inner), []FileEntry{
 				{Path: evil, SHA512: sha512HexOf("secret")},
 			}, "", 0)
 			if err != nil {
@@ -339,7 +339,7 @@ func TestVerifyDir_RejectsPathTraversal(t *testing.T) {
 func TestVerifyDir_RefusesAbsoluteAndNulPaths(t *testing.T) {
 	dir := t.TempDir()
 	for _, bad := range []string{"/etc/passwd", "a\x00b", ""} {
-		res, err := VerifyDir(dir, []FileEntry{{Path: bad, SHA512: sha512HexOf("x")}}, "", 0)
+		res, err := VerifyDir(rootOf(t, dir), []FileEntry{{Path: bad, SHA512: sha512HexOf("x")}}, "", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -365,7 +365,7 @@ func TestVerifyDir_RefusesSymlinks(t *testing.T) {
 	// List BOTH files, so the unlisted-file check cannot mask the result. Without
 	// this the test passed even when symlinks were followed, because the symlink
 	// target was itself unlisted and failed the bundle for an unrelated reason.
-	res, err := VerifyDir(dir, []FileEntry{
+	res, err := VerifyDir(rootOf(t, dir), []FileEntry{
 		{Path: "link.txt", SHA512: sha512HexOf("content")},
 		{Path: "real.txt", SHA512: sha512HexOf("content")},
 	}, "", 0)
@@ -411,7 +411,7 @@ func TestVerifyDir_RefusesASymlinkedDirectory(t *testing.T) {
 
 			// The digest is the RIGHT one: if the link were followed, the file
 			// would verify.
-			res, err := VerifyDir(dir, []FileEntry{{Path: "sub/secret", SHA512: sha512HexOf("content")}}, "", 0)
+			res, err := VerifyDir(rootOf(t, dir), []FileEntry{{Path: "sub/secret", SHA512: sha512HexOf("content")}}, "", 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -437,7 +437,7 @@ func TestVerifyDir_RefusesASymlinkedDirectory(t *testing.T) {
 // TestVerifyDir_RefusesAnEmptyManifest: a manifest that lists nothing checks
 // nothing, and is an error, never an intact bundle.
 func TestVerifyDir_RefusesAnEmptyManifest(t *testing.T) {
-	res, err := VerifyDir(t.TempDir(), nil, "", 0)
+	res, err := VerifyDir(rootOf(t, t.TempDir()), nil, "", 0)
 	if !errors.Is(err, ErrEmptyManifest) {
 		t.Fatalf("err = %v, want ErrEmptyManifest", err)
 	}
@@ -450,7 +450,7 @@ func TestVerifyDir_RefusesAnEmptyManifest(t *testing.T) {
 func TestVerifyDir_EnforcesTheSizeCap(t *testing.T) {
 	dir, files := writeBundle(t, map[string]string{"big.txt": strings.Repeat("x", 4096)})
 
-	res, err := VerifyDir(dir, files, "", 1024) // cap below the file size
+	res, err := VerifyDir(rootOf(t, dir), files, "", 1024) // cap below the file size
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestVerifyDir_EnforcesTheSizeCap(t *testing.T) {
 func TestVerifyDir_DetectsRootMismatch(t *testing.T) {
 	dir, files := writeBundle(t, map[string]string{"a.txt": "a"})
 
-	res, err := VerifyDir(dir, files, strings.Repeat("f", 128), 0)
+	res, err := VerifyDir(rootOf(t, dir), files, strings.Repeat("f", 128), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +486,7 @@ func TestVerifyDir_StatesWhatIsNotProven(t *testing.T) {
 	dir, files := writeBundle(t, map[string]string{"a.txt": "a"})
 	root, _ := ManifestRoot(files)
 
-	res, err := VerifyDir(dir, files, root, 0)
+	res, err := VerifyDir(rootOf(t, dir), files, root, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +508,7 @@ func TestVerifyDir_OneFileHasOnePath(t *testing.T) {
 	aliases := []string{"./a.txt", "x/../a.txt", "a.txt/", "a.txt/.", "x/..//a.txt", ".//a.txt"}
 	for _, alias := range aliases {
 		t.Run(alias, func(t *testing.T) {
-			res, err := VerifyDir(dir, []FileEntry{
+			res, err := VerifyDir(rootOf(t, dir), []FileEntry{
 				{Path: "a.txt", SHA512: digest},
 				{Path: alias, SHA512: digest},
 			}, "", 0)
@@ -528,7 +528,7 @@ func TestVerifyDir_OneFileHasOnePath(t *testing.T) {
 	}
 
 	t.Run("the four spellings together", func(t *testing.T) {
-		res, err := VerifyDir(dir, []FileEntry{
+		res, err := VerifyDir(rootOf(t, dir), []FileEntry{
 			{Path: "a.txt", SHA512: digest}, {Path: "./a.txt", SHA512: digest},
 			{Path: "x/../a.txt", SHA512: digest}, {Path: "a.txt/", SHA512: digest},
 		}, "", 0)
@@ -543,7 +543,7 @@ func TestVerifyDir_OneFileHasOnePath(t *testing.T) {
 
 	t.Run("the same path twice", func(t *testing.T) {
 		twice := []FileEntry{{Path: "a.txt", SHA512: digest}, {Path: "a.txt", SHA512: digest}}
-		res, err := VerifyDir(dir, twice, "", 0)
+		res, err := VerifyDir(rootOf(t, dir), twice, "", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -564,7 +564,7 @@ func TestVerifyDir_OneFileHasOnePath(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(dir, "A.TXT")); err != nil {
 			t.Skip("this file system is case-sensitive")
 		}
-		res, err := VerifyDir(dir, []FileEntry{
+		res, err := VerifyDir(rootOf(t, dir), []FileEntry{
 			{Path: "a.txt", SHA512: digest}, {Path: "A.TXT", SHA512: digest},
 		}, "", 0)
 		if err != nil {
@@ -577,7 +577,7 @@ func TestVerifyDir_OneFileHasOnePath(t *testing.T) {
 
 	t.Run("a clean nested path still verifies", func(t *testing.T) {
 		d, fs := writeBundle(t, map[string]string{"a.txt": "alpha", "sub/dir/b.txt": "beta"})
-		res, err := VerifyDir(d, fs, "", 0)
+		res, err := VerifyDir(rootOf(t, d), fs, "", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -585,4 +585,22 @@ func TestVerifyDir_OneFileHasOnePath(t *testing.T) {
 			t.Errorf("intact %v, FilesChecked %d, problems %+v", res.Intact, res.FilesChecked, res.Problems)
 		}
 	})
+}
+
+// rootOf opens dir as the os.Root VerifyDir reads through.
+func rootOf(t *testing.T, dir string) *os.Root {
+	t.Helper()
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close() })
+	return r
+}
+
+// TestVerifyDir_NilRootIsAnError.
+func TestVerifyDir_NilRootIsAnError(t *testing.T) {
+	if _, err := VerifyDir(nil, []FileEntry{{Path: "a", SHA512: sha512HexOf("a")}}, "", 0); err == nil {
+		t.Fatal("verified with no directory")
+	}
 }

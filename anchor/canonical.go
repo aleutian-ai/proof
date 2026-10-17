@@ -15,7 +15,7 @@ const (
 	MinVersion = 1
 
 	// MaxVersion is the newest canonical form implemented.
-	MaxVersion = 6
+	MaxVersion = 7
 
 	// WithdrawnVersion is version 5, which is BURNED: it is inside
 	// [MinVersion, MaxVersion] but no canonical form exists for it and none will
@@ -222,6 +222,9 @@ func Canonicalize(a Anchor) ([]byte, error) {
 			Version:          a.Version,
 		})
 
+	case a.Version == SequenceRangeVersion:
+		return json.Marshal(toCanonicalV7(a))
+
 	default:
 		// Never guess. A version we do not implement means we do not know which
 		// bytes were signed, and canonicalizing as "the closest one we know"
@@ -298,6 +301,8 @@ func ValidateVersionInvariants(a Anchor) error {
 		if err := validateCounts(a); err != nil {
 			return err
 		}
+	case a.Version == SequenceRangeVersion:
+		return validateV7(a)
 	default:
 		return fmt.Errorf("anchor: unsupported version %d (implemented: %d..%d)",
 			a.Version, MinVersion, MaxVersion)

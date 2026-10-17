@@ -7,10 +7,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,9 +26,58 @@ import (
 )
 
 // sinkRun runs `proof sink <args>` with stdin.
+//
+// A checkpointing call (checkpoint, or erase with --key) with no --heads is
+// given one: a heads file beside the sink folder, started with --first when it
+// does not exist yet, as an operator does on a sink's first checkpoint.
+// TestSink_HeadsAreRequired runs without it.
 func sinkRun(t *testing.T, stdin string, args ...string) (int, string, string) {
 	t.Helper()
+	checkpoints := len(args) > 0 && (args[0] == "checkpoint" || (args[0] == "erase" && slices.Contains(args, "--key")))
+	if checkpoints && !slices.Contains(args, "--heads") {
+		dir := "sink-data"
+		if i := slices.Index(args, "--dir"); i >= 0 && i+1 < len(args) {
+			dir = args[i+1]
+		}
+		heads := filepath.Clean(dir) + ".heads.json"
+		args = append(args, "--heads", heads)
+		if _, err := os.Lstat(heads); errors.Is(err, os.ErrNotExist) {
+			args = append(args, "--first")
+		}
+	}
 	return runWithStdin(t, stdin, cmdSink, args...)
+}
+
+// TestSink_HeadsAreRequired: checkpoint refuses to run without a heads file,
+// a missing one is refused without --first, and --first refuses an existing
+// one (docs/sink-format.md §5.2).
+func TestSink_HeadsAreRequired(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sink-data")
+	priv, _ := sinkKeys(t)
+	if code, out, errs := sinkRun(t, `{"user":"u-1"}`+"\n", "commit", "--dir", dir, "--class", "events",
+		"--subject-field", "user"); code != exitOK {
+		t.Fatalf("commit: exit %d\n%s%s", code, out, errs)
+	}
+	heads := filepath.Join(t.TempDir(), "heads.json")
+	run := func(extra ...string) (int, string) {
+		code, _, errs := runWithStdin(t, "", cmdSink, append([]string{"checkpoint", "--dir", dir, "--key", priv}, extra...)...)
+		return code, errs
+	}
+	if code, errs := run(); code != exitUsage || !strings.Contains(errs, "--heads FILE is required") {
+		t.Fatalf("no --heads: exit %d, %s", code, errs)
+	}
+	if code, errs := run("--heads", heads); code == exitOK || !strings.Contains(errs, "does not exist") {
+		t.Fatalf("a missing heads file without --first: exit %d, %s", code, errs)
+	}
+	if code, errs := run("--heads", heads, "--first"); code != exitOK {
+		t.Fatalf("--first: exit %d, %s", code, errs)
+	}
+	if code, errs := run("--heads", heads, "--first"); code == exitOK || !strings.Contains(errs, "already exists") {
+		t.Fatalf("--first over an existing file: exit %d, %s", code, errs)
+	}
+	if code, errs := run("--heads", heads); code != exitOK {
+		t.Fatalf("the existing file: exit %d, %s", code, errs)
+	}
 }
 
 // sinkKeys writes an ML-DSA-65 key pair the way `proof keygen` does.

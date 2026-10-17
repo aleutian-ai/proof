@@ -18,6 +18,12 @@ package anchor
 type EntryRange struct {
 	StartEntryID string `json:"start_entry_id"`
 	EndEntryID   string `json:"end_entry_id"`
+
+	// StartSeq and EndSeq name the range by global_seq, inclusive: v7 only,
+	// where the entry ids are empty. Erasure never changes a sequence number,
+	// so a v7 anchor still binds after any entry of its range is erased.
+	StartSeq int64 `json:"-"`
+	EndSeq   int64 `json:"-"`
 }
 
 // Anchor is a signed statement that a chain had a particular head at a
@@ -113,6 +119,11 @@ type Anchor struct {
 	// PreviousAnchorID is the preceding anchor's id, or the seed sentinel
 	// (SeedAnchorID) for the first anchor in a chain.
 	PreviousAnchorID string `json:"previous_anchor_id"`
+
+	// PreviousAnchorHash (v7) is the preceding anchor's ChainHash, or
+	// SeedAnchorHash for the first anchor. It is inside the signed bytes, so a
+	// verifier binds a v7 anchor without being handed its predecessor.
+	PreviousAnchorHash string `json:"-"`
 
 	// VerifiedThrough (v4+) is a signed claim that the range up to this height
 	// was verified clean at signing time. Zero for v3.

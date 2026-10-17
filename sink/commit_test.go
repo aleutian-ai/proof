@@ -30,7 +30,7 @@ func TestLifecycle(t *testing.T) {
 	}
 
 	// Nothing new: no checkpoint written.
-	if cp, err := s.Checkpoint(ctx, signer, nil); err != nil || len(cp) != 0 {
+	if cp, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads()); err != nil || len(cp) != 0 {
 		t.Fatalf("second checkpoint with nothing new: %v, %v", cp, err)
 	}
 
@@ -41,7 +41,7 @@ func TestLifecycle(t *testing.T) {
 	if c := chainReport(t, mustVerify(t, s, ring), cid(t, s, "u-82")); c.Unanchored != 2 {
 		t.Fatalf("u-82 before its checkpoint: %+v, want 2 unanchored", c)
 	}
-	cp, err := s.Checkpoint(ctx, signer, nil)
+	cp, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads())
 	if err != nil {
 		t.Fatal(err)
 	}

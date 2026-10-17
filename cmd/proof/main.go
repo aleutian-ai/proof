@@ -14,7 +14,7 @@
 // # Subcommands
 //
 // `proof help` lists every verb and its flags, and `proof sink help` the sink's:
-// verify, export, init, commit, import, disclose, forget, keygen, anchor,
+// verify, export, init, commit, import, disclose, forget, erase, keygen, anchor,
 // version, and sink init, commit, checkpoint, verify, erase, repair, export and
 // verify-bundle.
 //
@@ -43,7 +43,6 @@ import (
 	"path/filepath"
 	"runtime/debug"
 
-	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
@@ -117,6 +116,8 @@ func dispatch(args []string, stdout, stderr *os.File) int {
 		return cmdDisclose(args[1:], stdout, stderr)
 	case "forget":
 		return cmdForget(args[1:], stdout, stderr)
+	case "erase":
+		return cmdErase(args[1:], stdout, stderr)
 	case "sink":
 		return cmdSink(args[1:], stdout, stderr)
 	case "version", "--version":
@@ -136,14 +137,15 @@ func usage(w *os.File) {
 
 usage:
   proof verify <entries.json> [--json] [--max-breaks N]
-               [--anchor <anchor.json>] [--previous <prev.json> | --previous-hash <hash>]
+               [--anchor <anchor.json> [--subject <s>]] [--previous <prev.json> | --previous-hash <hash>]
                [--key <public.pem>] [--key-trust platform|provided|self]
   proof export --db <path> --chain <id> [--out <path>] [--jsonl] [--force]
   proof init   --db <path>
-  proof commit --db <path> --chain <id> [--format-v2]   < entries.jsonl
+  proof commit --db <path> --chain <id> [--format 4]    < entries.jsonl
   proof import --db <path> --chain <id> [--previous-hash <hash>]  < exported.jsonl
   proof disclose --db <path> --chain <id> --entry <id> --content <file>
   proof forget   --db <path> --chain <id> --entry <id>
+  proof erase    --db <path> --chain <id> --seq <n>
   proof keygen [--alg x-wing] [--out-dir .] [--slot primary|backup|dual]
                [--name LABEL] [--op-vault VAULT] [--force]
   proof anchor --db <path> --chain <id> --subject <s> --key <private.pem>
@@ -196,6 +198,7 @@ func cmdVerify(args []string, stdout, stderr *os.File) int {
 	fs.StringVar(&opts.anchorPath, "anchor", "", "also check the chain against this anchor JSON")
 	fs.StringVar(&opts.previousPath, "previous", "", "the previous anchor's JSON; omit only for the first anchor in a chain")
 	fs.StringVar(&opts.previousHash, "previous-hash", "", "the previous anchor's chain hash, if you kept the hash but not the anchor")
+	fs.StringVar(&opts.subject, "subject", "", "the subject the anchor must be for; required for a v7 anchor")
 	fs.StringVar(&opts.keyPath, "key", "", "also verify the anchor's signature with this ML-DSA-65 public key (PEM)")
 	fs.StringVar(&opts.keyTrust, "key-trust", "", "where the key came from: platform, provided (default), or self")
 	// Go's flag package stops at the first non-flag argument, so a plain
@@ -306,23 +309,37 @@ func printResult(w *os.File, res verify.Result, anchorFollows bool) {
 				"  count above is the blast radius. Entry %d is the place to look.\n", res.FirstBreak)
 		}
 	case verify.VerdictAnchored:
-		fmt.Fprintf(w, "INTACT, ANCHORED — %d entries\n", res.EntriesVerified)
+		fmt.Fprintf(w, "INTACT, ANCHORED — %d entries", res.EntriesVerified)
+		if res.ErasedFound > 0 {
+			fmt.Fprintf(w, ", %d erased", res.ErasedFound)
+		}
+		if res.TombstonesFound > 0 {
+			fmt.Fprintf(w, ", %d v2/v3 tombstones", res.TombstonesFound)
+		}
+		fmt.Fprintln(w)
 	default:
 		fmt.Fprintf(w, "INTACT — %d entries verified", res.EntriesVerified)
+		if res.ErasedFound > 0 {
+			fmt.Fprintf(w, ", %d erased", res.ErasedFound)
+		}
 		if res.TombstonesFound > 0 {
-			fmt.Fprintf(w, ", %d erased", res.TombstonesFound)
+			fmt.Fprintf(w, ", %d v2/v3 tombstones", res.TombstonesFound)
 		}
 		fmt.Fprintln(w)
 		if res.TombstonesFound == 0 {
 			fmt.Fprintln(w, "\n  Proven:     nothing was edited under you.")
 		} else {
-			// An erased entry's chain hash is taken as stored, so the walk
-			// links nothing before it to anything after it.
-			fmt.Fprintf(w, "\n  Proven:     nothing after entry %d, the last erased one, was edited under you.\n",
+			// A tombstone's chain hash is taken as stored, so the walk links
+			// nothing before it to anything after it.
+			fmt.Fprintf(w, "\n  Proven:     nothing after entry %d, the last v2/v3 tombstone, was edited under you.\n",
 				res.LastTombstone)
-			fmt.Fprintf(w, "  NOT proven: that entries 0 to %d are unedited. An erased entry's chain hash\n"+
+			fmt.Fprintf(w, "  NOT proven: that entries 0 to %d are unedited. A tombstone's chain hash\n"+
 				"              is taken as stored, so whoever can write the store can replace\n"+
 				"              everything before it.\n", res.LastTombstone)
+		}
+		if res.ErasedFound > 0 {
+			// v4: every link is recomputed, erased entries included.
+			fmt.Fprintln(w, "  NOT proven: who erased the erased entries, or that they were allowed to.")
 		}
 		if anchorFollows {
 			// Saying "no anchor was checked" two lines above an anchor result
@@ -599,31 +616,8 @@ func (o *output) abort() {
 	}
 }
 
-// toExported converts a stored row to its portable form.
-//
-// The timestamp is rendered in the EXACT form it was hashed — RFC3339 with six
-// fractional digits. Anything else and a verifier re-parsing this file computes
-// a different hash and reports a break on an intact chain.
-func toExported(r store.Entry) verify.Entry {
-	e := verify.Entry{
-		EntryID:     r.EntryID,
-		EntryType:   r.EntryType,
-		Timestamp:   r.Timestamp.UTC().Format("2006-01-02T15:04:05.000000Z"),
-		GlobalSeq:   r.GlobalSeq,
-		ContentHash: r.ContentHash,
-		ChainHash:   r.ChainHash,
-	}
-	// v2 is written without a format_version field, exactly as before v3
-	// existed, so an export of a v2 chain is byte-identical to what the
-	// previous release produced. Only v2 carries a run id and a batch sequence.
-	if chainformat.NormalizeFormatVersion(r.FormatVersion) == chainformat.FormatV2 {
-		e.RunID = r.RunID
-		e.SequenceNum = r.SequenceNum
-	} else {
-		e.FormatVersion = r.FormatVersion
-	}
-	return e
-}
+// toExported converts a stored row to its portable form: see verify.FromStored.
+func toExported(r store.Entry) verify.Entry { return verify.FromStored(r) }
 
 // entryWriter writes exported entries one at a time, as JSONL or as an
 // indented JSON array.

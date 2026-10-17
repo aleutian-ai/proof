@@ -18,14 +18,14 @@
 //
 // `anchor` cannot import `verify` (that is a cycle), so a builder living in
 // `anchor` could never run the verifier. Injecting one instead would let a
-// caller supply a stub that always answers "intact", which would return
-// verified_through to being a convention rather than a guarantee — the exact
-// failure this package is shaped to prevent.
+// caller supply a stub that always answers "intact", which would make "this
+// anchor covers a chain that verified" a convention rather than a guarantee —
+// the exact failure this package is shaped to prevent.
 //
 // # Limitations
 //
-//   - Produces v6 anchors only. v5 commits to a Merkle root nothing can verify,
-//     and v3/v4 spell the subject "company_id" on the wire.
+//   - Produces v7 anchors only (format-spec §9): v1 to v6 are verified and
+//     never written, and v5 was withdrawn.
 //   - Establishes that the chain it was HANDED is intact. It cannot know whether
 //     that chain is complete, or whether the entries are true.
 //
@@ -103,21 +103,22 @@ type Input struct {
 //
 //  1. Validate the input.
 //  2. Run [verify.Chain] over the entries. A broken chain stops here.
-//  3. Take the head from the LAST entry, and the range from the first and last.
-//  4. Recompute the anchor chain hash from the predecessor, subject, range and
-//     head — never copied from the tip.
-//  5. Assemble a v6 anchor with verified_through set to what step 2 established.
+//  3. Take the head from the LAST entry, and the range from the first and last
+//     entries' global_seq.
+//  4. Recompute the anchor chain hash from the predecessor's hash, subject,
+//     range and head — never copied from the tip.
+//  5. Assemble a v7 anchor that carries the predecessor's hash.
 //
 // The result is UNSIGNED. Sign it with [anchor.SignAnchor], which stamps the key
 // id and verifies its own output.
 //
 // # Why step 2 cannot be skipped or supplied
 //
-// `verified_through` is a claim that the range was checked clean at the moment
-// of signing. An anchor that asserts it without checking is a lie its own
-// signature then authenticates — which is worse than no anchor, because the
-// signature invites a reader to believe it. So the verification happens here,
-// with no parameter to override it and no interface to substitute.
+// An anchor over a chain that does not verify attests to a chain that does not
+// exist, and its signature then authenticates the claim — which is worse than
+// no anchor, because the signature invites a reader to believe it. So the
+// verification happens here, with no parameter to override it and no
+// interface to substitute.
 //
 // # Inputs
 //
@@ -126,7 +127,7 @@ type Input struct {
 //
 // # Outputs
 //
-//   - anchor.Anchor: a v6 anchor, unsigned
+//   - anchor.Anchor: a v7 anchor, unsigned
 //   - error: ErrNoEntries, ErrChainBroken, ctx.Err(), or a validation failure
 //
 // # Example
@@ -147,7 +148,7 @@ type Input struct {
 //     you, not that the entries describe what really happened.
 //   - Does not check that the entries are the whole chain. An anchor over a
 //     truncated range is a valid anchor over that range.
-//   - Produces v6 only.
+//   - Produces v7 only.
 //
 // # Assumptions
 //
@@ -187,7 +188,7 @@ func Anchor(ctx context.Context, in Input) (anchor.Anchor, error) {
 //
 // # Outputs
 //
-//   - anchor.Anchor: a v6 anchor, unsigned
+//   - anchor.Anchor: a v7 anchor, unsigned
 //   - error: ErrNoEntries, ErrChainBroken, ctx.Err(), or a validation failure
 //
 // # Example
@@ -210,7 +211,7 @@ func FromWalker(ctx context.Context, subject string, w *verify.Walker, previous 
 	}
 	if subject == "" {
 		return anchor.Anchor{}, errors.New("build: a subject is required; it is the " +
-			"replay protection, and a v6 anchor without one is invalid")
+			"replay protection, and an anchor without one is invalid")
 	}
 
 	// 2. Establish the claim BEFORE making it: the walk already did.
@@ -253,11 +254,9 @@ func FromWalker(ctx context.Context, subject string, w *verify.Walker, previous 
 		previousAnchorID = previous.AnchorID
 	}
 
-	chainHash, err := anchor.ChainHash(
-		previousAnchorHash, subject, first.EntryID, last.EntryID, last.ChainHash)
-	if err != nil {
-		return anchor.Anchor{}, fmt.Errorf("build: anchor chain hash: %w", err)
-	}
+	// v7 (format-spec §9): the range by sequence, so erasing any entry of it
+	// changes nothing this anchor binds; the predecessor's hash signed in.
+	chainHash := anchor.ChainHashV7(previousAnchorHash, subject, first.GlobalSeq, last.GlobalSeq, last.ChainHash)
 
 	anchorID, err := newAnchorID()
 	if err != nil {
@@ -269,14 +268,14 @@ func FromWalker(ctx context.Context, subject string, w *verify.Walker, previous 
 	}
 
 	out := anchor.Anchor{
-		Version:    anchor.SubjectVersion,
-		AnchorID:   anchorID,
-		Subject:    subject,
-		ChainHash:  chainHash,
-		Range:      anchor.EntryRange{StartEntryID: first.EntryID, EndEntryID: last.EntryID},
-		EntryCount: int64(w.Count()),
+		Version:            anchor.SequenceRangeVersion,
+		AnchorID:           anchorID,
+		Subject:            subject,
+		ChainHash:          chainHash,
+		Range:              anchor.EntryRange{StartSeq: first.GlobalSeq, EndSeq: last.GlobalSeq},
+		EntryCount:         int64(w.Count()),
+		PreviousAnchorHash: previousAnchorHash,
 		// Asserted ONLY because the walk established it.
-		VerifiedThrough:  int64(res.EntriesVerified),
 		PreviousAnchorID: previousAnchorID,
 		CreatedAtMs:      createdAt.UnixMilli(),
 	}

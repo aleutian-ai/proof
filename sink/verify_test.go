@@ -56,7 +56,7 @@ func TestVerify_Detects(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Checkpoint re-signs only chains without one: u-81 alone.
-			if _, err := s.Checkpoint(context.Background(), other, nil); err != nil {
+			if _, err := s.Checkpoint(context.Background(), other, nil, UntrackedHeads()); err != nil {
 				t.Fatal(err)
 			}
 		}, "checkpoint 0001"},
@@ -181,7 +181,7 @@ func TestCraftedChainID(t *testing.T) {
 			t.Fatalf("the crafted id was shown: %+v", c)
 		}
 	}
-	done, err := s.Checkpoint(context.Background(), signer, nil)
+	done, err := s.Checkpoint(context.Background(), signer, nil, UntrackedHeads())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestCheckpoint_RefusesUnverifiedSeries(t *testing.T) {
 		t.Fatal(err)
 	}
 	other, _ := newSigner(t)
-	done, err := s.Checkpoint(context.Background(), other, nil)
+	done, err := s.Checkpoint(context.Background(), other, nil, UntrackedHeads())
 	if err != nil || !strings.Contains(problemFor(done, cid(t, s, "u-81")), "checked against the trusted keys), so it was not signed: checkpoint 0001") {
 		t.Fatalf("Checkpoint with another key = %+v, %v", done, err)
 	}

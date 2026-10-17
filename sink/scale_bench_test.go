@@ -56,7 +56,7 @@ func TestScale(t *testing.T) {
 		t.Logf("build: %d subjects, %d chains, committed in %s", n, n, time.Since(start).Round(time.Millisecond))
 		if os.Getenv("SINK_SCALE_CHECKPOINT") == "1" {
 			start = time.Now()
-			if _, err := s.Checkpoint(ctx, signer, nil); err != nil {
+			if _, err := s.Checkpoint(ctx, signer, nil, UntrackedHeads()); err != nil {
 				t.Fatal(err)
 			}
 			t.Logf("checkpoint: %d chains signed in %s", n, time.Since(start).Round(time.Millisecond))

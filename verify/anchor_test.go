@@ -85,7 +85,7 @@ func TestBindAnchor_BindsANonGenesisAnchor(t *testing.T) {
 	// Control first. If a genesis anchor does not bind, the fixture is wrong and
 	// nothing below means anything.
 	genesis := anchorOver(t, entries, head, anchor.SeedAnchorHash)
-	res, err := BindAnchor(genesis, entries, anchor.SeedAnchorHash)
+	res, err := BindAnchor(genesis, entries, Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 	if err != nil {
 		t.Fatalf("genesis bind: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestBindAnchor_BindsANonGenesisAnchor(t *testing.T) {
 	chained := anchorOver(t, entries, head, genesis.ChainHash)
 	chained.PreviousAnchorID = genesis.AnchorID
 
-	got, err := BindAnchor(chained, entries, genesis.ChainHash)
+	got, err := BindAnchor(chained, entries, Expect{PreviousAnchorHash: genesis.ChainHash})
 	if err != nil {
 		t.Fatalf("chained bind: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestBindAnchor_WrongPredecessorFails(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			res, err := BindAnchor(chained, entries, tc.wrong)
+			res, err := BindAnchor(chained, entries, Expect{PreviousAnchorHash: tc.wrong})
 			if err != nil {
 				t.Fatalf("bind: %v", err)
 			}
@@ -155,7 +155,7 @@ func TestBindAnchor_RejectsAMalformedPredecessor(t *testing.T) {
 	}
 	for name, bad := range cases {
 		t.Run(name, func(t *testing.T) {
-			res, err := BindAnchor(a, entries, bad)
+			res, err := BindAnchor(a, entries, Expect{PreviousAnchorHash: bad})
 			if err == nil {
 				t.Fatalf("accepted a malformed predecessor hash; got outcome %v", res.Outcome)
 			}
@@ -211,7 +211,7 @@ func TestBindAnchor_StillCatchesTampering(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := BindAnchor(a, tc.mutate(entries), prev)
+			res, err := BindAnchor(a, tc.mutate(entries), Expect{PreviousAnchorHash: prev})
 			if err != nil {
 				t.Fatalf("bind: %v", err)
 			}
@@ -229,7 +229,7 @@ func TestBindAnchor_StillCatchesTampering(t *testing.T) {
 func TestBindAnchor_RequiresEntries(t *testing.T) {
 	entries, head := buildChain(t, 2)
 	a := anchorOver(t, entries, head, anchor.SeedAnchorHash)
-	if _, err := BindAnchor(a, nil, anchor.SeedAnchorHash); err == nil {
+	if _, err := BindAnchor(a, nil, Expect{PreviousAnchorHash: anchor.SeedAnchorHash}); err == nil {
 		t.Error("accepted an empty chain")
 	}
 }
@@ -274,7 +274,7 @@ func TestBindAnchor_RejectsFormatMisuseAndUnknownFormats(t *testing.T) {
 			a := anchorOver(t, entries, head, anchor.SeedAnchorHash)
 			tc.mutate(&entries[1])
 
-			res, err := BindAnchor(a, entries, anchor.SeedAnchorHash)
+			res, err := BindAnchor(a, entries, Expect{PreviousAnchorHash: anchor.SeedAnchorHash})
 			if err == nil {
 				t.Fatalf("accepted a malformed entry; got outcome %v", res.Outcome)
 			}
@@ -325,7 +325,7 @@ func TestVerifyAnchor_ForwardsThePredecessor(t *testing.T) {
 	}
 
 	// With the right predecessor it binds AND the signature verifies.
-	ok, err := VerifyAnchor(signed, entries, genesis.ChainHash, ring)
+	ok, err := VerifyAnchor(signed, entries, Expect{PreviousAnchorHash: genesis.ChainHash}, ring)
 	if err != nil {
 		t.Fatalf("VerifyAnchor: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestVerifyAnchor_ForwardsThePredecessor(t *testing.T) {
 
 	// With the seed sentinel — what the old code always used — it must NOT bind,
 	// even though the signature is perfectly good.
-	bad, err := VerifyAnchor(signed, entries, anchor.SeedAnchorHash, ring)
+	bad, err := VerifyAnchor(signed, entries, Expect{PreviousAnchorHash: anchor.SeedAnchorHash}, ring)
 	if err != nil {
 		t.Fatalf("VerifyAnchor: %v", err)
 	}

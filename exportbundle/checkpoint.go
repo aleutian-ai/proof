@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -39,6 +40,13 @@ type checkpoint struct {
 	subject          string
 	verifiedThrough  uint64
 
+	// v7 (bundle v2, §16): the predecessor's hash, the range by sequence, and
+	// entry_count as written (a decimal string, as are the sequences).
+	v7                 bool
+	previousAnchorHash string
+	startSeq, endSeq   string
+	entryCountText     string
+
 	// signatureText is the member as written, until it is decoded.
 	signatureText string
 }
@@ -46,8 +54,8 @@ type checkpoint struct {
 // parseCheckpoint is step a of §7.6: the text satisfies §3, and has exactly
 // the members of §4.4, each of its type and shape. A nil text is one that was
 // over the size limit. ok false is `checkpoint-malformed`.
-func parseCheckpoint(text []byte) (checkpoint, bool) {
-	var ck checkpoint
+func parseCheckpoint(text []byte, version int) (checkpoint, bool) {
+	ck := checkpoint{v7: version == 2}
 	if text == nil {
 		return ck, false
 	}
@@ -56,7 +64,11 @@ func parseCheckpoint(text []byte) (checkpoint, bool) {
 	if c, ok := r.peek(); !ok || c != '{' {
 		return ck, false
 	}
-	seen, ok := r.object(kindCheckpoint)
+	kind := kindCheckpoint
+	if ck.v7 {
+		kind = kindCheckpointV7
+	}
+	seen, ok := r.object(kind)
 	if !ok || seen != ckAll || r.duplicate || r.structure {
 		return ck, false
 	}
@@ -67,6 +79,9 @@ func parseCheckpoint(text []byte) (checkpoint, bool) {
 	ck.signature, ck.signatureText = sig, ""
 	if !ok || len(sig) != signatureSize {
 		return ck, false
+	}
+	if ck.v7 {
+		return ck, v7InShape(&ck)
 	}
 	inShape := ck.version == 6 &&
 		label(ck.anchorID) &&
@@ -89,12 +104,21 @@ func (r *reader) checkpointMember(kind objectKind, idx int) bool {
 	if ck == nil {
 		return false
 	}
-	if kind == kindRange {
+	switch kind {
+	case kindRange:
 		s, ok := r.checkpointString()
 		if idx == 0 {
 			ck.rangeStart = s
 		} else {
 			ck.rangeEnd = s
+		}
+		return ok
+	case kindRangeV7:
+		s, ok := r.checkpointString()
+		if idx == 0 {
+			ck.startSeq = s
+		} else {
+			ck.endSeq = s
 		}
 		return ok
 	}
@@ -107,7 +131,11 @@ func (r *reader) checkpointMember(kind objectKind, idx int) bool {
 	case ckCreatedAtMs:
 		ck.createdAtMs, ok = r.checkpointNumber()
 	case ckEntryCount:
-		ck.entryCount, ok = r.checkpointNumber()
+		if ck.v7 {
+			ck.entryCountText, ok = r.checkpointString()
+		} else {
+			ck.entryCount, ok = r.checkpointNumber()
+		}
 	case ckPreviousAnchorID:
 		ck.previousAnchorID, ok = r.checkpointString()
 	case ckRange:
@@ -115,7 +143,11 @@ func (r *reader) checkpointMember(kind objectKind, idx int) bool {
 		if !more || c != '{' {
 			return false
 		}
-		seen, closed := r.object(kindRange)
+		rangeKind := kindRange
+		if ck.v7 {
+			rangeKind = kindRangeV7
+		}
+		seen, closed := r.object(rangeKind)
 		ok = closed && seen == 3
 	case ckSignature:
 		ck.signatureText, ok = r.checkpointString()
@@ -123,8 +155,12 @@ func (r *reader) checkpointMember(kind objectKind, idx int) bool {
 		ck.signingKeyID, ok = r.checkpointString()
 	case ckSubject:
 		ck.subject, ok = r.checkpointString()
-	case ckVerifiedThrough:
-		ck.verifiedThrough, ok = r.checkpointNumber()
+	case ckVerifiedThrough: // v7: previous_anchor_hash, at the same index
+		if ck.v7 {
+			ck.previousAnchorHash, ok = r.checkpointString()
+		} else {
+			ck.verifiedThrough, ok = r.checkpointNumber()
+		}
 	case ckVersion:
 		ck.version, ok = r.checkpointNumber()
 	}
@@ -183,4 +219,34 @@ func decodeCanonicalBase64(s string) ([]byte, bool) {
 		return nil, false
 	}
 	return out, true
+}
+
+// v7InShape is §16's §4.4 for a v7 checkpoint, after the members were read:
+// the count and sequences in format-spec §2.1's decimal grammar, the range
+// from 0 to entry_count − 1, and the seed id exactly with the seed hash.
+func v7InShape(ck *checkpoint) bool {
+	count, okCount := decimal(ck.entryCountText)
+	end, okEnd := decimal(ck.endSeq)
+	if !okCount || !okEnd || ck.startSeq != "0" || count < 1 || end != count-1 {
+		return false
+	}
+	ck.entryCount = count
+	return ck.version == 7 &&
+		label(ck.anchorID) &&
+		hex128Pattern.MatchString(ck.chainHash) &&
+		label(ck.previousAnchorID) &&
+		hex128Pattern.MatchString(ck.previousAnchorHash) &&
+		(ck.previousAnchorID == seedAnchorID) == (ck.previousAnchorHash == seedAnchorHash) &&
+		hex32Pattern.MatchString(ck.signingKeyID) &&
+		label(ck.subject)
+}
+
+// decimal reads format-spec §2.1's grammar: no sign, no leading zero,
+// 0 to 2⁶³−1.
+func decimal(s string) (uint64, bool) {
+	if !globalSeqPattern.MatchString(s) {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	return uint64(n), err == nil
 }

@@ -23,13 +23,14 @@ import (
 //
 // # Inputs
 //
-//   - a: the anchor; it must cover exactly Count() entries
-//   - previousAnchorHash: the predecessor's chain hash, or anchor.SeedAnchorHash
+//   - a: the anchor; it must end at the last entry walked (v7: end_seq is the
+//     last entry's global_seq; v1 to v6: it covers exactly Count() entries)
+//   - expect: what the caller expects; see [Expect]
 //
 // # Outputs
 //
 //   - BindResult: as BindAnchor's. SignatureVerified is always false.
-//   - error: ErrNoEntries, a malformed anchor or previousAnchorHash, or a walk
+//   - error: ErrNoEntries, a malformed anchor or expected predecessor, or a walk
 //     that started from a predecessor hash
 //
 // # Example
@@ -38,7 +39,7 @@ import (
 //	for _, e := range page { // a page at a time, from a file or a store
 //	    w.Add(e)
 //	}
-//	res, err := w.BindAnchor(a, anchor.SeedAnchorHash)
+//	res, err := w.BindAnchor(a, verify.Expect{Subject: "orders"})
 //
 // # Limitations
 //
@@ -49,15 +50,15 @@ import (
 // # Assumptions
 //
 //   - Every entry of the chain, and nothing else, has been added.
-func (w *Walker) BindAnchor(a anchor.Anchor, previousAnchorHash string) (BindResult, error) {
+func (w *Walker) BindAnchor(a anchor.Anchor, expect Expect) (BindResult, error) {
 	if w.Count() == 0 {
 		return BindResult{}, ErrNoEntries
 	}
-	if err := validatePreviousAnchorHash(previousAnchorHash); err != nil {
+	if err := validateExpect(a, expect); err != nil {
 		return BindResult{}, err
 	}
 	if err := anchor.ValidateVersionInvariants(a); err != nil {
 		return BindResult{}, fmt.Errorf("verify: malformed anchor: %w", err)
 	}
-	return w.bind(a, previousAnchorHash)
+	return w.bind(a, expect)
 }

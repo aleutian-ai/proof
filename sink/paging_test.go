@@ -219,7 +219,7 @@ func TestCheckpoint_WriterGetsTheLockBetweenPages(t *testing.T) {
 		}
 		commits++
 	}
-	done, err := s.Checkpoint(context.Background(), signer, nil)
+	done, err := s.Checkpoint(context.Background(), signer, nil, UntrackedHeads())
 	if err != nil {
 		t.Fatal(err)
 	}

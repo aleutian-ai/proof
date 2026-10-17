@@ -12,6 +12,7 @@ import (
 
 	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/store"
+	"github.com/aleutian-ai/proof/store/memory"
 )
 
 // withExpectations fills each input's ExpectChainHash with the v3 hash it will
@@ -54,7 +55,7 @@ func TestExpectChainHash_Matching(t *testing.T) {
 		for aname, appendFn := range appenders() {
 			t.Run(sname+"/"+aname, func(t *testing.T) {
 				s := mk()
-				l, err := New(s)
+				l, err := New(s, WithFormatV3())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -89,7 +90,7 @@ func TestExpectChainHash_MismatchWritesNothing(t *testing.T) {
 			for bad := 0; bad < 3; bad++ {
 				t.Run(sname+"/"+aname+"/index"+string(rune('0'+bad)), func(t *testing.T) {
 					s := mk()
-					l, err := New(s)
+					l, err := New(s, WithFormatV3())
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -126,7 +127,7 @@ func TestExpectChainHash_CatchesWhatItMustCatch(t *testing.T) {
 		t.Run(sname, func(t *testing.T) {
 			// Tail moved: expectations made against the tail BEFORE another append.
 			s := mk()
-			l, _ := New(s)
+			l, _ := New(s, WithFormatV3())
 			if _, err := l.Append(ctx, "c", inputsFor("c", 2, base)); err != nil {
 				t.Fatal(err)
 			}
@@ -170,7 +171,7 @@ func TestExpectChainHash_OneBadChainRefusesTheCall(t *testing.T) {
 	for sname, mk := range storeFactories(t) {
 		t.Run(sname, func(t *testing.T) {
 			s := mk()
-			l, _ := New(s)
+			l, _ := New(s, WithFormatV3())
 			good := withExpectations(t, inputsFor("a", 2, base), "", 0)
 			bad := withExpectations(t, inputsFor("b", 2, base), "", 0)
 			bad[1].ExpectChainHash = strings.Repeat("f", 128)
@@ -185,4 +186,69 @@ func TestExpectChainHash_OneBadChainRefusesTheCall(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestInputSalt_V4PredictedHashIsWritten: a writer layered on the linker (the
+// sink) mints the salt, predicts the chain hash and pins it; the entry is
+// written with exactly that salt and hash. A salt on a v3 linker is refused.
+func TestInputSalt_V4PredictedHashIsWritten(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	salt, err := chainformat.NewSaltV4()
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Repeat("ab", 64)
+	leaf, err := chainformat.ComputeLeafHashV4("e1", "event", content, salt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := chainformat.ComputeChainHashV4("", 0, ts, leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := []Input{{EntryID: "e1", EntryType: "event", Timestamp: ts, IngestedAt: ts, ContentHash: content,
+		Salt: salt, ExpectChainHash: want}}
+	for sname, mk := range storeFactories(t) {
+		for aname, appendFn := range appenders() {
+			t.Run(sname+"/"+aname, func(t *testing.T) {
+				s := mk()
+				l, _ := New(s)
+				if err := appendFn(ctx, l, "c", in); err != nil {
+					t.Fatal(err)
+				}
+				rows := allEntries(t, s, "c")
+				if len(rows) != 1 || rows[0].Salt != salt || rows[0].LeafHash != leaf || rows[0].ChainHash != want {
+					t.Fatalf("stored %+v", rows)
+				}
+				if err := appendFn(ctx, mustNew(t, mk(), WithFormatV3()), "c", in); err == nil {
+					t.Error("a v3 linker accepted a salt")
+				}
+			})
+		}
+	}
+}
+
+// TestV4RequiresAnEntryType: v4 hashes the type, and an empty one is refused
+// before anything is written (format-spec §2.0).
+func TestV4RequiresAnEntryType(t *testing.T) {
+	ts := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	s := memory.New()
+	_, err := mustNew(t, s).Append(context.Background(), "c",
+		[]Input{{EntryID: "e1", Timestamp: ts, IngestedAt: ts, ContentHash: strings.Repeat("ab", 64)}})
+	if err == nil {
+		t.Fatal("appended a v4 entry with no type")
+	}
+	if rows := allEntries(t, s, "c"); len(rows) != 0 {
+		t.Fatalf("wrote %d entries", len(rows))
+	}
+}
+
+func mustNew(t *testing.T, s store.Store, opts ...Option) *Linker {
+	t.Helper()
+	l, err := New(s, opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
 }

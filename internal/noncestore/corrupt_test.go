@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/aleutian-ai/proof/internal/safebolt"
 )
 
 // filledNonces is a nonce file with enough rows to have several pages.
@@ -97,7 +99,7 @@ func TestCorrupt_NothingCrashesOrHangs(t *testing.T) {
 				// lock file is not a copy: it is there for good (see lockFile).
 				ents, _ := os.ReadDir(filepath.Dir(path))
 				for _, e := range ents {
-					if n := e.Name(); n != filepath.Base(path) && n != filepath.Base(path)+lockSuffix {
+					if n := e.Name(); n != filepath.Base(path) && n != filepath.Base(path)+safebolt.LockSuffix {
 						t.Fatalf("%s was left beside the nonce file", n)
 					}
 				}

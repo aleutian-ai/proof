@@ -62,7 +62,8 @@ func TestReader_GrammarAndStructure(t *testing.T) {
 		{"literal of another case", `{"format":"aleutian.proof.bundle.v1","chains":True}`, ReasonJSON},
 
 		{"empty object", `{}`, ReasonFormat},
-		{"format of another value", `{"format":"aleutian.proof.bundle.v2","chains":[]}`, ReasonFormat},
+		{"format of another value", `{"format":"aleutian.proof.bundle.v0","chains":[]}`, ReasonFormat},
+		{"format v2 is a format", `{"format":"aleutian.proof.bundle.v2","chains":[]}`, ""},
 		{"format longer by one", `{"format":"aleutian.proof.bundle.v1 ","chains":[]}`, ReasonFormat},
 		{"format of another type", `{"format":1,"chains":[]}`, ReasonFormat},
 		{"format null", `{"format":null,"chains":[]}`, ReasonFormat},
@@ -216,19 +217,29 @@ func TestLimits_Each(t *testing.T) {
 	}
 }
 
-// The value limit at its real value: 15,000,000 values are read, one more is
-// not. The inputs are arrays of small numbers, about 30 MB each.
+// The value limit at its real value: 15,000,000 values are read in a v1
+// bundle, one more is not; 17,000,000 in a v2 bundle (§16). The inputs are
+// arrays of small numbers, about 30 MB each.
 func TestLimits_ValueLimitAtFifteenMillion(t *testing.T) {
 	if testing.Short() {
-		t.Skip("reads two 30 MB inputs")
+		t.Skip("reads several 30 MB inputs")
 	}
-	build := func(values int) []byte {
+	buildAs := func(format string, values int) []byte {
 		// The object, format's string, the array, and the numbers in it.
-		in := []byte(`{"format":"aleutian.proof.bundle.v1","x":[`)
+		in := []byte(`{"format":"` + format + `","x":[`)
 		in = append(in, bytes.Repeat([]byte("0,"), values-3)...)
 		return append(in[:len(in)-1], `]}`...)
 	}
-	limit := DefaultLimits().Values
+	build := func(values int) []byte { return buildAs(FormatV1, values) }
+	for format, limit := range map[string]int{FormatV2: valuesV2} {
+		if got := reasonOf(mustVerify(t, buildAs(format, limit), Trust{}, Limits{})); got != ReasonStructure {
+			t.Fatalf("%s at its limit: %q, want structure", format, got)
+		}
+		if got := reasonOf(mustVerify(t, buildAs(format, limit+1), Trust{}, Limits{})); got != ReasonTooLarge {
+			t.Fatalf("%s one over: %q, want too-large", format, got)
+		}
+	}
+	limit := valuesV1
 	if got := reasonOf(mustVerify(t, build(limit), Trust{}, Limits{})); got != ReasonStructure {
 		t.Fatalf("at the limit: %q, want structure", got)
 	}
@@ -322,8 +333,8 @@ func TestLimits_Precedence(t *testing.T) {
 		{"4 duplicate (in the last chain) over 7 count", strings.Replace(twoChains, `"checkpoints":[]}]}`, `"checkpoints":[],"checkpoints":[]}]}`, 1), countLimit, ReasonDuplicateKey},
 		{"5 format over 6 structure", `{"format":"no","chains":[{}],"x":1}`, Limits{}, ReasonFormat},
 		{"5 format (missing) over 6 structure", `{"chains":[{}]}`, Limits{}, ReasonFormat},
-		{"5 format over 7 count", strings.Replace(twoChains, FormatID, "no", 1), countLimit, ReasonFormat},
-		{"5 format (after the chains) over 7 count", `{"chains":` + twoChains[len(`{"format":"`+FormatID+`","chains":`):len(twoChains)-1] + `,"format":"no"}`, countLimit, ReasonFormat},
+		{"5 format over 7 count", strings.Replace(twoChains, FormatV1, "no", 1), countLimit, ReasonFormat},
+		{"5 format (after the chains) over 7 count", `{"chains":` + twoChains[len(`{"format":"`+FormatV1+`","chains":`):len(twoChains)-1] + `,"format":"no"}`, countLimit, ReasonFormat},
 		{"6 structure over 7 count, structure last", strings.TrimSuffix(twoChains, "}") + `,"x":1}`, countLimit, ReasonStructure},
 		{"6 structure over 7 count, structure first", strings.Replace(twoChains, `"entries":[`+bareEntry+`]`, `"entries":[]`, 1), countLimit, ReasonStructure},
 		{"7 count alone", twoChains, countLimit, ReasonTooLarge},
@@ -369,15 +380,15 @@ func TestReader_HostileInputMemory(t *testing.T) {
 		// most is the most the reader may allocate, in total, in bytes.
 		most uint64
 	}{
-		{"chains of empty objects", fill(`{"format":"`+FormatID+`","chains":[`, `{},`, `]}`), ReasonStructure, 64 << 10},
+		{"chains of empty objects", fill(`{"format":"`+FormatV1+`","chains":[`, `{},`, `]}`), ReasonStructure, 64 << 10},
 		{"top-level array of empty objects", fill(`[`, `{},`, `]`), ReasonStructure, 64 << 10},
 		{"top-level numbers", fill(``, `0,`, ``), ReasonJSON, 64 << 10},
 		{"array of numbers", fill(`[`, `0,`, `]`), ReasonStructure, 64 << 10},
 		{"array of empty arrays", fill(`[`, `[],`, `]`), ReasonStructure, 64 << 10},
 		{"one name repeated", fill(`{`, `"a":0,`, `}`), ReasonDuplicateKey, 1 << 20},
-		{"entries of empty objects", fill(`{"format":"`+FormatID+`","chains":[{"chain_id":"c","entries":[`, `{},`, `],"checkpoints":[]}]}`), ReasonStructure, 64 << 10},
+		{"entries of empty objects", fill(`{"format":"`+FormatV1+`","chains":[{"chain_id":"c","entries":[`, `{},`, `],"checkpoints":[]}]}`), ReasonStructure, 64 << 10},
 		// Built up to the checkpoint limit, then dropped.
-		{"checkpoints of empty strings", fill(`{"format":"`+FormatID+`","chains":[{"chain_id":"c","entries":[`+bareEntry+`],"checkpoints":[`, `"",`, `]}]}`), ReasonTooLarge, size},
+		{"checkpoints of empty strings", fill(`{"format":"`+FormatV1+`","chains":[{"chain_id":"c","entries":[`+bareEntry+`],"checkpoints":[`, `"",`, `]}]}`), ReasonTooLarge, size},
 		// Distinct unknown names must be remembered until the object closes:
 		// 4 bytes each, a quarter of the input here, in a slice that grows:
 		// the total counts every size it went through, about six times what
@@ -407,7 +418,7 @@ func TestReader_LongChainID(t *testing.T) {
 	chainWith := func(id string) string {
 		return `{"chain_id":"` + id + `","entries":[` + bareEntry + `],"checkpoints":[]}`
 	}
-	data := []byte(`{"format":"` + FormatID + `","chains":[` + chainWith(long) + `,` + chainWith(long+"b") + `,` +
+	data := []byte(`{"format":"` + FormatV1 + `","chains":[` + chainWith(long) + `,` + chainWith(long+"b") + `,` +
 		chainWith(u+`0061`+long[1:]) + `]}`)
 	var res Result
 	allocated, _, _ := measure(func() { res = mustVerify(t, data, Trust{}, Limits{}) })

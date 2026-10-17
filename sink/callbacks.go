@@ -6,6 +6,7 @@ package sink
 import (
 	"context"
 	"crypto"
+	"fmt"
 	"io"
 
 	"github.com/aleutian-ai/proof/anchor"
@@ -38,6 +39,20 @@ func (c callerSigner) Public() (pub crypto.PublicKey) {
 
 func (c callerSigner) SignContext(ctx context.Context, msg []byte) (sig []byte, err error) {
 	fault.Callback(func() { sig, err = c.s.SignContext(ctx, msg) })
+	return sig, err
+}
+
+// SignWithContext forwards to a caller's signer that can sign with an ML-DSA
+// context string, as a v7 checkpoint is signed. One that cannot is refused here
+// with the error anchor.SignCanonical gives, rather than this wrapper hiding
+// the difference by signing with the empty context.
+func (c callerSigner) SignWithContext(ctx context.Context, msg []byte, mldsaContext string) (sig []byte, err error) {
+	cs, ok := c.s.(anchor.ContextStringSigner)
+	if !ok {
+		return nil, fmt.Errorf("the checkpoint signer (%T) cannot sign with the ML-DSA context %q; "+
+			"it must implement anchor.ContextStringSigner", c.s, mldsaContext)
+	}
+	fault.Callback(func() { sig, err = cs.SignWithContext(ctx, msg, mldsaContext) })
 	return sig, err
 }
 

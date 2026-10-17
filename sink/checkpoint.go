@@ -29,6 +29,7 @@ type checkpointConfig struct {
 	vouched     map[string]bool   // chains whose erasure the operator vouches for
 	recordTrust anchor.KeySource
 	heads       CheckpointHeads
+	untracked   bool     // UntrackedHeads: the caller gives up series-restart detection
 	only        []string // when set, the only chains considered
 	onlySet     bool
 	err         error
@@ -267,6 +268,44 @@ func CheckpointRecordTrust(src anchor.KeySource) CheckpointOption {
 // # Assumptions
 //
 //   - h is safe for concurrent use, and one process checkpoints at a time.
+//
+// ErrHeadsRequired is returned by Checkpoint given neither TrackHeads nor
+// UntrackedHeads. A folder cannot show that its checkpoint series was not
+// deleted and started again (docs/decisions.md D23); only a record kept
+// outside it can.
+var ErrHeadsRequired = errors.New("sink: a checkpoint needs a record of each chain's series head kept outside " +
+	"the folder (TrackHeads; `proof sink checkpoint --heads FILE`): without one, a series that was deleted " +
+	"and started again cannot be told from a new one")
+
+// UntrackedHeads checkpoints without a record of the series heads.
+//
+// # Description
+//
+// It gives up what TrackHeads provides: with anchors/<chain> deleted, the next
+// checkpoint signs a new series over the chain as it stands, and nothing
+// notices. Named, rather than the default, so that a caller who accepts that
+// has said so. For tests and throwaway folders; the command line has no such
+// option.
+//
+// # Outputs
+//
+//   - CheckpointOption: for Checkpoint
+//
+// # Example
+//
+//	done, err := s.Checkpoint(ctx, signer, nil, sink.UntrackedHeads())
+//
+// # Limitations
+//
+//   - As above.
+//
+// # Assumptions
+//
+//   - None.
+func UntrackedHeads() CheckpointOption {
+	return func(c *checkpointConfig) { c.untracked = true }
+}
+
 func TrackHeads(h CheckpointHeads) CheckpointOption {
 	return func(c *checkpointConfig) {
 		if h == nil {
@@ -402,6 +441,12 @@ func (s *Sink) Checkpoint(ctx context.Context, signer anchor.ContextSigner, trus
 		if cfg.err != nil {
 			return nil, cfg.err
 		}
+	}
+	switch {
+	case cfg.heads != nil && cfg.untracked:
+		return nil, errors.New("sink: TrackHeads and UntrackedHeads were both given")
+	case cfg.heads == nil && !cfg.untracked:
+		return nil, ErrHeadsRequired
 	}
 	if cfg.heads != nil {
 		if err := s.headsOutsideFolder(cfg.heads); err != nil {

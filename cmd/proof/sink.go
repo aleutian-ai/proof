@@ -29,13 +29,13 @@ const sinkUsage = `usage:
   proof sink commit     [--dir D] (--class NAME | --class-field FIELD --classes A,B…) --subject-field FIELD
                         [--source-field FIELD | --source-prefix P] [--record-key <record private.pem>]
                         [--skip-check]  < events.jsonl
-  proof sink checkpoint [--dir D] --key <ml-dsa-65 private.pem> [--trust <public.pem>]…
-                        [--record-trust <record public.pem>]… [--heads FILE]
+  proof sink checkpoint [--dir D] --key <ml-dsa-65 private.pem> --heads FILE [--first]
+                        [--trust <public.pem>]… [--record-trust <record public.pem>]…
                         [--confirm-erased-chain <chain id>]…
   proof sink verify     [--dir D] --key <ml-dsa-65 public.pem> [--record-trust <record public.pem>]…
                         [--heads FILE] [--require-checkpoint] [--show-subjects]
   proof sink erase      [--dir D] (--subject S | --subject-file FILE) [--class C]   (or --resume)
-                        [--key <ml-dsa-65 private.pem> [--trust <public.pem>]… [--heads FILE]]
+                        [--key <ml-dsa-65 private.pem> --heads FILE [--first] [--trust <public.pem>]…]
                         [--record-key <record private.pem>] [--skip-check]
   proof sink repair     [--dir D] [--heads FILE] [--skip-check]
   proof sink export     [--dir D] (--chain C… | --subject S | --subject-file FILE [--class K] | --all)
@@ -60,8 +60,10 @@ take the id from verify's output, never from anything that names the subject.
 --subject-file reads the subject from a file (- for standard input), so it is
 not on the command line. --source-field (or --source-prefix, for input with no
 id of its own: the source is P:<line number>) makes committing the same input
-again a no-op. --heads keeps each chain's checkpoint count in a file OUTSIDE
-the sink folder, so removed checkpoints are noticed. repair removes rows a
+again a no-op. --heads, required to checkpoint, keeps each chain's checkpoint
+count in a file OUTSIDE the sink folder, so removed or restarted checkpoints
+are noticed; --first starts that file, for a sink's first checkpoint only. Keep
+the file where the sink's writer cannot rewrite it (docs/runbook.md). repair removes rows a
 commit that crashed before its append left behind. The verbs that write read
 each file through once first (--skip-check skips that).
 
@@ -97,11 +99,16 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 	dir := fs.String("dir", "sink-data", "the sink folder")
 	var class, classField, classes, subjectField, key, subject, eraseClass, recordKey *string
 	var sourceField, sourcePrefix, subjectFile, heads *string
-	var resume, showSubjects, skipCheck, requireCheckpoint *bool
+	var resume, showSubjects, skipCheck, requireCheckpoint, first *bool
 	var trust, recordTrust, confirmChains multiFlag
 	headsFlag := func() *string {
 		return fs.String("heads", "", "a file OUTSIDE the sink folder recording each chain's checkpoint count "+
 			"and last checkpoint, so a series that was cut or restarted is noticed")
+	}
+	firstFlag := func() *bool {
+		return fs.Bool("first", false, "start the --heads file: only for a sink's first checkpoint, when no "+
+			"record exists yet (refused if the file exists). Without it, a missing --heads file is refused, "+
+			"because deleting the record is what a restarted series looks like")
 	}
 	skipCheckFlag := func() *bool {
 		return fs.Bool("skip-check", false, "do not read each file through before writing to it (the check "+
@@ -130,6 +137,7 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 			"Given, every record of a chain must carry a valid signature for it to be checkpointed, and an "+
 			"erasure whose signature verifies is signed over")
 		heads = headsFlag()
+		first = firstFlag()
 		fs.Var(&confirmChains, "confirm-erased-chain", "a chain id (from `proof sink verify`) whose erasure "+
 			"you vouch for as your own: sign over it although the sink cannot tell who wrote it; repeatable")
 	case "verify":
@@ -154,6 +162,7 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		fs.Var(&trust, "trust", "with --key: an earlier ML-DSA-65 public key (PEM) existing checkpoints may "+
 			"be signed with; repeatable")
 		heads = headsFlag()
+		first = firstFlag()
 		skipCheck = skipCheckFlag()
 	case "repair":
 		heads = fs.String("heads", "", "the checkpoint heads file (as given to checkpoint --heads): a chain it "+
@@ -173,6 +182,15 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintf(stderr, "proof sink %s: unexpected argument %q\n", verb, fs.Arg(0))
 		return exitUsage
 	}
+	// A checkpoint needs a record of each series head kept outside the folder
+	// (docs/sink-format.md §5.2): there is no option to go without one.
+	if checkpoints := verb == "checkpoint" || (verb == "erase" && *key != ""); checkpoints && *heads == "" {
+		fmt.Fprintf(stderr, "proof sink %s: --heads FILE is required to checkpoint: a file OUTSIDE the sink "+
+			"folder, on storage its writer cannot rewrite (docs/runbook.md, \"Where to keep checkpoint heads\"). "+
+			"It is what shows that a checkpoint series was not deleted and started again. For a sink's first "+
+			"checkpoint, add --first to start it\n", verb)
+		return exitUsage
+	}
 	eraseSubject := ""
 	if verb == "erase" {
 		given := 0
@@ -189,8 +207,8 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 			fmt.Fprintln(stderr, "proof sink erase: --class applies to a subject, not to --resume")
 			return exitUsage
 		}
-		if *key == "" && (len(trust) > 0 || *heads != "") {
-			fmt.Fprintln(stderr, "proof sink erase: --trust and --heads go with --key (they are for the checkpoint)")
+		if *key == "" && (len(trust) > 0 || *heads != "" || *first) {
+			fmt.Fprintln(stderr, "proof sink erase: --trust, --heads and --first go with --key (they are for the checkpoint)")
 			return exitUsage
 		}
 		eraseSubject = *subject
@@ -277,9 +295,12 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintf(stderr, "proof sink: %v\n", err)
 		return exitIOError
 	}
-	headsPath := ""
+	headsPath, startHeads := "", false
 	if heads != nil {
 		headsPath = *heads
+	}
+	if first != nil {
+		startHeads = *first
 	}
 	c := ctx.Background()
 	var failed bool
@@ -288,12 +309,14 @@ func cmdSink(args []string, stdout, stderr *os.File) int {
 		err = sinkCommit(c, s, sink.JSONFields{Class: *class, ClassField: *classField, Classes: allowed,
 			SubjectField: *subjectField, SourceField: *sourceField}, *sourcePrefix, os.Stdin, stdout)
 	case "checkpoint":
-		failed, err = sinkCheckpoint(c, s, *key, trust, recordTrust, confirmChains, headsPath, stdout, stderr)
+		failed, err = sinkCheckpoint(c, s, *key, trust, recordTrust, confirmChains, headsOf(headsPath, startHeads),
+			stdout, stderr)
 	case "verify":
 		failed, err = sinkVerify(c, s, *key, recordTrust, headsPath, *requireCheckpoint, *showSubjects, stdout, stderr)
 	case "erase":
 		failed, err = sinkErase(c, s, eraseSubject, *eraseClass, *resume,
-			eraseCheckpoint{keyPath: *key, trust: trust, heads: headsPath, signing: *recordKey != ""}, stdout, stderr)
+			eraseCheckpoint{keyPath: *key, trust: trust, heads: headsOf(headsPath, startHeads), signing: *recordKey != ""},
+			stdout, stderr)
 	case "repair":
 		err = sinkRepair(c, s, headsPath, stdout)
 	}
@@ -459,7 +482,7 @@ func sinkCommit(c ctx.Context, s *sink.Sink, fields sink.JSONFields, sourcePrefi
 // sinkCheckpoint signs what is new. The bool reports whether any chain was
 // refused (a finding: exit 1); the error, an operational failure.
 func sinkCheckpoint(c ctx.Context, s *sink.Sink, keyPath string, trust, recordTrust, confirmChains []string,
-	headsPath string, out, errOut io.Writer) (bool, error) {
+	heads *sink.HeadsFile, out, errOut io.Writer) (bool, error) {
 	signer, err := loadSigner(keyPath)
 	if err != nil {
 		return false, err
@@ -485,9 +508,7 @@ func sinkCheckpoint(c ctx.Context, s *sink.Sink, keyPath string, trust, recordTr
 		}
 		opts = append(opts, sink.CheckpointRecordTrust(records))
 	}
-	if headsPath != "" {
-		opts = append(opts, sink.TrackHeads(sink.FileHeads(headsPath)))
-	}
+	opts = append(opts, sink.TrackHeads(heads))
 	if len(confirmChains) > 0 {
 		// The sink cannot attribute these erasures; the operator does.
 		fmt.Fprintf(errOut, "warning: you are vouching for the erasure at the end of %s. The sink cannot tell "+
@@ -756,7 +777,7 @@ func subjectNote(subject string) string {
 type eraseCheckpoint struct {
 	keyPath string
 	trust   []string
-	heads   string
+	heads   *sink.HeadsFile // nil without --key
 	// signing is true when a record key was given: the erasure entries are
 	// signed, so a later `checkpoint --record-trust` can confirm them.
 	signing bool
@@ -851,9 +872,7 @@ func sinkErase(c ctx.Context, s *sink.Sink, subject, class string, resume bool, 
 		fmt.Fprintln(errOut, "note: the erasure is not checkpointed. "+how+".")
 	default:
 		opts := []sink.CheckpointOption{sink.ConfirmErasures(confirmable...), sink.OnlyChains(chains...)}
-		if cp.heads != "" {
-			opts = append(opts, sink.TrackHeads(sink.FileHeads(cp.heads)))
-		}
+		opts = append(opts, sink.TrackHeads(cp.heads))
 		done, cerr := s.Checkpoint(c, signer, trusted, opts...)
 		signed := 0
 		for _, d := range done {
@@ -979,4 +998,17 @@ func plural(n int, one, many string) string {
 		return "1 " + one
 	}
 	return fmt.Sprintf("%d %s", n, many)
+}
+
+// headsOf is the heads record a checkpointing verb was given: an existing
+// file, or with --first one it starts. Nil when no path was given (a verb
+// that does not checkpoint).
+func headsOf(path string, first bool) *sink.HeadsFile {
+	switch {
+	case path == "":
+		return nil
+	case first:
+		return sink.NewFileHeads(path)
+	}
+	return sink.FileHeads(path)
 }

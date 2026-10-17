@@ -62,6 +62,8 @@ var allowedDeps = map[string][]string{
 	"/bundle":         {},
 	"/internal/fault": {},
 	"/internal/mem":   {},
+	// The operating-system calls the stores need (flock, O_NOFOLLOW): stdlib.
+	"/internal/osfile": {},
 
 	// Unicode NFC validation requires the Unicode tables, which the standard
 	// library does not ship. canonical rejects non-NFC strings fail-closed

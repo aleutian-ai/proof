@@ -56,6 +56,7 @@ const (
 	erasureDomain  = "aleutian.sink.erasure.v1:"
 	erasureRecord  = `{"erased":"every earlier event on this chain","through_global_seq":"%s"}`
 	recordDomain   = "aleutian.proof.record.v1"
+	recordDomainV2 = "aleutian.proof.record.v2" // also its ML-DSA context (sink-format §9.1)
 	seedAnchorID   = "anchor_00000000-0000-0000-0000-000000000000"
 	seedAnchorHash = "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27"
 )
@@ -92,6 +93,7 @@ type tally struct {
 type verifier struct {
 	checkpointKeys map[string][]byte
 	recordKeys     map[string][]byte
+	v2             bool // the bundle is aleutian.proof.bundle.v2 (§16)
 }
 
 // Verify checks a bundle against bundle-format.md and returns the result of
@@ -180,11 +182,12 @@ func VerifyWithLimits(bundle []byte, trust Trust, limits Limits) (Result, error)
 		CheckpointTrust: trustValue(len(v.checkpointKeys) > 0),
 		RecordTrust:     trustValue(len(v.recordKeys) > 0),
 	}
-	chains, reason := readBundle(bundle, limits.withDefaults())
+	chains, version, reason := readBundle(bundle, limits.withDefaults())
 	if reason != "" {
 		res.Reason = reason
 		return res, nil
 	}
+	v.v2 = version == 2
 	res.Readable = true
 
 	// §8: every copy of a duplicated id is keyed by position, and checked.
@@ -255,7 +258,7 @@ func (v *verifier) checkChain(c *rawChain) (cr ChainResult, valid bool, err erro
 		if e.sig != nil {
 			counts.RecordSignaturesPresent++
 		}
-		seq, ts, wellFormed := entryShape(e)
+		seq, ts, wellFormed := entryShape(e, v.v2)
 		disclosedBad := e.disclosed != nil && (s.flags&flagEvent == 0 || !disclosedShape(e.disclosed))
 		if disclosedBad {
 			s.flags |= flagDisclosedBad
@@ -293,7 +296,7 @@ func (v *verifier) checkChain(c *rawChain) (cr ChainResult, valid bool, err erro
 				lastErasure = i
 			}
 		}
-		if chainformat.ComputeChainHashV3Unchecked(e.previousHash, seq, ts, e.contentHash) != e.chainHash {
+		if !v.chainHashRecomputes(e, seq, ts) {
 			problems.add(CodeChainHash, i)
 		}
 	}
@@ -416,26 +419,37 @@ func (v *verifier) checkCheckpoints(c *rawChain, valid bool, firstMalformed int,
 // code of the first step that fails, or "".
 func (v *verifier) checkCheckpoint(c *rawChain, text []byte, valid bool, firstMalformed int, n uint64,
 	previousID, previousHash string, previousCount uint64) (string, checkpoint, error) {
-	ck, ok := parseCheckpoint(text)
+	ck, ok := parseCheckpoint(text, map[bool]int{false: 1, true: 2}[v.v2])
 	switch {
 	case !ok:
 		return CodeCheckpointMalformed, ck, nil
 	case !valid || ck.subject != c.id:
 		return CodeCheckpointSubject, ck, nil
-	case ck.previousAnchorID != previousID || ck.entryCount <= previousCount:
+	case ck.previousAnchorID != previousID || ck.entryCount <= previousCount,
+		ck.v7 && ck.previousAnchorHash != previousHash:
 		return CodeCheckpointSequence, ck, nil
 	case ck.entryCount > n:
 		return CodeCheckpointOverreach, ck, nil
 	}
 	count := int(ck.entryCount)
 	tip := &c.entries[count-1]
-	if count > firstMalformed || ck.rangeStart != c.entries[0].entryID || ck.rangeEnd != tip.entryID {
-		return CodeCheckpointBinding, ck, nil
-	}
-	want, err := anchor.ChainHash(previousHash, c.id, ck.rangeStart, ck.rangeEnd, tip.chainHash)
-	if err != nil {
-		// Unreachable: every input was checked to hold no delimiter.
-		return "", ck, fmt.Errorf("anchor chain hash refused checked inputs")
+	var want string
+	if ck.v7 {
+		// §16: the range is 0 … entry_count−1 by sequence (shape-checked in
+		// step a), and the tip is that entry.
+		if count > firstMalformed {
+			return CodeCheckpointBinding, ck, nil
+		}
+		want = anchor.ChainHashV7(previousHash, c.id, 0, int64(ck.entryCount)-1, tip.chainHash)
+	} else {
+		if count > firstMalformed || ck.rangeStart != c.entries[0].entryID || ck.rangeEnd != tip.entryID {
+			return CodeCheckpointBinding, ck, nil
+		}
+		var err error
+		if want, err = anchor.ChainHash(previousHash, c.id, ck.rangeStart, ck.rangeEnd, tip.chainHash); err != nil {
+			// Unreachable: every input was checked to hold no delimiter.
+			return "", ck, fmt.Errorf("anchor chain hash refused checked inputs")
+		}
 	}
 	if want != ck.chainHash {
 		return CodeCheckpointBinding, ck, nil
@@ -447,7 +461,7 @@ func (v *verifier) checkCheckpoint(c *rawChain, text []byte, valid bool, firstMa
 	if !known {
 		return CodeCheckpointUnknownKey, ck, nil
 	}
-	canonical, err := anchor.Canonicalize(anchor.Anchor{
+	a := anchor.Anchor{
 		Version:          int(ck.version),
 		AnchorID:         ck.anchorID,
 		Subject:          ck.subject,
@@ -458,12 +472,18 @@ func (v *verifier) checkCheckpoint(c *rawChain, text []byte, valid bool, firstMa
 		CreatedAtMs:      int64(ck.createdAtMs),
 		PreviousAnchorID: ck.previousAnchorID,
 		VerifiedThrough:  int64(ck.verifiedThrough),
-	})
-	if err != nil {
-		// Unreachable: step a admits version 6 only.
-		return "", ck, fmt.Errorf("anchor canonical form refused a version 6 checkpoint")
 	}
-	if mldsa.Verify(mldsa.MLDSA65, key, canonical, ck.signature) != nil {
+	if ck.v7 {
+		a.Range = anchor.EntryRange{StartSeq: 0, EndSeq: int64(ck.entryCount) - 1}
+		a.PreviousAnchorHash = ck.previousAnchorHash
+	}
+	canonical, err := anchor.Canonicalize(a)
+	if err != nil {
+		// Unreachable: step a admits version 6 (v1) or 7 (v2) only.
+		return "", ck, fmt.Errorf("anchor canonical form refused a version %d checkpoint", ck.version)
+	}
+	if mldsa.VerifyWithContext(mldsa.MLDSA65, key, canonical, ck.signature,
+		[]byte(anchor.SigningContext(int(ck.version)))) != nil {
 		return CodeCheckpointBadSignature, ck, nil
 	}
 	return "", ck, nil
@@ -489,7 +509,8 @@ func (v *verifier) checkRecordSignature(chainID string, valid bool, e *rawEntry,
 		(e.previousHash == "") != (e.globalSeq == "0") {
 		return CodeBadSignature
 	}
-	if mldsa.Verify(mldsa.MLDSA65, key, recordEnvelope(chainID, e, keyID), signature) != nil {
+	env, ctx := recordEnvelope(chainID, e, keyID, v.v2)
+	if mldsa.VerifyWithContext(mldsa.MLDSA65, key, env, signature, ctx) != nil {
 		return CodeBadSignature
 	}
 	return ""
@@ -554,15 +575,27 @@ func worse(a, b string) string {
 
 // entryShape checks the six members that make an entry well-formed (§7.1
 // step 3) against §4.3, and returns the sequence and the instant they spell.
-func entryShape(e *rawEntry) (seq int64, ts time.Time, ok bool) {
+func entryShape(e *rawEntry, v2 bool) (seq int64, ts time.Time, ok bool) {
 	ts, tsOK := parseTimestamp(e.timestamp)
 	seq, seqOK := parseGlobalSeq(e.globalSeq)
 	ok = tsOK && seqOK &&
 		entryIDPattern.MatchString(e.entryID) &&
 		(e.previousHash == "" || hex128Pattern.MatchString(e.previousHash)) &&
 		hex128Pattern.MatchString(e.contentHash) &&
-		hex128Pattern.MatchString(e.chainHash)
+		hex128Pattern.MatchString(e.chainHash) &&
+		(!v2 || hex64Pattern.MatchString(e.salt) && hex128Pattern.MatchString(e.leafHash))
 	return seq, ts, ok
+}
+
+// chainHashRecomputes is §7.2 step 3: v1, chain hash v3; v2 (§16), the leaf
+// hash v4 over the stored id, type, content hash and salt, then chain hash v4
+// over the stored leaf hash.
+func (v *verifier) chainHashRecomputes(e *rawEntry, seq int64, ts time.Time) bool {
+	if !v.v2 {
+		return chainformat.ComputeChainHashV3Unchecked(e.previousHash, seq, ts, e.contentHash) == e.chainHash
+	}
+	return chainformat.ComputeLeafHashV4Unchecked(e.entryID, e.entryType, e.contentHash, e.salt) == e.leafHash &&
+		chainformat.ComputeChainHashV4Unchecked(e.previousHash, seq, ts, e.leafHash) == e.chainHash
 }
 
 // parseGlobalSeq reads a `global_seq`: base-10, no sign, no leading zeros,
@@ -632,14 +665,18 @@ func erasureHash(previousSeq string) string {
 
 // recordEnvelope builds the bytes a record signature covers (sink-format
 // §9.1), from the entry's strings as stored.
-func recordEnvelope(chainID string, e *rawEntry, keyID string) []byte {
-	out := append([]byte(recordDomain), 0)
-	for i, v := range [...]string{
-		chainID, e.entryID, e.entryType, e.globalSeq, e.previousHash, e.timestamp, e.contentHash, keyID,
-	} {
+func recordEnvelope(chainID string, e *rawEntry, keyID string, v2 bool) (env, mldsaContext []byte) {
+	domain := recordDomain
+	values := []string{chainID, e.entryID, e.entryType, e.globalSeq, e.previousHash, e.timestamp, e.contentHash, keyID}
+	if v2 {
+		domain, mldsaContext = recordDomainV2, []byte(recordDomainV2)
+		values = append(values, e.leafHash)
+	}
+	out := append([]byte(domain), 0)
+	for i, v := range values {
 		out = append(out, byte(i+1))
 		out = binary.BigEndian.AppendUint32(out, uint32(len(v)))
 		out = append(out, v...)
 	}
-	return out
+	return out, mldsaContext
 }

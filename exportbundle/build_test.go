@@ -32,7 +32,7 @@ func testChainID(i int) string { return fmt.Sprintf("events.%032x", i) }
 // checkpoints: the cheapest input that reaches the count limits.
 func bareBundle(chains, entriesEach, checkpointsEach int) []byte {
 	var b bytes.Buffer
-	b.WriteString(`{"format":"` + FormatID + `","chains":[`)
+	b.WriteString(`{"format":"` + FormatV1 + `","chains":[`)
 	for c := 0; c < chains; c++ {
 		if c > 0 {
 			b.WriteByte(',')
@@ -128,7 +128,7 @@ func encodeBundle(t testing.TB, chains ...rawChain) []byte {
 		return string(out)
 	}
 	var b bytes.Buffer
-	b.WriteString(`{"format":"` + FormatID + `","chains":[`)
+	b.WriteString(`{"format":"` + FormatV1 + `","chains":[`)
 	for ci, c := range chains {
 		if ci > 0 {
 			b.WriteByte(',')

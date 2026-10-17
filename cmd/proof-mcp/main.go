@@ -385,19 +385,26 @@ func chainClaims(res verify.Result) (proven, notProven string) {
 // compute_chain_hash
 // ---------------------------------------------------------------------------
 
-// computeChainHashIn takes either format. The caller must say which.
+// computeChainHashIn takes any of the three formats. The caller must say which.
 //
 // Sequence numbers are decimal STRINGS: the MCP SDK routes arguments through a
 // map[string]any, so a JSON number becomes a float64 and anything above 2^53 is
 // silently changed before it reaches this struct.
 type computeChainHashIn struct {
-	FormatVersion int    `json:"format_version" jsonschema:"REQUIRED: 3 for chains written by proof commit, 2 for older chains"`
+	FormatVersion int    `json:"format_version" jsonschema:"REQUIRED: 4 for chains written by proof commit, 3 or 2 for older chains"`
 	PreviousHash  string `json:"previous_hash" jsonschema:"the preceding entry's chain hash; empty for the first entry"`
 	Timestamp     string `json:"timestamp" jsonschema:"RFC3339 with microseconds, e.g. 2026-01-20T12:00:01.123456Z"`
-	ContentHash   string `json:"content_hash" jsonschema:"128 hex characters, or a TOMBSTONE: value"`
+	ContentHash   string `json:"content_hash,omitempty" jsonschema:"128 hex characters (v2 and v3: or a TOMBSTONE: value); omitted for an erased v4 entry"`
 
-	// v3 only, and required for v3.
-	GlobalSeq string `json:"global_seq,omitempty" jsonschema:"v3 only, required: chain-wide sequence number as a decimal string, e.g. \"4\""`
+	// v3 and v4, and required for both.
+	GlobalSeq string `json:"global_seq,omitempty" jsonschema:"v3 and v4, required: chain-wide sequence number as a decimal string, e.g. \"4\""`
+
+	// v4 only. A live entry gives entry_id, entry_type, content_hash and salt,
+	// and the leaf hash is computed; an erased entry gives leaf_hash alone.
+	EntryID   string `json:"entry_id,omitempty" jsonschema:"v4 live entry: the entry id, exactly as stored"`
+	EntryType string `json:"entry_type,omitempty" jsonschema:"v4 live entry: the entry type, exactly as stored"`
+	Salt      string `json:"salt,omitempty" jsonschema:"v4 live entry: the salt, 64 hex characters"`
+	LeafHash  string `json:"leaf_hash,omitempty" jsonschema:"v4 erased entry: the stored leaf hash, instead of entry_id, entry_type, content_hash and salt"`
 
 	// v2 only, and required for v2.
 	RunID       string `json:"run_id,omitempty" jsonschema:"v2 only: the batch run identifier"`
@@ -406,6 +413,7 @@ type computeChainHashIn struct {
 
 type computeChainHashOut struct {
 	ChainHash string `json:"chain_hash"`
+	LeafHash  string `json:"leaf_hash,omitempty"`
 
 	FormatVersion int    `json:"format_version"`
 	Preimage      string `json:"preimage_description"`
@@ -416,6 +424,9 @@ const (
 		`sequence_num ‖ "|" ‖ timestamp ‖ "|" ‖ content_hash)`
 	preimageV3 = `SHA-512("aleutian.chain.v3:" ‖ previous_hash ‖ "|" ‖ global_seq ‖ "|" ‖ ` +
 		`timestamp ‖ "|" ‖ content_hash)`
+	preimageV4 = `SHA-512("aleutian.chain.v4:" ‖ previous_hash ‖ "|" ‖ global_seq ‖ "|" ‖ ` +
+		`timestamp ‖ "|" ‖ leaf_hash), leaf_hash = SHA-512("aleutian.chain.leaf.v4:" ‖ len(entry_id) ‖ ` +
+		`entry_id ‖ len(entry_type) ‖ entry_type ‖ content_hash ‖ salt), len a 4-byte big-endian byte count`
 )
 
 // parseSeq reads a decimal sequence string.
@@ -458,7 +469,38 @@ func computeChainHash(ctx context.Context, req *mcp.CallToolRequest, in computeC
 	// The checked ComputeChainHash* are used, not the Unchecked variants: a
 	// malformed previous_hash makes the preimage ambiguous (format-spec §3), and a
 	// single-shot tool should say so rather than hash it.
+	v4Only := in.EntryID != "" || in.EntryType != "" || in.Salt != "" || in.LeafHash != ""
+	if v4Only && in.FormatVersion != chainformat.FormatV4 {
+		return nil, computeChainHashOut{}, fmt.Errorf(
+			"entry_id, entry_type, salt and leaf_hash are v4 inputs; format_version %d hashes none of them",
+			in.FormatVersion)
+	}
 	switch in.FormatVersion {
+	case chainformat.FormatV4:
+		if in.RunID != "" || seqNum != 0 {
+			return nil, computeChainHashOut{}, fmt.Errorf(
+				"format_version 4 does not bind run_id or sequence_num; remove them")
+		}
+		if !haveGlobalSeq {
+			return nil, computeChainHashOut{}, fmt.Errorf("global_seq is required for format_version 4")
+		}
+		leaf := in.LeafHash
+		if leaf != "" {
+			if in.EntryID != "" || in.EntryType != "" || in.ContentHash != "" || in.Salt != "" {
+				return nil, computeChainHashOut{}, fmt.Errorf("an erased v4 entry gives leaf_hash alone; " +
+					"a live one gives entry_id, entry_type, content_hash and salt, and no leaf_hash")
+			}
+		} else if leaf, err = chainformat.ComputeLeafHashV4(in.EntryID, in.EntryType, in.ContentHash, in.Salt); err != nil {
+			return nil, computeChainHashOut{}, err
+		}
+		hash, err := chainformat.ComputeChainHashV4(in.PreviousHash, globalSeq, ts, leaf)
+		if err != nil {
+			return nil, computeChainHashOut{}, err
+		}
+		return nil, computeChainHashOut{
+			ChainHash: hash, LeafHash: leaf, FormatVersion: chainformat.FormatV4, Preimage: preimageV4,
+		}, nil
+
 	case chainformat.FormatV2:
 		if haveGlobalSeq {
 			return nil, computeChainHashOut{}, fmt.Errorf(
@@ -497,7 +539,7 @@ func computeChainHash(ctx context.Context, req *mcp.CallToolRequest, in computeC
 
 	default:
 		return nil, computeChainHashOut{}, fmt.Errorf(
-			"format_version must be 2 or 3, got %d", in.FormatVersion)
+			"format_version must be 4, 3 or 2, got %d", in.FormatVersion)
 	}
 }
 
@@ -664,7 +706,11 @@ type verifyAnchorIn struct {
 	// predecessor only by id — so the hash cannot be recovered from the anchor
 	// being checked. Without it, only the FIRST anchor in a chain can be
 	// verified, and every later one comes back looking like tamper evidence.
-	PreviousAnchorHash string `json:"previous_anchor_hash,omitempty" jsonschema:"the previous anchor's chain_hash (128 lowercase hex). Required for any anchor that is not the first in its chain: the predecessor's hash is inside this anchor's own hash. Omit ONLY for a genesis anchor; omitting it for a later one reports a head mismatch, which looks like tampering but is not."`
+	PreviousAnchorHash string `json:"previous_anchor_hash,omitempty" jsonschema:"the previous anchor's chain_hash (128 lowercase hex). For a v7 anchor, optional: the anchor signs its own, and when given it must match. For an older anchor, required unless it is the first in its chain: omitting it for a later one reports a head mismatch, which looks like tampering but is not."`
+
+	// The anchor's signature proves who signed it, not what it is about. Without
+	// an expected subject, a genuine anchor for another chain binds too.
+	Subject string `json:"subject,omitempty" jsonschema:"the subject the anchor must be for. Optional; when omitted the result's not_proven says the subject was not checked, and a genuine anchor for another chain would bind"`
 }
 
 type verifyAnchorOut struct {
@@ -676,6 +722,7 @@ type verifyAnchorOut struct {
 	// a head mismatch alongside this knows to suspect the missing input before
 	// suspecting an attacker.
 	AssumedGenesis bool   `json:"assumed_genesis,omitempty"`
+	SubjectChecked bool   `json:"subject_checked"`
 	Detail         string `json:"detail,omitempty"`
 	EntriesCovered int64  `json:"entries_covered"`
 
@@ -712,9 +759,11 @@ func (c serverConfig) verifyAnchor(ctx context.Context, req *mcp.CallToolRequest
 	// caller who supplied none could have meant. The tool reports which
 	// assumption it made, so a head mismatch on a chained anchor is traceable to
 	// the missing input rather than read as evidence of tampering.
-	previousAnchorHash := in.PreviousAnchorHash
-	if previousAnchorHash == "" {
-		previousAnchorHash = anchor.SeedAnchorHash
+	// A v7 anchor carries its predecessor's hash, so nothing is assumed for it.
+	expect := verify.Expect{Subject: in.Subject, PreviousAnchorHash: in.PreviousAnchorHash}
+	assumedGenesis := false
+	if expect.PreviousAnchorHash == "" && a.Version != anchor.SequenceRangeVersion {
+		expect.PreviousAnchorHash, assumedGenesis = anchor.SeedAnchorHash, true
 	}
 
 	// Which key, and what it establishes, is decided here and never by the call.
@@ -737,9 +786,9 @@ func (c serverConfig) verifyAnchor(ctx context.Context, req *mcp.CallToolRequest
 
 	var res verify.BindResult
 	if ring == nil {
-		res, err = verify.BindAnchor(a, entries, previousAnchorHash)
+		res, err = verify.BindAnchor(a, entries, expect)
 	} else {
-		res, err = verify.VerifyAnchor(a, entries, previousAnchorHash, ring)
+		res, err = verify.VerifyAnchor(a, entries, expect, ring)
 	}
 	if err != nil {
 		return nil, verifyAnchorOut{}, err
@@ -748,7 +797,8 @@ func (c serverConfig) verifyAnchor(ctx context.Context, req *mcp.CallToolRequest
 	out := verifyAnchorOut{
 		Outcome:           string(res.Outcome),
 		Bound:             res.Bound,
-		AssumedGenesis:    in.PreviousAnchorHash == "",
+		AssumedGenesis:    assumedGenesis,
+		SubjectChecked:    res.SubjectChecked,
 		Detail:            res.Detail,
 		EntriesCovered:    res.EntriesCovered,
 		Tombstones:        res.Tombstones,
@@ -847,12 +897,13 @@ func (c serverConfig) verifyBundle(ctx context.Context, req *mcp.CallToolRequest
 			"at most %d", len(m.Files), maxBundleManifestFiles)
 	}
 
-	// VerifyDir takes a path, so it is given the directory's real one, checked to
-	// be inside the root. It opens every listed file through its own os.Root.
-	dir, err := c.root.realDir(in.Dir)
+	// The directory is opened through the launch root, and VerifyDir reads
+	// every listed file through it: nothing can be reached outside the root.
+	dir, err := c.root.openDir(in.Dir)
 	if err != nil {
 		return nil, verifyBundleOut{}, err
 	}
+	defer dir.Close()
 	res, err := bundle.VerifyDir(dir, m.Files, m.ManifestRoot, 0)
 	if err != nil {
 		return nil, verifyBundleOut{}, err

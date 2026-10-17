@@ -107,7 +107,7 @@ type fakeRecordSigner struct {
 }
 
 func (f *fakeRecordSigner) Public() crypto.PublicKey { return f.pub }
-func (f *fakeRecordSigner) SignRecord(_ context.Context, msg []byte) ([]byte, error) {
+func (f *fakeRecordSigner) SignRecord(_ context.Context, msg []byte, mctx string) ([]byte, error) {
 	f.n++
 	return f.sign(msg)
 }
@@ -122,7 +122,7 @@ func TestSignRecord_RefusesWhatItCannotVerify(t *testing.T) {
 		"garbage of the right length": func([]byte) ([]byte, error) { return make([]byte, anchor.SignatureSize), nil },
 		"wrong length":                func([]byte) ([]byte, error) { return make([]byte, 10), nil },
 		"another key's signature": func(msg []byte) ([]byte, error) {
-			return other.SignRecord(context.Background(), msg)
+			return other.SignRecord(context.Background(), msg, "")
 		},
 		"an error": func([]byte) ([]byte, error) { return nil, errors.New("kms: quota") },
 	}
@@ -179,7 +179,7 @@ func TestSignRecord_InvalidFieldsNeverReachTheSigner(t *testing.T) {
 	real := testRecordSigner(t, 7)
 	key, _ := recordKeyOf(real)
 	f := &fakeRecordSigner{pub: real.Public(), sign: func(msg []byte) ([]byte, error) {
-		return real.SignRecord(context.Background(), msg)
+		return real.SignRecord(context.Background(), msg, "")
 	}}
 	bad := validRecordFields()
 	bad.entryType = "tombstone"
@@ -210,24 +210,24 @@ func TestMLDSA65RecordSigner(t *testing.T) {
 	s := testRecordSigner(t, 7)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := s.SignRecord(ctx, []byte("x")); !errors.Is(err, context.Canceled) {
+	if _, err := s.SignRecord(ctx, []byte("x"), ""); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled context: %v", err)
 	}
 	//lint:ignore SA1012 a nil context must be refused, not panic
-	if _, err := s.SignRecord(nil, []byte("x")); err == nil { //nolint:staticcheck
+	if _, err := s.SignRecord(nil, []byte("x"), ""); err == nil { //nolint:staticcheck
 		t.Fatal("signed with a nil context")
 	}
 	key, _ := recordKeyOf(s)
 	// A signer that ignores its context: signRecord itself must refuse nil.
 	careless := &fakeRecordSigner{pub: s.Public(), sign: func(msg []byte) ([]byte, error) {
-		return s.SignRecord(context.Background(), msg)
+		return s.SignRecord(context.Background(), msg, "")
 	}}
 	//lint:ignore SA1012 as above
 	if _, err := signRecord(nil, careless, key, validRecordFields()); err == nil { //nolint:staticcheck
 		t.Fatal("signRecord accepted a nil context")
 	}
 	s.Close()
-	if _, err := s.SignRecord(context.Background(), []byte("x")); !errors.Is(err, anchor.ErrSignerClosed) {
+	if _, err := s.SignRecord(context.Background(), []byte("x"), ""); !errors.Is(err, anchor.ErrSignerClosed) {
 		t.Fatalf("after Close: %v", err)
 	}
 	if _, err := recordKeyOf(s); err != nil {
@@ -268,7 +268,7 @@ func TestZeroValueRecordSignerDoesNotPanic(t *testing.T) {
 	if z.Public() != nil {
 		t.Fatal("a zero-value signer reported a key")
 	}
-	if _, err := z.SignRecord(context.Background(), []byte("x")); err == nil {
+	if _, err := z.SignRecord(context.Background(), []byte("x"), ""); err == nil {
 		t.Fatal("a zero-value signer signed")
 	}
 	if err := z.Close(); err != nil {
@@ -316,7 +316,7 @@ func TestRecordSignature_Regression(t *testing.T) {
 	if hex.EncodeToString(key.pub) != reg.PublicHex {
 		t.Fatal("the seed no longer derives the pinned public key")
 	}
-	sig, err := s.SignRecord(context.Background(), env)
+	sig, err := s.SignRecord(context.Background(), env, "")
 	if err != nil {
 		t.Fatal(err)
 	}

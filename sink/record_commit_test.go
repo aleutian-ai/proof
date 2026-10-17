@@ -37,7 +37,7 @@ type scriptedSigner struct {
 
 func (s *scriptedSigner) Public() crypto.PublicKey { return s.real.Public() }
 
-func (s *scriptedSigner) SignRecord(ctx context.Context, env []byte) ([]byte, error) {
+func (s *scriptedSigner) SignRecord(ctx context.Context, env []byte, mctx string) ([]byte, error) {
 	n := s.calls.Add(1)
 	cur := s.inFlight.Add(1)
 	defer s.inFlight.Add(-1)
@@ -56,13 +56,13 @@ func (s *scriptedSigner) SignRecord(ctx context.Context, env []byte) ([]byte, er
 	}
 	if s.failAt > 0 && n >= s.failAt {
 		if s.other != nil {
-			return s.other.SignRecord(ctx, env)
+			return s.other.SignRecord(ctx, env, mctx)
 		}
 		if n == s.failAt {
 			return nil, errors.New("injected: signer failed")
 		}
 	}
-	return s.real.SignRecord(ctx, env)
+	return s.real.SignRecord(ctx, env, mctx)
 }
 
 func openSigning(t *testing.T, dir string, rs RecordSigner, opts ...Option) *Sink {
@@ -103,7 +103,8 @@ func checkRecordSignatures(t *testing.T, s *Sink, chain string, pub []byte) int 
 			t.Fatalf("entry %d does not link to %d", i, i-1)
 		}
 		f := recordFields{chainID: chain, entryID: e.EntryID, entryType: e.EntryType, globalSeq: e.GlobalSeq,
-			prevHash: e.PreviousHash, timestamp: e.Timestamp, contentHash: e.ContentHash, keyID: row.keyID}
+			prevHash: e.PreviousHash, timestamp: e.Timestamp, contentHash: e.ContentHash, keyID: row.keyID,
+			formatVersion: e.FormatVersion, leafHash: e.LeafHash}
 		if err := verifyRecordSignature(pub, f, row.sig); err != nil {
 			t.Fatalf("entry %d (%s): %v", i, e.EntryType, err)
 		}

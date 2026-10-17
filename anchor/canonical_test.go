@@ -190,9 +190,9 @@ func TestCanonicalize_V5IsRefused(t *testing.T) {
 
 // TestCanonicalize_UnsupportedVersionIsAnError pins that we never guess.
 func TestCanonicalize_UnsupportedVersionIsAnError(t *testing.T) {
-	// 6 became supported on 2026-09-23 (SubjectVersion); 7 is the first
+	// 7 became supported in v0.5.0 (SequenceRangeVersion); 8 is the first
 	// unimplemented version above the range.
-	for _, v := range []int{0, -1, 7, 99} {
+	for _, v := range []int{0, -1, 8, 99} {
 		a := validV3()
 		a.Version = v
 		if _, err := Canonicalize(a); err == nil {

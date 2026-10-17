@@ -17,9 +17,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/aleutian-ai/proof/internal/osfile"
 	"github.com/aleutian-ai/proof/keyfile"
 	"github.com/aleutian-ai/proof/mldsa"
 	"github.com/aleutian-ai/proof/mlkem"
@@ -365,7 +365,7 @@ func createAtomic(dest string, perm os.FileMode, exactMode bool) (*atomicFile, e
 	}
 	tmp := filepath.Join(filepath.Dir(dest),
 		"."+filepath.Base(dest)+"."+hex.EncodeToString(suffix[:])+".tmp")
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, perm)
+	f, err := osfile.OpenNoFollow(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
 		return nil, err
 	}

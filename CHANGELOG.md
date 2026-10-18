@@ -5,9 +5,9 @@ All notable changes to `github.com/aleutian-ai/proof`. Versions follow
 minor or patch release may contain a source-incompatible change, and every such
 change is called out here.
 
-## Unreleased
+## v0.5.0 — 2026-10-18
 
-v0.5.0, in preparation: chain format v4, anchor v7 and bundle v2, which close
+Chain format v4, anchor v7 and bundle v2, which close
 by construction the holes two external reviews found in v3 and v6. The formats
 are specified in `docs/format-spec.md`, `docs/bundle-format.md` and
 `docs/sink-format.md`, and their conformance vectors are written in Python from

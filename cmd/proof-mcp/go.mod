@@ -21,7 +21,7 @@ go 1.25.0
 // module. It cannot be tagged against unreleased library code.
 
 require (
-	github.com/aleutian-ai/proof v0.4.1
+	github.com/aleutian-ai/proof v0.5.0
 	github.com/cloudflare/circl v1.6.3
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.7.0

@@ -52,3 +52,7 @@ func Identity(fi os.FileInfo) (dev, ino uint64, ok bool) {
 
 // IsNotDir reports whether err is ENOTDIR: a path component that is a file.
 func IsNotDir(err error) bool { return errors.Is(err, syscall.ENOTDIR) }
+
+// IsReadOnlyFS reports whether err is EROFS: the file system is mounted
+// read-only, so nothing on it can be written by anyone.
+func IsReadOnlyFS(err error) bool { return errors.Is(err, syscall.EROFS) }

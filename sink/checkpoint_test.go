@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/aleutian-ai/proof/anchor"
-	"github.com/aleutian-ai/proof/anchor/build"
 )
 
 // Checkpoint series: what makes one well formed, and what Checkpoint does when
@@ -95,10 +94,7 @@ func TestCheckpointSeriesMustGrowAndLink(t *testing.T) {
 			prev := series[0]
 			// A valid, signed successor over the SAME entries: the chain and
 			// signature checks pass; only the series rules can object.
-			next, err := build.Anchor(ctx, build.Input{Subject: cid(t, s, "u-81"), Entries: entries, Previous: &prev})
-			if err != nil {
-				t.Fatal(err)
-			}
+			next := successorOver(t, cid(t, s, "u-81"), entries, prev)
 			c.mutate(&next)
 			signed, err := anchor.SignAnchor(ctx, signer, next)
 			if err != nil {

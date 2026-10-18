@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"unicode/utf8"
 )
 
 // SequenceRangeVersion is anchor v7: the range is named by sequence, the
@@ -130,6 +131,9 @@ func (a *Anchor) unmarshalV7(data []byte) error {
 			return fmt.Errorf("anchor: a v7 anchor has no %q", name)
 		}
 	}
+	if err := refuseNull(data, "the anchor"); err != nil {
+		return err
+	}
 	var raw struct {
 		Range json.RawMessage `json:"range"`
 	}
@@ -142,6 +146,9 @@ func (a *Anchor) unmarshalV7(data []byte) error {
 	}
 	if !rnames["start_seq"] || !rnames["end_seq"] {
 		return errors.New("anchor: a v7 range names start_seq and end_seq")
+	}
+	if err := refuseNull(raw.Range, "the anchor's range"); err != nil {
+		return err
 	}
 	var w wireV7
 	if err := json.Unmarshal(data, &w); err != nil {
@@ -169,6 +176,23 @@ func (a *Anchor) unmarshalV7(data []byte) error {
 	return nil
 }
 
+// refuseNull refuses an object with a member whose value is null: encoding/json
+// reads null into a string as "", so a null would be a second spelling of an
+// empty value (format-spec §9.8). Member names were checked by objectMembers,
+// so the map's exact-name keys are the members.
+func refuseNull(data []byte, what string) error {
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(data, &members); err != nil {
+		return fmt.Errorf("anchor: %s is not a JSON object", what)
+	}
+	for name, v := range members {
+		if string(v) == "null" {
+			return fmt.Errorf("anchor: %s has %q null", what, name)
+		}
+	}
+	return nil
+}
+
 // parseDecimal reads format-spec §2.1's decimal grammar: no sign, no leading
 // zero, 0 to 2⁶³−1. Any other spelling of a number is refused, so a value has
 // one spelling, as the signed bytes do.
@@ -184,6 +208,22 @@ func parseDecimal(name, s string) (int64, error) {
 func validateV7(a Anchor) error {
 	if a.Subject == "" {
 		return errors.New("anchor: v7 must declare a non-empty subject")
+	}
+	if a.AnchorID == "" {
+		return errors.New("anchor: v7 must have a non-empty anchor_id")
+	}
+	if a.PreviousAnchorID == "" {
+		return errors.New("anchor: v7 must have a non-empty previous_anchor_id")
+	}
+	// The signed bytes and the chain hash must cover the same string: an
+	// invalid byte would be escaped in one and hashed raw in the other.
+	for _, f := range []struct{ name, v string }{
+		{"subject", a.Subject}, {"anchor_id", a.AnchorID},
+		{"previous_anchor_id", a.PreviousAnchorID}, {"signing_key_id", a.SigningKeyID},
+	} {
+		if !utf8.ValidString(f.v) {
+			return fmt.Errorf("anchor: %s is not valid UTF-8", f.name)
+		}
 	}
 	if a.VerifiedThrough != 0 {
 		return errors.New("anchor: v7 has no verified_through")

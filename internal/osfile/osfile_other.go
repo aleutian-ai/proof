@@ -25,3 +25,6 @@ func Identity(os.FileInfo) (dev, ino uint64, ok bool) { return 0, 0, false }
 
 // IsNotDir reports false.
 func IsNotDir(error) bool { return false }
+
+// IsReadOnlyFS reports false on an unsupported platform.
+func IsReadOnlyFS(error) bool { return false }

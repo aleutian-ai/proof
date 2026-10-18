@@ -23,8 +23,9 @@ import (
 //
 // # Inputs
 //
-//   - a: the anchor; it must end at the last entry walked (v7: end_seq is the
-//     last entry's global_seq; v1 to v6: it covers exactly Count() entries)
+//   - a: the anchor. v7: its tip is the last entry walked, or the entry at
+//     end_seq if [Walker.WatchTip] was given end_seq before the walk. v1 to v6:
+//     it covers exactly Count() entries.
 //   - expect: what the caller expects; see [Expect]
 //
 // # Outputs

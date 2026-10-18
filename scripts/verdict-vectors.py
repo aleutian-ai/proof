@@ -509,6 +509,171 @@ def v4_broken(at: int, kind: str, **more) -> dict:
     return {**V4_INTACT, "verdict": "BROKEN", "first_break": at, "first_break_type": kind, **more}
 
 
+# ---------------------------------------------------------------------------
+# A walk of format-spec §5.5, written from its text: steps 1 to 8 for v2, v3
+# and v4 entries. It is a second derivation of every v4 chain case. The
+# hand-written expected verdict of each case is checked against it, and it
+# alone supplies expected.breaks, the number of breaks a walk reports (a count
+# that cascades, and that no one should be asked to write by hand).
+# ---------------------------------------------------------------------------
+
+import re as _re
+from datetime import datetime as _dt
+
+_HEX128 = _re.compile(r"[0-9a-f]{128}")
+_HEX64 = _re.compile(r"[0-9a-f]{64}")
+_TS = _re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z")
+_TOMB = _re.compile(r"TOMBSTONE:[0-9a-f]{64}")
+_LIVE_V4 = {"entry_id", "entry_type", "timestamp", "format_version", "global_seq", "content_hash", "salt",
+            "leaf_hash", "chain_hash"}
+_ERASED_V4 = {"timestamp", "format_version", "global_seq", "leaf_hash", "chain_hash", "erased"}
+
+
+def _instant(ts_: str) -> bool:
+    if not _TS.fullmatch(ts_):
+        return False
+    try:
+        _dt.strptime(ts_, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        return False
+    return True
+
+
+def _leaf_text(v) -> bool:
+    if not isinstance(v, str):
+        return False
+    b = v.encode("utf-8", "surrogatepass")
+    return 1 <= len(b) <= 256 and not any(c < 0x20 or c == 0x7F for c in b)
+
+
+def chain_v2(prev: str, run_id: str, seq_num: int, ts_: str, content: str) -> str:
+    """format-spec §2.3."""
+    return sha512_hex(f"aleutian.chain.v2:{prev}|{run_id}|{seq_num}|{ts_}|{content}".encode())
+
+
+def spec_walk(entries: list, previous_hash: str = "") -> dict:
+    """format-spec §5.5 over entries as an export carries them."""
+    out = {**V4_INTACT}
+    breaks = []
+
+    def brk(i, kind):
+        breaks.append((i, kind))
+
+    prev, prev_seq, seen_v4 = previous_hash, None, False
+    for i, e in enumerate(entries):
+        fmt = e.get("format_version", 2)
+        is_v4 = fmt == 4
+        stored = e.get("chain_hash")
+        # 1. Recorded; the checks go on.
+        if i > 0 and e["global_seq"] != prev_seq + 1:
+            brk(i, "sequence_gap")
+        prev_seq = e["global_seq"]
+        was_v4, seen_v4 = seen_v4, seen_v4 or is_v4
+        # 2.
+        if not isinstance(stored, str) or not _HEX128.fullmatch(stored):
+            brk(i, "invalid_field")
+            prev = stored
+            continue
+        if is_v4 and e.get("erased") is True:
+            out["erased_found"] += 1
+        # 3.
+        tomb_shape = (e.get("entry_type") == "tombstone" or str(e.get("entry_id", "")).startswith("tomb_")
+                      or str(e.get("content_hash", "")).startswith("TOMBSTONE:"))
+        if (not is_v4 and was_v4) or (not is_v4 and any(k in e for k in ("salt", "leaf_hash", "erased"))) \
+                or (is_v4 and ("run_id" in e or "sequence_num" in e)) or (is_v4 and tomb_shape):
+            brk(i, "format_field_misuse")
+            prev = stored
+            continue
+        # An entry after one whose chain_hash failed step 2 is unlinked: checked
+        # through step 7, never recomputed, and the walk resumes from its own
+        # stored hash. A malformed supplied predecessor is the first entry's
+        # step-7 break.
+        unlinked = i > 0 and not (isinstance(prev, str) and _HEX128.fullmatch(prev))
+        bad_supplied = i == 0 and prev != "" and not _HEX128.fullmatch(prev)
+        # 4. A v2 or v3 tombstone: its own checks, the first that fails its one
+        # break, and then nothing else.
+        if not is_v4 and e.get("entry_type") == "tombstone" and str(e.get("entry_id", "")).startswith("tomb_"):
+            out["tombstones_found"] += 1
+            out["last_tombstone"] = i
+            if not _TOMB.fullmatch(e.get("content_hash", "")):
+                brk(i, "invalid_tombstone")
+            elif fmt not in (2, 3):
+                brk(i, "unknown_format")
+            elif fmt == 3 and (e.get("run_id", "") != "" or e.get("sequence_num", 0) != 0):
+                brk(i, "format_field_misuse")
+            elif e["global_seq"] < 0 or bad_supplied:
+                brk(i, "invalid_field")
+            prev = stored
+            continue
+        # 5.
+        if not _instant(e["timestamp"]):
+            brk(i, "invalid_timestamp")
+            prev = stored
+            continue
+        # 6.
+        if fmt not in (2, 3, 4):
+            brk(i, "unknown_format")
+            prev = stored
+            continue
+        if fmt == 3 and (e.get("run_id", "") != "" or e.get("sequence_num", 0) != 0):
+            brk(i, "format_field_misuse")
+            prev = stored
+            continue
+        # 7.
+        bad = bad_supplied or e["global_seq"] < 0
+        if is_v4:
+            keys = set(e)
+            if e.get("erased") is True:
+                bad = bad or keys != _ERASED_V4 or not _HEX128.fullmatch(e["leaf_hash"])
+            else:
+                bad = bad or keys != _LIVE_V4 or not _leaf_text(e.get("entry_id")) \
+                    or not _leaf_text(e.get("entry_type")) or not _HEX128.fullmatch(e.get("content_hash", "")) \
+                    or not _HEX64.fullmatch(e.get("salt", "")) or not _HEX128.fullmatch(e.get("leaf_hash", ""))
+            has_predecessor = unlinked or prev != ""
+            bad = bad or has_predecessor == (e["global_seq"] == 0)
+        else:
+            bad = bad or not _HEX128.fullmatch(e.get("content_hash", ""))
+            if fmt == 2:
+                bad = bad or e.get("run_id", "") == "" or e.get("sequence_num", 0) < 0
+        if bad:
+            brk(i, "invalid_field")
+            prev = stored
+            continue
+        if unlinked:
+            prev = stored
+            continue
+        # 8.
+        if is_v4:
+            erased = e.get("erased") is True
+            leaf = e["leaf_hash"] if erased else leaf_v4(e["entry_id"], e["entry_type"], e["content_hash"], e["salt"])
+            expected = chain_v4(prev, e["global_seq"], e["timestamp"], leaf)
+            if not erased and leaf != e["leaf_hash"]:
+                brk(i, "hash_mismatch")
+            elif expected != stored:
+                brk(i, "hash_mismatch")
+        else:
+            expected = (chain_v3(prev, e["global_seq"], e["timestamp"], e["content_hash"]) if fmt == 3 else
+                        chain_v2(prev, e["run_id"], e["sequence_num"], e["timestamp"], e["content_hash"]))
+            if expected != stored:
+                brk(i, "hash_mismatch")
+        prev = expected
+    if breaks:
+        out.update(verdict="BROKEN", first_break=breaks[0][0], first_break_type=breaks[0][1])
+    out["breaks"] = len(breaks)
+    return out
+
+
+def with_breaks(cases: list) -> list:
+    """Check every hand-written verdict against spec_walk, and add its breaks."""
+    for c in cases:
+        got = spec_walk(c["entries"], c["previous_hash"])
+        for k, v in c["expected"].items():
+            if got[k] != v:
+                raise SystemExit(f"{c['name']}: {k} is {v!r} by construction and {got[k]!r} by the §5.5 walk")
+        c["expected"]["breaks"] = got["breaks"]
+    return cases
+
+
 def v4_chain_cases() -> list:
     cases = []
 
@@ -678,7 +843,72 @@ def v4_chain_cases() -> list:
     add("predecessor_hash_supplied_to_a_first_entry",
         "§2.0: an entry with a predecessor has global_seq above 0", c, v4_broken(0, "invalid_field"),
         previous_hash=sha512_hex(b"some predecessor"))
-    return cases
+
+    # Break counting (§5.0, §5.5): at most one break per entry from steps 2 to 8.
+    c = v4_chain(4)
+    c[1]["leaf_hash"] = sha512_hex(b"another leaf")
+    c[1]["chain_hash"] = sha512_hex(b"another chain hash")
+    add("leaf_and_chain_hash_both_wrong",
+        "§5.0: a leaf mismatch is the entry's one break, and its stored chain_hash is not compared; the walk "
+        "goes on from the hash the recomputed leaf gives, so entry 2 links", c, v4_broken(1, "hash_mismatch"))
+    c = v4_chain(4)
+    c[1]["timestamp"] = c[1]["timestamp"].replace(".000000Z", "Z")
+    add("timestamp_in_another_spelling",
+        "§4, §5.5: the same instant spelled otherwise is invalid_timestamp, and the walk goes on from the stored "
+        "chain hash: one break, not a mismatch here and after", c, v4_broken(1, "invalid_timestamp"))
+    c = v4_chain(4)
+    c[1]["timestamp"] = c[1]["timestamp"].replace(".000000Z", "Z")
+    c[1]["chain_hash"] = sha512_hex(b"another chain hash")
+    add("timestamp_in_another_spelling_and_chain_hash_wrong",
+        "§5.5: step 5 ends the entry's checks; the next entries are judged from its stored (wrong) chain hash",
+        c, v4_broken(1, "invalid_timestamp"))
+    c = v4_chain(4)
+    erase(c[1])
+    c[1]["timestamp"] = "yesterday"
+    add("erased_entry_with_a_bad_timestamp", "§5.5: an erased entry's timestamp is checked like any other", c,
+        v4_broken(1, "invalid_timestamp", erased_found=1))
+    c = v4_chain(4)
+    erase(c[1])
+    c[1]["entry_type"] = "tombstone"
+    add("erased_entry_with_a_tombstone_type",
+        "§5.5: step 3 (a tombstone shape) comes before step 7 (an erased entry carries no type)", c,
+        v4_broken(1, "format_field_misuse", erased_found=1))
+    c = v4_chain(2)
+    c.append(entry(9, 2, c[-1]["chain_hash"]))
+    c.append(v4_entry(10, 3, c[-1]["chain_hash"]))
+    add("v4_then_v3_then_v4", "§2.5: never back from v4; the v4 entry after it is judged on its own", c,
+        v4_broken(2, "format_field_misuse"))
+    c = v4_chain(4)
+    c[1]["leaf_hash"] = c[1]["leaf_hash"].upper()
+    add("live_leaf_hash_uppercase", "§5.5: a shape break (step 7), before the leaf is compared", c,
+        v4_broken(1, "invalid_field"))
+    c = v4_chain(3, chain(4))
+    tombstone(c[1])
+    c[2]["content_hash"] = sha512_hex(b"forged 2")
+    prev = c[1]["chain_hash"]
+    for e in c[2:4]:
+        e["chain_hash"] = chain_v3(prev, e["global_seq"], e["timestamp"], e["content_hash"])
+        prev = e["chain_hash"]
+    add("continued_v3_entry_after_its_tombstone_rewritten",
+        "§2.5: v3 binds the entries after its last tombstone, and the first v4 entry links from the v3 head, "
+        "so rewriting a v3 entry after the tombstone and relinking the v3 part breaks at the first v4 entry", c,
+        v4_broken(4, "hash_mismatch", tombstones_found=1, last_tombstone=1))
+    c = v4_chain(2, chain(3))
+    tombstone(c[1])
+    c[1]["content_hash"] = "TOMBSTONE:" + "AB" * 32
+    c[1]["run_id"] = "run_x"
+    add("v3_tombstone_with_two_defects",
+        "§5.5 step 4: a tombstone's checks in order, the first its one break: the content hash before the run "
+        "fields", c, v4_broken(1, "invalid_tombstone", tombstones_found=1, last_tombstone=1))
+    c = v4_chain(4)
+    add("malformed_supplied_previous_hash",
+        "§5.5 step 7: the first entry's break; the next links from its stored hash", c[2:],
+        v4_broken(0, "invalid_field"), previous_hash="ab" * 63 + "|x")
+    c = v4_chain(4)
+    c[1]["entry_id"] = "a\u0085b\u00a0c"
+    add("nel_and_nbsp_in_entry_id", "§2.0: U+0085 and U+00A0 are not control characters there", relink_mixed(c),
+        V4_INTACT)
+    return with_breaks(cases)
 
 
 def anchor_v7_for(entries: list, start: int = None, end: int = None, subject: str = SUBJECT,
@@ -798,6 +1028,56 @@ def v7_bind_cases() -> list:
     return cases
 
 
+def v4_entries_text_cases() -> list:
+    """format-spec §2.0, §5.5: what a reader of a v4 entries file refuses
+    before any check. text is the file as UTF-8; text_base64, where given, is
+    the file's exact bytes (they are not UTF-8, so JSON cannot carry them)."""
+    import base64
+    live = json.dumps(v4_chain(1)[0], separators=(",", ":"), ensure_ascii=False)
+    c = v4_chain(3)
+    erase(c[1])
+    gone = json.dumps(c[1], separators=(",", ":"))
+    eid = '"entry_id":"ent_00"'
+    out = []
+
+    def add(name, why, text, expected):
+        out.append({"name": name, "why": why, "text": text, "expected": expected})
+
+    add("live_entry", "§2.0", "[" + live + "]", "entries")
+    add("erased_entry", "§2.0", "[" + gone + "]", "entries")
+    add("surrogate_pair_escape", "§2.0: a pair is one character, read as it",
+        "[" + live.replace(eid, '"entry_id":"\\ud83d\\ude00"') + "]", "entries")
+    add("lone_high_surrogate_escape", "§2.0: a reader never repairs text",
+        "[" + live.replace(eid, '"entry_id":"a\\ud800"') + "]", "not_entries")
+    add("lone_low_surrogate_escape", "§2.0", "[" + live.replace(eid, '"entry_id":"\\udfffa"') + "]", "not_entries")
+    add("high_surrogate_then_not_low", "§2.0",
+        "[" + live.replace(eid, '"entry_id":"\\ud800\\u0041"') + "]", "not_entries")
+    raw = ("[" + live.replace(eid, '"entry_id":"a\x00b"') + "]").encode().replace(b"\x00", b"\xff")
+    out.append({"name": "invalid_utf8_byte", "why": "§2.0: a reader never repairs text", "text": "",
+                "text_base64": base64.b64encode(raw).decode(), "expected": "not_entries"})
+    raw = ("[" + live.replace(eid, '"entry_id":"a\x00b"') + "]").encode().replace(b"\x00", b"\xed\xa0\x80")
+    out.append({"name": "surrogate_encoded_in_utf8", "why": "§2.0: not UTF-8 (CESU-8)", "text": "",
+                "text_base64": base64.b64encode(raw).decode(), "expected": "not_entries"})
+    for name, old, new, base in [
+        ("salt_in_another_spelling", '"salt":', '"\u017falt":', live),
+        ("leaf_hash_in_another_spelling", '"leaf_hash":', '"leaf_ha\u017fh":', gone),
+        ("erased_in_another_spelling", '"erased":', '"era\u017fed":', gone),
+        ("erased_null", '"erased":true', '"erased":null', gone),
+        ("erased_as_a_string", '"erased":true', '"erased":"true"', gone),
+        ("entry_id_null", eid, '"entry_id":null', live),
+        ("salt_null", '"salt":', '"salt":null,"x":', live),
+        ("timestamp_null", '"timestamp":', '"timestamp":null,"x":', live),
+        ("global_seq_minus_zero", '"global_seq":0', '"global_seq":-0', live),
+        ("global_seq_with_a_fraction", '"global_seq":0', '"global_seq":0.0', live),
+        ("global_seq_with_an_exponent", '"global_seq":0', '"global_seq":0e0', live),
+        ("format_version_as_a_string", '"format_version":4', '"format_version":"4"', live),
+    ]:
+        assert old in base, name
+        add(name, "§5.5: one spelling and one JSON type per member, null for none",
+            "[" + base.replace(old, new, 1) + "]", "not_entries")
+    return out
+
+
 def write_v4() -> None:
     obj = {
         "_comment": "Verifier verdict vectors for chain format v4, continued chains and v7 anchors. Written by "
@@ -807,10 +1087,14 @@ def write_v4() -> None:
                     "anchor to entries (linked from previous_hash when given) with the caller's expect "
                     "(subject, previous_anchor_hash; empty means not given); expected.error true means the "
                     "anchor or the bind is refused; otherwise compare outcome, bound, tombstones, "
-                    "entries_not_bound and subject_checked. No case needs a key.",
+                    "entries_not_bound and subject_checked. expected.breaks in chain_cases is how many breaks a walk "
+                    "reports, every one collected. entries_text_cases: text (or, for bytes that are not UTF-8, "
+                    "text_base64) is an entries file; \"entries\" if it reads, \"not_entries\" if the reader "
+                    "refuses it (an error, never a broken chain). No case needs a key.",
         "seed_anchor_hash": SEED_ANCHOR_HASH,
         "seed_anchor_id": SEED_ANCHOR_ID,
         "chain_cases": v4_chain_cases(),
+        "entries_text_cases": v4_entries_text_cases(),
         "bind_cases": v7_bind_cases(),
     }
     name = "verify_verdict_v4_vectors.json"
@@ -823,7 +1107,8 @@ def write_v4() -> None:
     manifest["vectors"] = dict(sorted(manifest["vectors"].items()))
     with open(mpath, "w") as f:
         f.write(json.dumps(manifest, indent=2) + "\n")
-    print(f"wrote {name} ({len(raw)} bytes, {len(obj['chain_cases']) + len(obj['bind_cases'])} cases)")
+    n = len(obj["chain_cases"]) + len(obj["entries_text_cases"]) + len(obj["bind_cases"])
+    print(f"wrote {name} ({len(raw)} bytes, {n} cases)")
 
 
 def main() -> None:

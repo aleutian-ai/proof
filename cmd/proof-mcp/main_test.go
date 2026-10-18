@@ -373,9 +373,9 @@ func TestVerifyChain_BrokenChainProvesNothing(t *testing.T) {
 	}
 }
 
-// TestVerifyChain_ErasedEntryLimitsTheClaim: an erased entry's chain hash is
+// TestVerifyChain_ErasedEntryLimitsTheClaim: a v3 tombstone's chain hash is
 // taken as stored, so an intact verdict says nothing about the entries up to
-// and including the last erased one.
+// and including the last one.
 func TestVerifyChain_ErasedEntryLimitsTheClaim(t *testing.T) {
 	var out verifyChainOut
 	call(t, connect(t), "verify_chain", map[string]any{"path": writeChain(t, 4, true)}, &out)
@@ -386,7 +386,7 @@ func TestVerifyChain_ErasedEntryLimitsTheClaim(t *testing.T) {
 	if out.LastTombstone != 1 {
 		t.Errorf("last_tombstone = %d, want 1", out.LastTombstone)
 	}
-	if !strings.HasPrefix(out.Proven, "Nothing after entry 1, the last erased one,") {
+	if !strings.HasPrefix(out.Proven, "Nothing after entry 1, the last v2/v3 tombstone,") {
 		t.Errorf("proven is not limited to the entries after the erased one: %q", out.Proven)
 	}
 	for _, want := range []string{"entries 0 to 1 are unedited", "not verified", "taken as stored", "whole chain", "anchor"} {

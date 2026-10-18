@@ -5,6 +5,7 @@ package anchor
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 type v7File struct {
 	Context        string `json:"context"`
+	MessagePrefix  string `json:"message_prefix_hex"`
 	SeedAnchorHash string `json:"seed_anchor_hash"`
 	Key            struct {
 		SeedHex      string `json:"seed_hex"`
@@ -31,6 +33,7 @@ type v7File struct {
 		Name   string `json:"name"`
 		Reason string `json:"reason"`
 		Text   string `json:"text"`
+		Base64 string `json:"text_base64"`
 	} `json:"reject"`
 }
 
@@ -42,6 +45,9 @@ func loadV7(t *testing.T) (v7File, *KeyRing) {
 	}
 	if f.Context != ContextV7 || f.SeedAnchorHash != SeedAnchorHash {
 		t.Fatalf("vectors are for context %q", f.Context)
+	}
+	if want := hex.EncodeToString(append([]byte{0, byte(len(f.Context))}, f.Context...)); f.MessagePrefix != want {
+		t.Fatalf("message_prefix_hex %q; FIPS 204 gives %q", f.MessagePrefix, want)
 	}
 	if len(f.Vectors) < 7 || len(f.Reject) < 20 {
 		t.Fatalf("%d vectors, %d reject: the file was truncated", len(f.Vectors), len(f.Reject))
@@ -85,8 +91,15 @@ func TestAnchorV7_SharedVectors(t *testing.T) {
 	}
 	for _, r := range f.Reject {
 		t.Run("reject: "+r.Name, func(t *testing.T) {
+			text := []byte(r.Text)
+			if r.Base64 != "" {
+				var err error
+				if text, err = base64.StdEncoding.DecodeString(r.Base64); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var a Anchor
-			if err := json.Unmarshal([]byte(r.Text), &a); err != nil {
+			if err := json.Unmarshal(text, &a); err != nil {
 				return
 			}
 			if _, err := VerifySignature(a, kr); err == nil {

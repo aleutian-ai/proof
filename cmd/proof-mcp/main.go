@@ -299,7 +299,8 @@ type verifyChainOut struct {
 	Verdict         string `json:"verdict"`
 	EntriesVerified int    `json:"entries_verified"`
 	TombstonesFound int    `json:"tombstones_found"`
-	LastTombstone   int    `json:"last_tombstone"` // index of the last erased entry, -1 if none
+	LastTombstone   int    `json:"last_tombstone"` // index of the last v2/v3 tombstone, -1 if none
+	ErasedFound     int    `json:"erased_found"`   // v4 entries carrying erased: true
 	FirstBreak      int    `json:"first_break"`
 	Breaks          []brk  `json:"breaks,omitempty"`
 
@@ -333,6 +334,7 @@ func (c serverConfig) verifyChain(ctx context.Context, req *mcp.CallToolRequest,
 		EntriesVerified: res.EntriesVerified,
 		TombstonesFound: res.TombstonesFound,
 		LastTombstone:   res.LastTombstone,
+		ErasedFound:     res.ErasedFound,
 		FirstBreak:      res.FirstBreak,
 	}
 	out.Proven, out.NotProven = chainClaims(res)
@@ -353,11 +355,29 @@ const notWholeChain = "that this is the whole chain. Entries could have been rem
 // chainClaims words what a verify_chain result proves and does not prove.
 //
 // The claim depends on the verdict. A broken chain proves nothing. An intact
-// chain that holds an erased entry proves something only about the entries
-// after the last erased one: an erased entry's chain hash is taken as stored,
-// so nothing links the entries before it to the entries after it. See
-// docs/verification-model.md, "What a tombstone leaves unverified".
+// chain that holds a v2/v3 tombstone proves something only about the entries
+// after the last one: a tombstone's chain hash is taken as stored, so nothing
+// links the entries before it to the entries after it. See
+// docs/verification-model.md, "What a tombstone leaves unverified". A v4
+// erasure keeps every link checked, and is itself unauthenticated.
 func chainClaims(res verify.Result) (proven, notProven string) {
+	proven, notProven = linkageClaims(res)
+	if res.Verdict != verify.VerdictBroken && res.ErasedFound > 0 {
+		notProven += " " + erasureNotProven(res.ErasedFound)
+	}
+	return proven, notProven
+}
+
+// erasureNotProven is what n erased v4 entries leave unproven, as `proof
+// verify` says it.
+func erasureNotProven(n int) string {
+	return fmt.Sprintf("Also not proven: who erased the %d erased entries, or that they were allowed to. "+
+		"An erasure is not authenticated by the chain: whoever can write the store can erase a "+
+		"live entry and the chain still verifies. erased: true says the export withholds the "+
+		"entry's fields, not why.", n)
+}
+
+func linkageClaims(res verify.Result) (proven, notProven string) {
 	switch {
 	case res.Verdict == verify.VerdictBroken:
 		proven = "Nothing. The chain does not verify."
@@ -368,10 +388,10 @@ func chainClaims(res verify.Result) (proven, notProven string) {
 				"the break count is a blast radius. Entry %d is the place to look.", res.FirstBreak)
 		}
 	case res.TombstonesFound > 0:
-		proven = fmt.Sprintf("Nothing after entry %d, the last erased one, was edited by anyone "+
+		proven = fmt.Sprintf("Nothing after entry %d, the last v2/v3 tombstone, was edited by anyone "+
 			"unable to also rewrite every entry after it.", res.LastTombstone)
-		notProven = fmt.Sprintf("That entries 0 to %d are unedited: they are not verified. An "+
-			"erased entry's chain hash is taken as stored, so whoever can write the chain can "+
+		notProven = fmt.Sprintf("That entries 0 to %d are unedited: they are not verified. A "+
+			"tombstone's chain hash is taken as stored, so whoever can write the chain can "+
 			"replace everything up to and including it. Also not proven: ", res.LastTombstone) +
 			notWholeChain
 	default:
@@ -726,11 +746,13 @@ type verifyAnchorOut struct {
 	Detail         string `json:"detail,omitempty"`
 	EntriesCovered int64  `json:"entries_covered"`
 
-	// Tombstones is how many erased entries the chain holds. EntriesNotBound is
-	// how many entries, counted from the first, the anchor does not bind: every
-	// entry up to and including the last erased one.
+	// Tombstones is how many v2/v3 tombstones the chain holds. EntriesNotBound
+	// is how many entries, counted from the first, the anchor does not bind:
+	// every entry up to and including the last tombstone. ErasedFound is how
+	// many v4 entries are erased; they are bound like any other.
 	Tombstones      int   `json:"tombstones"`
 	EntriesNotBound int64 `json:"entries_not_bound"`
+	ErasedFound     int   `json:"erased_found"`
 
 	SignatureVerified bool `json:"signature_verified"`
 
@@ -810,6 +832,14 @@ func (c serverConfig) verifyAnchor(ctx context.Context, req *mcp.CallToolRequest
 	}
 	if res.Trust != "" {
 		out.TrustEstablishes = res.Trust.Establishes()
+	}
+	for _, e := range entries {
+		if e.FormatVersion == chainformat.FormatV4 && e.Erased {
+			out.ErasedFound++
+		}
+	}
+	if out.ErasedFound > 0 {
+		out.NotProven = strings.TrimSpace(out.NotProven + " " + erasureNotProven(out.ErasedFound))
 	}
 	if ring == nil && len(c.trusted) > 0 {
 		// Say so, or a reader assumes the keys the server holds were not tried.
@@ -956,7 +986,8 @@ func explainTrustModel(ctx context.Context, req *mcp.CallToolRequest, in explain
 				Check:  "verify_chain (linkage only)",
 				Proven: "Nothing was edited by anyone unable to also rewrite every entry after it.",
 				NotProven: "That this is the whole chain. Front-truncation followed by re-linking is undetectable here. " +
-					"Nor anything about entries up to and including an erased one: its chain hash is taken as stored. " +
+					"Nor, in a v2 or v3 chain, anything about entries up to and including a tombstone: its chain hash is taken as stored. " +
+					"A v4 erasure keeps every link checked, but is not authenticated: whoever can write the store can erase. " +
 					"A chain that does not verify proves nothing.",
 			},
 			{

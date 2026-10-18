@@ -213,18 +213,23 @@ func BindAnchor(a anchor.Anchor, entries []Entry, expect Expect) (BindResult, er
 	}
 	// v7: the tip is the entry at end_seq, wherever it is in what was given,
 	// and only the tombstones at or before it limit what the anchor binds.
-	tip := tipOf(entries, a.Range.EndSeq)
-	return w.bindV7(a, expect, entries, tip)
+	return w.bindV7(a, expect, tipOf(entries, a.Range.EndSeq))
 }
 
-// tipOf is the index of the entry at globalSeq, or -1.
-func tipOf(entries []Entry, globalSeq int64) int {
+// tipOf is the entry at globalSeq and the tombstones up to it, or a tipState
+// that was not found.
+func tipOf(entries []Entry, globalSeq int64) tipState {
+	t := tipState{lastTomb: -1}
 	for i, e := range entries {
+		if e.FormatVersion != chainformat.FormatV4 && chainformat.IsTombstone(e.EntryType, e.EntryID) {
+			t.tombstones, t.lastTomb = t.tombstones+1, i
+		}
 		if e.GlobalSeq == globalSeq {
-			return i
+			t.found, t.hash = true, e.ChainHash
+			return t
 		}
 	}
-	return -1
+	return tipState{lastTomb: -1}
 }
 
 // bind is BindAnchor after the walk, for v1 to v6: it binds a to exactly the
@@ -232,12 +237,16 @@ func tipOf(entries []Entry, globalSeq int64) int {
 // the paths cannot drift apart.
 func (w *Walker) bind(a anchor.Anchor, expect Expect) (BindResult, error) {
 	if a.Version == anchor.SequenceRangeVersion {
-		// A walker binds what it has seen so far: the tip is its last entry.
-		tip := -1
-		if w.last.GlobalSeq == a.Range.EndSeq {
-			tip = w.Count() - 1
+		// The tip is the last entry walked, or the one WatchTip recorded.
+		tip := tipState{lastTomb: -1}
+		switch {
+		case w.last.GlobalSeq == a.Range.EndSeq:
+			tip = tipState{found: true, hash: w.last.ChainHash,
+				tombstones: w.res.TombstonesFound, lastTomb: w.res.LastTombstone}
+		case w.watchSeq != nil && *w.watchSeq == a.Range.EndSeq:
+			tip = w.watched
 		}
-		return w.bindV7(a, expect, nil, tip)
+		return w.bindV7(a, expect, tip)
 	}
 	if err := w.refuseSegment(); err != nil {
 		return BindResult{}, err
@@ -310,18 +319,13 @@ func (w *Walker) bind(a anchor.Anchor, expect Expect) (BindResult, error) {
 // index, in walk order, of the entry at end_seq, or -1. entries, when given,
 // are what was walked, and decide which tombstones lie at or before the tip;
 // otherwise the tip is the walker's last entry and its counts apply.
-func (w *Walker) bindV7(a anchor.Anchor, expect Expect, entries []Entry, tip int) (BindResult, error) {
+func (w *Walker) bindV7(a anchor.Anchor, expect Expect, tip tipState) (BindResult, error) {
 	if err := w.refuseSegment(); err != nil {
 		return BindResult{}, err
 	}
 	tombstones, lastTomb := w.res.TombstonesFound, w.res.LastTombstone
-	if entries != nil && tip >= 0 {
-		tombstones, lastTomb = 0, -1
-		for i, e := range entries[:tip+1] {
-			if e.FormatVersion != chainformat.FormatV4 && chainformat.IsTombstone(e.EntryType, e.EntryID) {
-				tombstones, lastTomb = tombstones+1, i
-			}
-		}
+	if tip.found {
+		tombstones, lastTomb = tip.tombstones, tip.lastTomb
 	}
 	res := w.unbound(a, expect, tombstones, int64(lastTomb+1))
 	boundProven, boundNotProven := w.boundClaims(res, a.EntryCount)
@@ -334,18 +338,13 @@ func (w *Walker) bindV7(a anchor.Anchor, expect Expect, entries []Entry, tip int
 			a.Range.StartSeq, w.first.GlobalSeq)
 		return res, nil
 	}
-	if tip < 0 {
+	if !tip.found {
 		res.Outcome = BindHeightMismatch
 		res.Detail = fmt.Sprintf("the anchor covers entries up to global_seq %d, and this chain has none there",
 			a.Range.EndSeq)
 		return res, nil
 	}
-	var head string
-	if entries != nil {
-		head = entries[tip].ChainHash
-	} else {
-		head = w.last.ChainHash
-	}
+	head := tip.hash
 	if expect.PreviousAnchorHash != "" && a.PreviousAnchorHash != expect.PreviousAnchorHash {
 		res.Outcome = BindPredecessorMismatch
 		res.Detail = "the anchor's previous_anchor_hash is not the predecessor expected"

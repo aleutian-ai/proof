@@ -10,12 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/aleutian-ai/proof/anchor"
-	"github.com/aleutian-ai/proof/anchor/build"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
-	"github.com/aleutian-ai/proof/verify"
 )
 
 // TestStreaming_AcrossPages: a chain longer than two pages, with checkpoints on
@@ -91,14 +88,7 @@ func TestStreaming_CheckpointBeyondTheChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := verify.NewWalker(verify.Options{})
-	for _, e := range entries {
-		w.Add(e)
-	}
-	next, err := build.FromWalker(ctx, cid(t, s, "u-81"), w, &series[0], time.Time{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	next := successorOver(t, cid(t, s, "u-81"), entries, series[0])
 	next.EntryCount = int64(len(entries)) + 5
 	next.Range.EndSeq = next.EntryCount - 1
 	signed, err := anchor.SignAnchor(ctx, signer, next)

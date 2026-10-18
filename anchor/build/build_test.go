@@ -290,7 +290,7 @@ func TestAnchor_DoesNotMutateItsInput(t *testing.T) {
 	entries := chainOf(t, 3)
 	before := append([]verify.Entry(nil), entries...)
 
-	first, err := Anchor(context.Background(), Input{Subject: testSubject, Entries: entries})
+	first, err := Anchor(context.Background(), Input{Subject: testSubject, Entries: entries[:2]})
 	if err != nil {
 		t.Fatalf("Anchor: %v", err)
 	}
@@ -475,8 +475,19 @@ func TestFromWalker_RefusesASegmentAndAForeignPredecessor(t *testing.T) {
 	if _, err := Anchor(ctx, Input{Subject: testSubject, Entries: entries[:3], Previous: &whole}); err == nil {
 		t.Error("chained a 3-entry anchor onto a 10-entry one")
 	}
-	// The same chain anchored again is allowed: nothing new, a later attestation.
-	if _, err := Anchor(ctx, Input{Subject: testSubject, Entries: entries, Previous: &whole}); err != nil {
-		t.Errorf("re-anchoring the same chain: %v", err)
+	// The same chain anchored again is refused: a successor covers more than
+	// its predecessor (sink-format §5), or verify.Series would refuse it.
+	if _, err := Anchor(ctx, Input{Subject: testSubject, Entries: entries, Previous: &whole}); err == nil {
+		t.Error("chained an anchor that covers no more than its predecessor")
+	}
+	// Nor may it go back in time.
+	half, err := Anchor(ctx, Input{Subject: testSubject, Entries: entries[:5]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	early := time.UnixMilli(half.CreatedAtMs - 1)
+	if _, err := Anchor(ctx, Input{Subject: testSubject, Entries: entries, Previous: &half,
+		CreatedAt: early}); err == nil || !strings.Contains(err.Error(), "back in time") {
+		t.Errorf("chained an anchor created before its predecessor: %v", err)
 	}
 }

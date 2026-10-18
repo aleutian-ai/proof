@@ -12,15 +12,15 @@ SHA-256 of the `MANIFEST.json` it last passed. `scripts/release-check.sh --sdk
 <dir>` fails a release when an SDK states another set.
 
 **Vector set of this release:** `MANIFEST.json` SHA-256
-`5da46887eb03877df823bf5f8a8c50ec06572e9e1db40163081b4774f314a10d`.
+`62b96a47373c1cf41b21af29ac23b9760eee205b00933d26769efcee09b5c662`.
 
 ## What each file pins
 
 | File | Spec | Frozen | What an implementation must do |
 |---|---|---|---|
 | `chain_v4_vectors.json` | format-spec §2.0, §2.5, §5.0 | | reproduce every leaf and chain hash; refuse every `reject` case |
-| `anchor_v7_canonical_vectors.json` | format-spec §9 | | reproduce canonical bytes and chain hashes; verify every signature with the v7 context; refuse every `reject` text |
-| `verify_verdict_v4_vectors.json` | format-spec §2.0, §2.5, §5.0, §5.5, §9.7 | | the same verdict, first break and counts for every chain; the same outcome for every v7 bind |
+| `anchor_v7_canonical_vectors.json` | format-spec §9 | | reproduce canonical bytes and chain hashes; verify every signature with the v7 context; refuse every `reject` text (some are bytes that are not UTF-8, given as `text_base64`) |
+| `verify_verdict_v4_vectors.json` | format-spec §2.0, §2.5, §5.0, §5.5, §9.7 | | the same verdict, first break, counts and number of breaks for every chain; the same reading or refusal of every entries file; the same outcome for every v7 bind |
 | `bundle_v2_vectors.json` | bundle-format §16 | | the same §9 result for every bundle |
 | `record_v2_vectors.json` | sink-format §9.1 | | reproduce every envelope; refuse every `reject` case; the stated validity of every signature |
 | `chain_v3_vectors.json` | format-spec §2.1 | ✓ | as for v4 |
@@ -51,8 +51,8 @@ Frozen files describe formats that are verified forever and never written
 | every frozen file, and the rest | ✓ | ✓ | ✓ |
 
 Each column is this release's vector set, in full: the Python SDK
-(`sdk/verification-python`, 1,783 tests) and the JavaScript SDK
-(`sdk/verification-js`, 1,599 tests) were written from the specifications,
+(`sdk/verification-python`, 1,835 tests) and the JavaScript SDK
+(`sdk/verification-js`, 1,643 tests) were written from the specifications,
 without reading this module's Go code, and state the set's digest in their
 READMEs. Writing them found five places where the specification's wording
 was looser than its vectors (how §5.5 counts an entry broken at step 2, and
@@ -64,6 +64,15 @@ An independent reader, given only the specifications, reproduced every case of
 the first three files with 0 disagreements before the Go implementation was
 written (2026-10-16). The bundle v2 vectors were written the same way; the Go
 verifier passed all of them unchanged.
+
+The v4 verdict vectors' `breaks` come from a walk of §5.5 written in the
+vectors' own script from the spec's text, which also checks every
+hand-written verdict against itself. The pre-tag review of v0.5.0
+(2026-10-17) found five places where the implementations or the text
+disagreed on what a walk reports after a break, how an entry after a
+malformed chain hash is linked, and what a reader refuses before any check
+(text that is not UTF-8, lone surrogate escapes, `null`, `-0`); the text was
+settled, the vectors pin each, and all three implementations agree.
 
 ## What the shared set does not cover
 

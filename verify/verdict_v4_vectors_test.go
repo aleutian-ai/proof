@@ -4,7 +4,10 @@
 package verify
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -27,8 +30,15 @@ type verdictV4Vectors struct {
 			TombstonesFound int    `json:"tombstones_found"`
 			LastTombstone   int    `json:"last_tombstone"`
 			ErasedFound     int    `json:"erased_found"`
+			Breaks          int    `json:"breaks"`
 		} `json:"expected"`
 	} `json:"chain_cases"`
+	EntriesTextCases []struct {
+		Name       string `json:"name"`
+		Text       string `json:"text"`
+		TextBase64 string `json:"text_base64"`
+		Expected   string `json:"expected"`
+	} `json:"entries_text_cases"`
 	BindCases []struct {
 		Name         string          `json:"name"`
 		Entries      json.RawMessage `json:"entries"`
@@ -81,10 +91,45 @@ func TestVerdictV4Vectors_Chains(t *testing.T) {
 			}
 			if string(res.Verdict) != c.Expected.Verdict || res.FirstBreak != c.Expected.FirstBreak ||
 				firstType != c.Expected.FirstBreakType || res.TombstonesFound != c.Expected.TombstonesFound ||
-				res.LastTombstone != c.Expected.LastTombstone || res.ErasedFound != c.Expected.ErasedFound {
-				t.Fatalf("got %s, first break %d (%s), %d tombstones, last at %d, %d erased\nwant %+v\nbreaks %+v",
+				res.LastTombstone != c.Expected.LastTombstone || res.ErasedFound != c.Expected.ErasedFound ||
+				len(res.Breaks) != c.Expected.Breaks {
+				t.Fatalf("got %s, first break %d (%s), %d tombstones, last at %d, %d erased, %d breaks\nwant %+v\nbreaks %+v",
 					res.Verdict, res.FirstBreak, firstType, res.TombstonesFound, res.LastTombstone,
-					res.ErasedFound, c.Expected, res.Breaks)
+					res.ErasedFound, len(res.Breaks), c.Expected, res.Breaks)
+			}
+		})
+	}
+}
+
+// TestVerdictV4Vectors_EntriesText holds both readers to what a v4 entries
+// file must be before any check: one spelling of every member and every
+// string, and text that is not repaired.
+func TestVerdictV4Vectors_EntriesText(t *testing.T) {
+	cases := loadVerdictV4(t).EntriesTextCases
+	if len(cases) < 15 {
+		t.Fatalf("%d entries text cases: the file was truncated", len(cases))
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			raw := []byte(c.Text)
+			if c.TextBase64 != "" {
+				var err error
+				if raw, err = base64.StdEncoding.DecodeString(c.TextBase64); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err := DecodeEntries(raw)
+			r := NewEntryReader(bytes.NewReader(raw))
+			var rerr error
+			for rerr == nil {
+				_, rerr = r.Next()
+			}
+			if rerr == io.EOF {
+				rerr = nil
+			}
+			want := c.Expected == "entries"
+			if (err == nil) != want || (rerr == nil) != want {
+				t.Fatalf("DecodeEntries: %v; EntryReader: %v; want %s", err, rerr, c.Expected)
 			}
 		})
 	}
@@ -191,6 +236,22 @@ func TestVerdictV4Vectors_Binds(t *testing.T) {
 				if werr != nil || wr.Outcome != res.Outcome || wr.EntriesNotBound != res.EntriesNotBound {
 					t.Errorf("the walker path gave %s, %d not bound, %v; the slice path %s, %d",
 						wr.Outcome, wr.EntriesNotBound, werr, res.Outcome, res.EntriesNotBound)
+				}
+			}
+			// Given every entry, a walker told the tip in advance agrees with
+			// the slice path too: a chain that has grown since still binds
+			// (§9.7). Without WatchTip it once reported height_mismatch.
+			if c.PreviousHash == "" {
+				w := NewWalker(Options{MaxBreaks: 1})
+				w.WatchTip(a.Range.EndSeq)
+				for _, e := range entries {
+					w.Add(e)
+				}
+				wr, werr := w.BindAnchor(a, expect)
+				if werr != nil || wr.Outcome != res.Outcome || wr.Tombstones != res.Tombstones ||
+					wr.EntriesNotBound != res.EntriesNotBound {
+					t.Errorf("the watching walker gave %s, %d tombstones, %d not bound, %v; the slice path %s, %d, %d",
+						wr.Outcome, wr.Tombstones, wr.EntriesNotBound, werr, res.Outcome, res.Tombstones, res.EntriesNotBound)
 				}
 			}
 		})

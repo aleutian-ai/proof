@@ -134,6 +134,9 @@ func appendChainsMatchesAppend(t *testing.T, format int) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// The two append in different orders, so a salt is taken from
+				// the entry rather than from a sequence.
+				ls.saltFor, lb.saltFor = saltFromID, saltFromID
 				chains := []string{"alpha", "beta", "gamma", "delta"}[:2+rng.IntN(3)]
 				rounds := 1 + rng.IntN(4)
 				for round := 0; round < rounds; round++ {
@@ -144,12 +147,6 @@ func appendChainsMatchesAppend(t *testing.T, format int) {
 							continue // a chain sits this round out
 						}
 						in := shuffledWithTies(rng, c, 1+rng.IntN(5), base)
-						if format == chainformat.FormatV4 {
-							for i := range in {
-								sum := sha256.Sum256([]byte(in[i].EntryID))
-								in[i].Salt = hex.EncodeToString(sum[:])
-							}
-						}
 						batches = append(batches, ChainInputs{ChainID: c, Inputs: in})
 					}
 					if len(batches) == 0 {
@@ -370,4 +367,10 @@ func TestAppendChains_RefusesMismatchedTails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "tail of") {
 		t.Fatalf("err = %v; want the mismatched tail refused", err)
 	}
+}
+
+// saltFromID is a reproducible salt for tests that compare two linkers.
+func saltFromID(in Input) (string, error) {
+	sum := sha256.Sum256([]byte(in.EntryID))
+	return hex.EncodeToString(sum[:]), nil
 }

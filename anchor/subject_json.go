@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/aleutian-ai/proof/internal/jsontext"
 )
 
 // legacySubjectKey is the wire key v3, v4 and v5 use for the subject.
@@ -125,13 +127,17 @@ func (a Anchor) MarshalJSON() ([]byte, error) {
 //
 // # Limitations
 //
-//   - Member values are decoded by encoding/json: a string holding invalid
-//     UTF-8 is repaired, not refused.
+//   - None.
 //
 // # Assumptions
 //
 //   - The caller runs ValidateVersionInvariants (every verifier here does).
 func (a *Anchor) UnmarshalJSON(data []byte) error {
+	// encoding/json would repair invalid UTF-8 and a lone surrogate escape to
+	// U+FFFD: a second spelling of a value, so the text is refused instead.
+	if err := jsontext.Check(data); err != nil {
+		return fmt.Errorf("anchor: %w", err)
+	}
 	// The version decides which members exist; it is read first, and the
 	// member checks below are what refuse anything else in the object.
 	var head struct {

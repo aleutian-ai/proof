@@ -873,10 +873,14 @@ The verifier decides whether record signatures are required, never the folder.
   verified checkpoint covers has no signature row, that is a problem
   (`erasure-unsigned`), with or without record trust: the sink signs every
   erasure it makes, so one without a signature was written by something else.
-  This is the forged tail erasure the round-2 review found. It is checked from
-  the folder's own word, which whoever deletes the signatures file can also
-  delete; a verifier given record trust needs no such word (every entry must
-  then be signed).
+  This is the forged tail erasure the round-2 review found. A row that is
+  malformed, or is under a key id the folder never recorded as one of its
+  record keys, is no signature and counts as absent. It is checked from the
+  folder's own word, which whoever deletes the signatures file can also
+  delete, and without keys a genuine signature row copied from another record
+  cannot be told from the erasure's own; a verifier given record trust needs
+  no such word and sees both (every entry must then be signed, by a trusted
+  key, over itself). Checkpoint refuses every one of these.
 
 ## 10. Versions
 

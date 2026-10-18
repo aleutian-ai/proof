@@ -461,6 +461,55 @@ type Walker struct {
 	previousSeq  int64
 	first, last  Entry
 	sawV4        bool // a v4 entry was added; no v2 or v3 entry may follow
+
+	// watchSeq and watched are what WatchTip asked for and what the walk saw
+	// there: a v7 anchor's tip, for a chain that has grown past it.
+	watchSeq *int64
+	watched  tipState
+}
+
+// tipState is what binding a v7 anchor needs of the entry at its end_seq: its
+// chain hash, and the v2/v3 tombstones walked up to and including it.
+type tipState struct {
+	found      bool
+	hash       string
+	tombstones int
+	lastTomb   int
+}
+
+// WatchTip tells the walker, before the first Add, the global_seq of the tip
+// of a v7 anchor it will be asked to bind.
+//
+// # Description
+//
+// A v7 anchor binds a chain that has grown since it was signed (format-spec
+// §9.7): its tip is the entry at end_seq, wherever that is in the walk. A
+// walker holds no entries, so it records the tip's chain hash as it passes it.
+// Without WatchTip, [Walker.BindAnchor] and [Walker.VerifyAnchor] bind only an
+// anchor whose tip is the last entry walked.
+//
+// # Inputs
+//
+//   - globalSeq: the anchor's Range.EndSeq
+//
+// # Example
+//
+//	w := verify.NewWalker(verify.Options{MaxBreaks: 1})
+//	w.WatchTip(a.Range.EndSeq)
+//	for _, e := range entries {
+//	    w.Add(e)
+//	}
+//	res, err := w.BindAnchor(a, verify.Expect{Subject: "orders"})
+//
+// # Limitations
+//
+//   - One tip per walker. Has no effect on anchors before v7.
+//
+// # Assumptions
+//
+//   - Called before the first Add.
+func (w *Walker) WatchTip(globalSeq int64) {
+	w.watchSeq = &globalSeq
 }
 
 // NewWalker starts a walk. opts is as for Chain.
@@ -500,11 +549,18 @@ func (w *Walker) addBreak(b Break) {
 
 // Add walks one entry. Every failure is recorded as a Break; there is no error.
 func (w *Walker) Add(e Entry) {
+	w.add(e)
+	if w.watchSeq != nil && !w.watched.found && e.GlobalSeq == *w.watchSeq {
+		w.watched = tipState{found: true, hash: e.ChainHash,
+			tombstones: w.res.TombstonesFound, lastTomb: w.res.LastTombstone}
+	}
+}
+
+func (w *Walker) add(e Entry) {
 	i := w.res.EntriesVerified
 	w.res.EntriesVerified++
 	if i == 0 {
 		w.first = e
-		w.checkStart(e)
 	}
 	w.last = e
 
@@ -533,10 +589,18 @@ func (w *Walker) Add(e Entry) {
 		return
 	}
 
+	// What this entry links from (format-spec §5.5). An entry after one whose
+	// chain_hash failed step 2 cannot be linked to it: it is checked through
+	// step 7 and the walk resumes from its own stored hash, so it is judged on
+	// its own. A malformed supplied predecessor is the first entry's step-7
+	// break.
+	unlinked := i > 0 && !chainHashPattern.MatchString(w.previousHash)
+	badSupplied := i == 0 && w.previousHash != "" && !chainHashPattern.MatchString(w.previousHash)
+
 	// Never back from v4 (format-spec §2.5). Checked before the tombstone
 	// rule, because a v3 tombstone here is exactly what this prevents.
 	if e.FormatVersion == chainformat.FormatV4 {
-		w.addV4(i, e)
+		w.addV4(i, e, unlinked, badSupplied)
 		return
 	}
 	if w.sawV4 {
@@ -557,40 +621,33 @@ func (w *Walker) Add(e Entry) {
 		return
 	}
 
-	// Rule 2 — tombstones. Format only, then advance on the STORED hash.
+	// Rule 2 — tombstones. What it declares, then advance on the STORED hash.
+	// Its hash is not recomputed, but its own checks are made, and the first
+	// that fails is its one break (§5.5 step 4): a tombstone naming a format
+	// this build does not implement, or a v3 one carrying v2's fields, once
+	// passed because this branch returned before the format dispatch below.
 	if chainformat.IsTombstone(e.EntryType, e.EntryID) {
 		w.res.TombstonesFound++
 		w.res.LastTombstone = i
-		// Its hash is not recomputed, but what it declares is still checked:
-		// a tombstone naming a format this build does not implement, or a v3
-		// one carrying v2's fields, once passed because this branch returned
-		// before the format dispatch below.
-		switch chainformat.NormalizeFormatVersion(e.FormatVersion) {
-		case chainformat.FormatV2:
-		case chainformat.FormatV3:
-			if e.RunID != "" || e.SequenceNum != 0 {
-				w.addBreak(Break{
-					Position: i, EntryID: e.EntryID, Type: BreakFormatFieldMisuse,
-					Detail: "a v3 entry must not carry run_id or sequence_num; neither is bound into its hash",
-				})
-			}
-		default:
-			w.addBreak(Break{
-				Position: i, EntryID: e.EntryID, Type: BreakUnknownFormat,
-				Detail: fmt.Sprintf("chain hash format version %d is not implemented by this build", e.FormatVersion),
-			})
+		var t BreakType
+		var detail string
+		format := chainformat.NormalizeFormatVersion(e.FormatVersion)
+		switch {
+		case !chainformat.ValidateTombstoneContentHash(e.ContentHash):
+			t, detail = BreakInvalidTombstone, "content hash is not a well-formed tombstone value"
+		case format != chainformat.FormatV2 && format != chainformat.FormatV3:
+			t, detail = BreakUnknownFormat,
+				fmt.Sprintf("chain hash format version %d is not implemented by this build", e.FormatVersion)
+		case format == chainformat.FormatV3 && (e.RunID != "" || e.SequenceNum != 0):
+			t, detail = BreakFormatFieldMisuse,
+				"a v3 entry must not carry run_id or sequence_num; neither is bound into its hash"
+		case e.GlobalSeq < 0:
+			t, detail = BreakInvalidField, fmt.Sprintf("globalSeq must be non-negative, got %d", e.GlobalSeq)
+		case badSupplied:
+			t, detail = BreakInvalidField, errBadSupplied
 		}
-		if e.GlobalSeq < 0 {
-			w.addBreak(Break{
-				Position: i, EntryID: e.EntryID, Type: BreakInvalidField,
-				Detail: fmt.Sprintf("globalSeq must be non-negative, got %d", e.GlobalSeq),
-			})
-		}
-		if !chainformat.ValidateTombstoneContentHash(e.ContentHash) {
-			w.addBreak(Break{
-				Position: i, EntryID: e.EntryID, Type: BreakInvalidTombstone,
-				Detail: "content hash is not a well-formed tombstone value",
-			})
+		if t != "" {
+			w.addBreak(Break{Position: i, EntryID: e.EntryID, Type: t, Detail: detail})
 		}
 		w.previousHash = e.ChainHash
 		return
@@ -610,10 +667,16 @@ func (w *Walker) Add(e Entry) {
 	// which fields produced it.
 	var expected string
 	var shapeErr error
+	// An unlinked entry's predecessor is not its field: its own shapes are
+	// checked as though it had none.
+	shapePrev := w.previousHash
+	if unlinked {
+		shapePrev = ""
+	}
 	switch chainformat.NormalizeFormatVersion(e.FormatVersion) {
 	case chainformat.FormatV2:
 		shapeErr = chainformat.ValidateChainHashInputs(
-			w.previousHash, e.RunID, e.SequenceNum, e.ContentHash)
+			shapePrev, e.RunID, e.SequenceNum, e.ContentHash)
 		if shapeErr == nil && e.GlobalSeq < 0 {
 			shapeErr = fmt.Errorf("globalSeq must be non-negative, got %d", e.GlobalSeq)
 		}
@@ -630,7 +693,7 @@ func (w *Walker) Add(e Entry) {
 			w.previousHash = e.ChainHash
 			return
 		}
-		shapeErr = chainformat.ValidateChainHashInputsV3(w.previousHash, e.GlobalSeq, e.ContentHash)
+		shapeErr = chainformat.ValidateChainHashInputsV3(shapePrev, e.GlobalSeq, e.ContentHash)
 		expected = chainformat.ComputeChainHashV3Unchecked(
 			w.previousHash, e.GlobalSeq, ts, e.ContentHash)
 	default:
@@ -641,12 +704,19 @@ func (w *Walker) Add(e Entry) {
 		w.previousHash = e.ChainHash
 		return
 	}
+	if badSupplied {
+		shapeErr = errors.New(errBadSupplied)
+	}
 	if shapeErr != nil {
 		// The validators name the field and its length, never its value.
 		w.addBreak(Break{
 			Position: i, EntryID: e.EntryID, Type: BreakInvalidField,
 			Detail: shapeErr.Error(),
 		})
+		w.previousHash = e.ChainHash
+		return
+	}
+	if unlinked {
 		w.previousHash = e.ChainHash
 		return
 	}
@@ -663,7 +733,7 @@ func (w *Walker) Add(e Entry) {
 // addV4 walks one v4 entry (format-spec §2.0, §5.0): every entry, erased or
 // not, is recomputed. The chain hash shape and the sequence were checked by
 // Add.
-func (w *Walker) addV4(i int, e Entry) {
+func (w *Walker) addV4(i int, e Entry, unlinked, badSupplied bool) {
 	brk := func(t BreakType, detail string) {
 		w.addBreak(Break{Position: i, EntryID: e.EntryID, Type: t, Detail: detail})
 		w.previousHash = e.ChainHash
@@ -679,9 +749,11 @@ func (w *Walker) addV4(i int, e Entry) {
 		brk(BreakFormatFieldMisuse, "a v4 entry carries no run_id or sequence_num")
 		return
 	}
-	if !e.Erased && (e.EntryType == chainformat.TombstoneEntryType ||
+	// An erased entry carrying such a field is misuse too, before it is the
+	// wrong shape (§5.5 step 3 comes before step 7).
+	if e.EntryType == chainformat.TombstoneEntryType ||
 		strings.HasPrefix(e.EntryID, chainformat.TombstoneEntryIDPrefix) ||
-		strings.HasPrefix(e.ContentHash, chainformat.TombstoneContentHashPrefix)) {
+		strings.HasPrefix(e.ContentHash, chainformat.TombstoneContentHashPrefix) {
 		brk(BreakFormatFieldMisuse, chainformat.ErrTombstoneInV4.Error())
 		return
 	}
@@ -694,6 +766,8 @@ func (w *Walker) addV4(i int, e Entry) {
 	// The two shapes, then the field shapes within them.
 	var shapeErr error
 	switch {
+	case badSupplied:
+		shapeErr = errors.New(errBadSupplied)
 	case e.Erased:
 		if e.has(memberEntryID) || e.has(memberEntryType) || e.has(memberContentHash) || e.has(memberSalt) {
 			shapeErr = errors.New("an erased v4 entry carries no entry_id, entry_type, content_hash or salt")
@@ -711,10 +785,19 @@ func (w *Walker) addV4(i int, e Entry) {
 		}
 	}
 	if shapeErr == nil {
-		shapeErr = chainformat.ValidateChainHashInputsV4(w.previousHash, e.GlobalSeq, e.LeafHash)
+		// An unlinked entry has a predecessor, whose hash is not its field.
+		prev := w.previousHash
+		if unlinked {
+			prev = strings.Repeat("0", 128)
+		}
+		shapeErr = chainformat.ValidateChainHashInputsV4(prev, e.GlobalSeq, e.LeafHash)
 	}
 	if shapeErr != nil {
 		brk(BreakInvalidField, shapeErr.Error())
+		return
+	}
+	if unlinked {
+		w.previousHash = e.ChainHash
 		return
 	}
 
@@ -746,9 +829,8 @@ func (w *Walker) addV4(i int, e Entry) {
 
 // timestamp parses an entry's stored timestamp and checks it is in the one
 // spelling the hash covers (format-spec §4). It reports false, having recorded
-// the break and advanced on the stored hash, when the timestamp does not parse.
-// A timestamp that parses in another spelling is recorded as a break and
-// still returned, so the hash is checked too.
+// the break and advanced on the stored hash, when the timestamp does not parse
+// or parses in another spelling than the one the hash covers.
 func (w *Walker) timestamp(i int, e Entry) (time.Time, bool) {
 	ts, err := time.Parse(time.RFC3339Nano, e.Timestamp)
 	if err != nil {
@@ -765,22 +847,20 @@ func (w *Walker) timestamp(i int, e Entry) (time.Time, bool) {
 	if ts.UTC().Format(TimestampLayout) != e.Timestamp {
 		// The hash covers the instant in one spelling. A stored string in any
 		// other spelling (an offset, fewer or more digits) would hash the same
-		// and read differently, so it is refused rather than normalised.
+		// and read differently, so it is refused rather than normalised, and
+		// the walk advances on the stored hash as after any break in §5.5's
+		// steps 2 to 7: recomputing from the parsed instant would report a
+		// mismatch here and on every entry after it.
 		w.addBreak(Break{
 			Position: i, EntryID: e.EntryID, Type: BreakInvalidTimestamp,
 			Detail: "timestamp is not in the form YYYY-MM-DDTHH:MM:SS.ffffffZ",
 		})
+		w.previousHash = e.ChainHash
+		return time.Time{}, false
 	}
 	return ts, true
 }
 
-// checkStart checks what the walk links from: nothing, or a well-formed
-// predecessor hash.
-func (w *Walker) checkStart(e Entry) {
-	if w.opts.PreviousHash != "" && !chainHashPattern.MatchString(w.opts.PreviousHash) {
-		w.addBreak(Break{
-			Position: 0, EntryID: e.EntryID, Type: BreakInvalidField,
-			Detail: "the supplied previous hash is not 128 lowercase hex characters",
-		})
-	}
-}
+// errBadSupplied is the first entry's break when the predecessor hash it was
+// given is malformed (format-spec §5.5 step 7).
+const errBadSupplied = "the supplied previous hash is not 128 lowercase hex characters"

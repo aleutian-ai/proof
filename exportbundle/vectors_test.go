@@ -175,7 +175,7 @@ func TestVectors_EveryCase(t *testing.T) {
 }
 
 // vectorCasesV2 is how many cases bundle_v2_vectors.json holds.
-const vectorCasesV2 = 192
+const vectorCasesV2 = 193
 
 func everyCase(t *testing.T, raw []byte, vectorCases int) {
 	vf, keys := loadVectorsFrom(t, raw)

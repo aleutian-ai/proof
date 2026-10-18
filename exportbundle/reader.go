@@ -44,18 +44,18 @@ const oversize = "\x00"
 
 // The longest value each shaped member can have and still be in shape.
 const (
-	maxEntryID     = 37    // "sink-" and 32 hex
-	maxEntryType   = 12    // "sink.erasure"; anything longer is neither type
-	maxGlobalSeq   = 19    // 2^63-1
-	maxHash        = 128   // SHA-512 as hex
-	maxTimestamp   = 27    // YYYY-MM-DDTHH:MM:SS.ffffffZ
-	maxKeyID       = 32    // 16 bytes as hex
-	maxSignature   = 4412  // base64 of 3309 bytes
-	maxContent     = 87384 // base64 of 65,536 bytes
-	maxNonce       = 64    // 32 bytes as hex
-	maxChainID     = 64    // 31-byte class, a dot, 32 hex
-	maxMemberName  = 32    // longer than any defined member name
-	firstNameCheck = 4096  // unknown names in one object before the first early duplicate check
+	maxEntryID     = 37          // "sink-" and 32 hex
+	maxEntryType   = math.MaxInt // held whole: a v2 leaf hashes it as stored (§16); §5's value limit bounds it
+	maxGlobalSeq   = 19          // 2^63-1
+	maxHash        = 128         // SHA-512 as hex
+	maxTimestamp   = 27          // YYYY-MM-DDTHH:MM:SS.ffffffZ
+	maxKeyID       = 32          // 16 bytes as hex
+	maxSignature   = 4412        // base64 of 3309 bytes
+	maxContent     = 87384       // base64 of 65,536 bytes
+	maxNonce       = 64          // 32 bytes as hex
+	maxChainID     = 64          // 31-byte class, a dot, 32 hex
+	maxMemberName  = 32          // longer than any defined member name
+	firstNameCheck = 4096        // unknown names in one object before the first early duplicate check
 	arenaBit       = 1 << 31
 	maxInputBytes  = math.MaxInt32
 )

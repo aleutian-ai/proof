@@ -57,8 +57,9 @@ const (
 
 	// Entry types are server-set, so a verifier can tell which check an entry
 	// needs and an agent cannot mimic another writer's types (e.g. "tombstone"
-	// or the CLI's). The caller may only append a label. ADVISORY: entry_type is
-	// not part of the chain hash, so it records intent, not proof.
+	// or the CLI's). The caller may only append a label. entry_type is hashed
+	// into a v4 entry's leaf, so it cannot be changed later unseen; it records
+	// which check the entry needs, not that the content is what it says.
 	entryTypeSalted = "mcp.salted" // content → salted commitment (commitment.Verify)
 	entryTypeDigest = "mcp.digest" // caller's own SHA-512 (plain comparison)
 )

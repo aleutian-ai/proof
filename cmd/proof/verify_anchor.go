@@ -28,6 +28,9 @@ type anchorOptions struct {
 	subject      string
 	keyPath      string
 	keyTrust     string
+
+	// anchor is the file at anchorPath, read before the walk.
+	anchor *anchor.Anchor
 }
 
 // anchorResult is what the anchor half of a verification established.
@@ -106,9 +109,12 @@ func verifyAnchorFlags(opts anchorOptions, w *verify.Walker) (*anchorResult, err
 		return nil, nil
 	}
 
-	a, err := loadAnchorFile(opts.anchorPath)
-	if err != nil {
-		return nil, &inputFileError{err}
+	a := opts.anchor
+	var err error
+	if a == nil {
+		if a, err = loadAnchorFile(opts.anchorPath); err != nil {
+			return nil, &inputFileError{err}
+		}
 	}
 
 	// A v7 anchor says what it is about and which anchor it follows, inside

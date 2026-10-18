@@ -132,6 +132,8 @@ def chain_v4_file() -> dict:
     live("entry_id_256_bytes_multibyte", h2, 3, t[3], "€" * 85 + "x", "event", c[3], salt_of("3"),
          "85 three-byte characters and one ASCII: 256 bytes, 86 characters")
     live("entry_id_one_byte", h2, 3, t[3], "x", "e", c[3], salt_of("3"))
+    live("nel_and_nbsp_in_entry_id", h2, 3, t[3], "a\u0085b\u00a0c", "event", c[3], salt_of("3"),
+         "U+0085 and U+00A0 are not control characters in §2.0's sense (U+0000 to U+001F, U+007F): allowed")
     live("printable_ascii_entry_id", h2, 3, t[3], "".join(chr(i) for i in range(0x20, 0x7f)), "event",
          c[3], salt_of("3"), "every printable ASCII character, including space, quote and backslash")
     live("salt_all_zero", h2, 3, t[3], "ent_0004", "event", c[3], "00" * 32,
@@ -360,6 +362,10 @@ def anchor_v7_file() -> dict:
     rej("seed_id_with_non_seed_hash", "the seed id goes with the seed hash and no other", anchor_text(a))
     a = resign(variant(signing_key_id=""))
     rej("empty_signing_key_id", "signing_key_id is non-empty", anchor_text(a))
+    a = resign(variant(anchor_id=""))
+    rej("empty_anchor_id", "a v7 anchor_id is non-empty (§9.3)", anchor_text(a))
+    a = resign(variant(previous_anchor_id="", previous_anchor_hash=sha512_hex(b"some anchor")))
+    rej("empty_previous_anchor_id", "a v7 previous_anchor_id is non-empty (§9.3)", anchor_text(a))
 
     # Shapes that are not v7 at all: refused when parsed, before any signature.
     t = anchor_text(first)
@@ -379,6 +385,19 @@ def anchor_v7_file() -> dict:
     rej("duplicate_subject", "each member at most once",
         t.replace('"version":7', '"subject":"other","version":7'))
     rej("unknown_member", "only the members of §9.1", t.replace('"version":7', '"root_hash":"00","version":7'))
+    for member in ("anchor_id", "subject", "previous_anchor_id", "signing_key_id"):
+        old = f'"{member}":{json.dumps(first[member])}'
+        assert old in t, member
+        rej(f"{member}_null", "no v7 member is null (§9.8)", t.replace(old, f'"{member}":null'))
+    rej("created_at_ms_null", "no v7 member is null (§9.8)",
+        t.replace(f'"created_at_ms":{first["created_at_ms"]}', '"created_at_ms":null'))
+    rej("start_seq_null", "no v7 member is null (§9.8)", t.replace('"start_seq":"0"', '"start_seq":null'))
+    rej("lone_surrogate_in_subject", "an anchor's text is refused if it escapes a lone surrogate (§9.8, §2.0)",
+        t.replace('"subject":"agent-actions"', '"subject":"agent-actions\\ud800"'))
+    raw = t.replace('"subject":"agent-actions"', '"subject":"agent-actions\x00"').encode().replace(b"\x00", b"\xff")
+    reject.append({"name": "invalid_utf8_in_subject",
+                   "reason": "an anchor's text is refused if it is not UTF-8 (§9.8, §2.0); text_base64 is its bytes",
+                   "text": "", "text_base64": base64.b64encode(raw).decode()})
 
     return {
         "_comment": "Anchor v7 (docs/format-spec.md §9). canonical_bytes: compact JSON, keys "
@@ -390,10 +409,14 @@ def anchor_v7_file() -> dict:
                     "pure, deterministic, context \"aleutian.proof.anchor.v7\", standard base64, "
                     "under key (derived from seed_hex; key_id per §9.6). 'text' is the anchor as "
                     "a file would hold it. Every 'vectors' text MUST verify under key; every "
-                    "'reject' text MUST be refused, by whichever check the implementation makes "
-                    "first. Computed in Python (scripts/v4-vectors.py) with dilithium-py, "
+                    "'reject' text (or text_base64, the exact bytes of a text that is not UTF-8) MUST be "
+                    "refused, by whichever check the implementation makes first. message_prefix_hex is "
+                    "the prefix FIPS 204 puts before the canonical bytes for this context, "
+                    "0x00 || len(ctx) || ctx. Computed in Python (scripts/v4-vectors.py) with dilithium-py, "
                     "independently of any implementation under test.",
         "context": ANCHOR_V7_CONTEXT.decode(),
+        # FIPS 204 §5.2: what pure ML-DSA signs is M' = 0x00 || len(ctx) || ctx || M.
+        "message_prefix_hex": (b"\x00" + bytes([len(ANCHOR_V7_CONTEXT)]) + ANCHOR_V7_CONTEXT).hex(),
         "seed_anchor_hash": SEED_ANCHOR_HASH,
         "key": {k: v for k, v in key.items() if not k.startswith("_")},
         "vectors": vectors,

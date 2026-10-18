@@ -55,13 +55,14 @@ var allowedDeps = map[string][]string{
 	"/mldsa": {"github.com/cloudflare/circl", "golang.org/x/sys"},
 	// mlkem is pure ML-KEM from crypto/mlkem — stdlib only, like xwing. The
 	// CNSA 2.0 profile must not drag in a third-party implementation.
-	"/mlkem":          {},
-	"/keywrap":        {},
-	"/merkle":         {},
-	"/fixtures":       {},
-	"/bundle":         {},
-	"/internal/fault": {},
-	"/internal/mem":   {},
+	"/mlkem":             {},
+	"/keywrap":           {},
+	"/merkle":            {},
+	"/fixtures":          {},
+	"/bundle":            {},
+	"/internal/fault":    {},
+	"/internal/mem":      {},
+	"/internal/jsontext": {},
 	// The operating-system calls the stores need (flock, O_NOFOLLOW): stdlib.
 	"/internal/osfile": {},
 

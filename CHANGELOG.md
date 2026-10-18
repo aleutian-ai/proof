@@ -97,6 +97,58 @@ that text (`scripts/v4-vectors.py`, `verdict-vectors.py`, `bundle-vectors.py`).
   that open a store return an error saying the platform is unsupported
   (`internal/osfile`).
 
+### From the pre-tag review (items 74 to 87)
+
+An external review of `1452f03` found the construction sound and asked for
+these before the tag. Format rules, now in the specs and pinned by vectors:
+
+- **A reader never repairs text** (format-spec §2.0, §9.8). An entries file or
+  anchor that is not valid UTF-8, or whose JSON escapes a lone surrogate, is
+  refused: `encoding/json` read both as U+FFFD, a second spelling of an id
+  that hashes the same, where the Python verifier refused the file. No member
+  of an entry or a v7 anchor is `null`, and no number is `-0` (§5.5).
+- **A v7 anchor's** `anchor_id` and `previous_anchor_id` are non-empty, and
+  its string members are valid UTF-8 (§9.3). An invalid `subject` made an
+  anchor that verified in memory and never from its file.
+- **One break per entry** (§5.0, §5.5). A leaf mismatch is the entry's only
+  break; a timestamp in another spelling is `invalid_timestamp` and the walk
+  goes on from the stored hash (Go recomputed it and reported a mismatch there
+  and after, also for v3); a tombstone reports its first failing check; an
+  entry after a malformed `chain_hash` is checked through step 7 and not
+  linked; a malformed supplied predecessor is the first entry's step-7 break.
+  The verdict vectors now count every case's breaks.
+- **Claim 6 restated** (§5.0): an erased leaf hash denies correlation to
+  someone holding the original entry only once every copy of the entry is
+  gone, exports and bundles included; `erased: true` on the wire says the
+  export withholds the fields.
+
+Implementation:
+
+- `proof erase` forgets the nonce, then erases, then always rewrites the
+  database, so an interrupted run is finished by running it again (it once
+  left the salt in free pages, or a nonce under an id nothing held). It
+  refuses a symlinked `--db`. `bolt.Store.Erase`'s contract says the same.
+- `proof verify --anchor` binds a v7 anchor to a chain that has grown since
+  (`Walker.WatchTip`, new); it reported `height_mismatch`.
+- The failed-file cache of the store check reads a file again once its size,
+  mtime or ctime changes, so a database restored from backup is not refused
+  until restart. Compaction writes in 64 MiB transactions (4.7 GB to erase one
+  entry of a million, now 1.2 GB).
+- MCP `verify_chain` and `verify_anchor` report `erased_found` and that an
+  erasure is not authenticated by the chain; they could not show a v4
+  erasure. Stale v3 wording fixed.
+- `linker`: a supplied `Salt` needs `ExpectChainHash`, and no batch repeats a
+  salt.
+- `exportbundle` hashes an `entry_type` of any length as stored.
+- The sink refuses a checkpoint that is not v7; `anchor/build` refuses a
+  successor that does not grow or goes back in time; `SignCanonical` signs
+  only an anchor's exact canonical form; a `HeadsFile` that started a record
+  refuses it once deleted; `erasure-unsigned` counts a malformed row, or one
+  under a key the folder never had, as absent; an erased v4 entry with a
+  tombstone field is `format_field_misuse`.
+- A shared lock opens its lock file read-only, so `proof disclose` works on
+  read-only media; a lock file that is not a regular file is refused.
+
 ## v0.4.1 — 2026-10-15
 
 A patch for defects found in a review of v0.4.0. No new features and no format

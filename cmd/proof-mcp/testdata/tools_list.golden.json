@@ -436,6 +436,9 @@
         "entries_not_bound": {
           "type": "integer"
         },
+        "erased_found": {
+          "type": "integer"
+        },
         "not_proven": {
           "type": "string"
         },
@@ -468,6 +471,7 @@
         "entries_covered",
         "tombstones",
         "entries_not_bound",
+        "erased_found",
         "signature_verified",
         "proven",
         "not_proven"
@@ -590,6 +594,9 @@
         "entries_verified": {
           "type": "integer"
         },
+        "erased_found": {
+          "type": "integer"
+        },
         "first_break": {
           "type": "integer"
         },
@@ -614,6 +621,7 @@
         "entries_verified",
         "tombstones_found",
         "last_tombstone",
+        "erased_found",
         "first_break",
         "proven",
         "not_proven"

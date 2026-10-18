@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/aleutian-ai/proof/chainformat"
+	"github.com/aleutian-ai/proof/internal/jsontext"
 )
 
 // entryMembers are the members of an exported entry, by their exact names.
@@ -83,8 +84,6 @@ var memberBits = map[string]memberSet{
 //
 //   - Holds the whole input and every entry in memory. [EntryReader] reads the
 //     same input one entry at a time.
-//   - Member values are decoded by encoding/json: invalid UTF-8 in a string is
-//     repaired, not refused.
 //
 // # Assumptions
 //
@@ -133,7 +132,14 @@ func DecodeEntries(raw []byte) ([]Entry, error) {
 // decoding the whole object let such a second spelling through, and its value
 // won. A member whose name folds to one of the format's without being it is
 // now refused, and the fields are filled from the exact names alone.
+//
+// An entry that is not valid UTF-8, or that escapes a lone surrogate, is
+// refused (format-spec §5.5): encoding/json would repair either to U+FFFD, a
+// second spelling of a string that hashes the same.
 func decodeEntry(doc []byte) (Entry, error) {
+	if err := jsontext.Check(doc); err != nil {
+		return Entry{}, err
+	}
 	dec := json.NewDecoder(bytes.NewReader(doc))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return Entry{}, errors.New("it is not a JSON object")
@@ -174,6 +180,14 @@ func decodeEntry(doc []byte) (Entry, error) {
 	}
 	var e Entry
 	for name, value := range values {
+		// encoding/json reads null as the zero value and -0 as 0: second
+		// spellings of a value, so both are refused (format-spec §5.5).
+		switch {
+		case string(value) == "null":
+			return Entry{}, fmt.Errorf("the member %q is null", name)
+		case string(value) == "-0":
+			return Entry{}, fmt.Errorf("the member %q is -0, not 0", name)
+		}
 		if err := unmarshalMember(&e, name, value); err != nil {
 			return Entry{}, fmt.Errorf("the member %q has the wrong JSON type", name)
 		}

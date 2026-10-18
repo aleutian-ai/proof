@@ -89,6 +89,12 @@ chain_hash = SHA-512(
   hash the same would be a field an editor can change without detection, the
   same reason §4 fixes one timestamp spelling. They are length-prefixed, so `|`
   and every other printable character are allowed in them.
+- **A reader never repairs text.** An entries file that is not valid UTF-8,
+  or whose JSON escapes name a UTF-16 surrogate that is not half of a pair
+  (`\ud800` alone, `\udfff` alone), is refused as not entries: an error, not
+  a break. A JSON library that repairs either to U+FFFD would read a second
+  spelling of a string that hashes the same, which is what "as stored"
+  forbids. A surrogate *pair* is one character and is read as it.
 - The chain hash preimage has the shape of v3's with `content_hash` replaced by
   `leaf_hash`, which is fixed-shape, so §3's rule (validate `previous_hash`)
   is again the only one that keeps the boundaries recoverable.
@@ -329,16 +335,19 @@ hash on trust.
             leaf = entry.leaf_hash                         ← checked for shape only
         else:
             leaf = compute_leaf_hash(entry_id, entry_type, content_hash, salt)
-            if leaf != entry.leaf_hash:  report a break
         expected = compute_chain_hash_v4(previous_hash, global_seq, timestamp, leaf)
-        if expected != entry.chain_hash:  report a break
+        if not entry.erased and leaf != entry.leaf_hash:
+            report a break                                 ← and nothing else for this entry
+        else if expected != entry.chain_hash:
+            report a break
         previous_hash = expected
 ```
 
 A live entry whose recomputed leaf hash differs from its stored `leaf_hash` is
-`hash_mismatch`, and the walk continues from the chain hash the **recomputed**
+`hash_mismatch`, and that is the entry's only break: its stored `chain_hash`
+is not compared. The walk continues from the chain hash the **recomputed**
 leaf gives, as a v3 walk continues from the expected chain hash after a
-mismatch.
+mismatch (§5.5: at most one break per entry from steps 2 to 8).
 
 What this gives, and why each property holds:
 
@@ -353,10 +362,19 @@ What this gives, and why each property holds:
   commitment: without the salt, someone who holds the original entry (its id,
   type and content) cannot confirm that it was the entry at this position,
   because they cannot recompute the leaf. This is the property v3's random
-  tombstone value and new id (§5.4) exist for, kept without either. Only once
-  every copy of the salt is gone (backups, replicas, anyone the entry was
-  disclosed to) is that true; §8's paragraph on erasure applies to the salt in
-  the same way.
+  tombstone value and new id (§5.4) exist for, kept without either. It holds
+  against someone who has the chain after the erasure and the original entry,
+  and only once every copy of the **entry** is gone: any export, bundle or
+  import taken before the erasure, backups, replicas, and anyone it was
+  disclosed to. Whoever holds such a copy has its `content_hash` at that
+  `global_seq` and needs no salt to match it. §8's paragraph on erasure
+  applies in the same way.
+- **`erased` on the wire is a statement about the export.** An exporter may
+  write a live entry in the erased shape, and it verifies exactly as an
+  erased one does: `erased: true` says the export withholds the entry's
+  fields, not that the store no longer holds them. Withholding a live entry's
+  salt alone, keeping its other fields, would deny nothing (the content hash
+  is still there to match), so v4 has no such shape.
 - **Nothing maps the old id.** The erased entry carries no id, so the original
   id cannot resolve to it.
 
@@ -476,7 +494,11 @@ the same in every implementation:
 3. `format_field_misuse`: a v2 or v3 entry after a v4 entry (§2.5), a v4
    member on a v2 or v3 entry (§2.2), or a v4 entry with run fields or a
    tombstone shape (§2.0);
-4. (v2 and v3) a tombstone's own checks, and then nothing else;
+4. (v2 and v3) a tombstone's own checks, and then nothing else: its content
+   hash is a well-formed tombstone value (`invalid_tombstone`), its format is
+   known (`unknown_format`), a v3 one carries no run fields
+   (`format_field_misuse`), and its `global_seq` and a supplied predecessor
+   hash are in shape (`invalid_field`), in that order;
 5. `invalid_timestamp`;
 6. the declared format: `unknown_format`, or a v3 entry with run fields,
    `format_field_misuse` (§2.1);
@@ -485,7 +507,16 @@ the same in every implementation:
 8. `hash_mismatch`: for v4 the leaf hash first, then the chain hash.
 
 After a break in steps 2 to 7 the walk continues from the entry's stored
-chain hash, so the next entry is judged on its own.
+chain hash, so the next entry is judged on its own. When that stored hash is
+itself malformed (a step 2 break), the next entry has nothing to link from:
+it is checked through step 7, its hashes are not recomputed, and the walk
+continues from its own stored chain hash. A malformed predecessor hash
+*supplied* for a segment is the first entry's step 7 break. Nothing after a
+break is checked on that entry: a timestamp in another spelling of the same
+instant (step 5) is not then hashed in the one spelling to see whether the
+chain hash would match. An entry reports at most one break from steps 2 to
+8, after a `sequence_gap` if step 1 found one (step 1 is recorded and the
+checks go on).
 
 **What a result counts.** An entry is counted only once it passes step 2 (its
 `chain_hash` is in shape). `tombstones_found` then counts the entries read as
@@ -495,8 +526,12 @@ last one's index. `erased_found` counts the v4 entries carrying `erased: true`,
 whatever else is wrong with them. Both count every entry walked, including
 entries after the first break.
 
-`global_seq` in an entries file is a JSON number, read as a 64-bit integer; any
-other JSON type makes the file not entries, an error rather than a break.
+`global_seq` in an entries file is a JSON number, read as a 64-bit integer, in
+its one spelling: no fraction, no exponent, and not `-0`. Every member has the
+JSON type the format gives it (`format_version` and `sequence_num` numbers in
+the same spelling, `erased` a boolean, every other member a string), and
+`null` is the value of no member. Anything else makes the file not entries,
+an error rather than a break.
 
 v2 and v3 do not fix the first `global_seq`: this module's linker starts a
 chain at 0 and the hosted platform's at 1. A verifier MUST NOT treat either as
@@ -736,7 +771,7 @@ whitespace):
 | 4 | `verified_through` > 0 |
 | 5 | refused |
 | 6 | `verified_through` > 0 **and** `subject` non-empty |
-| 7 | `subject` non-empty; `start_seq`, `end_seq` and `entry_count` in §2.1's decimal grammar; `start_seq ≤ end_seq`; `entry_count = end_seq − start_seq + 1`; `previous_anchor_hash` 128 lowercase hex; `previous_anchor_id` is the seed id **exactly when** `previous_anchor_hash` is the seed hash |
+| 7 | `subject`, `anchor_id` and `previous_anchor_id` non-empty and, with `signing_key_id`, valid UTF-8; `start_seq`, `end_seq` and `entry_count` in §2.1's decimal grammar; `start_seq ≤ end_seq`; `entry_count = end_seq − start_seq + 1`; `previous_anchor_hash` 128 lowercase hex; `previous_anchor_id` is the seed id **exactly when** `previous_anchor_hash` is the seed hash |
 
 `version` is inside the signed bytes, so an anchor that breaks its invariants
 carries a valid signature over malformed content. Report it as malformed, not as
@@ -887,7 +922,13 @@ the disagreement is a §9.3 invariant, refused as malformed.)
 included, and each is read with the JSON type the canonical form gives it:
 `version` and `created_at_ms` as JSON integers with no fraction or exponent,
 `entry_count`, `start_seq` and `end_seq` as strings, everything else as a
-string. Its `chain_hash` is 128 lowercase hex, or the anchor is malformed.
+string. No member is `null`: a reader that took `null` for `""` would read a
+second spelling of an empty value. Its `chain_hash` is 128 lowercase hex,
+`subject`, `anchor_id` and `previous_anchor_id` are non-empty, and every
+string member is valid UTF-8, or the anchor is malformed. (An anchor's text,
+like an entries file's, is refused if it is not valid UTF-8 or escapes a lone
+surrogate, §2.0: the signed bytes and §9.4's preimage must cover the same
+string, and a repaired one is not it.)
 
 **A segment.** `entry_count` is counted from the chain's first entry. A verifier
 MUST NOT bind an anchor to entries it verified from a predecessor hash, and a
@@ -922,7 +963,7 @@ records each file's SHA-256, so a vendored copy that drifts is detectable.
 
 | File | Covers |
 |---|---|
-| `chain_v4_vectors.json` | chain hash and leaf hash v4 (§2.0): first entry, linked, continued from a v3 head (§2.5), erased (§5.0), non-ASCII and `\|` in ids, and cases that MUST be refused |
+| `chain_v4_vectors.json` | chain hash and leaf hash v4 (§2.0): first entry, linked, continued from a v3 head (§2.5), erased (§5.0), non-ASCII, U+0085, U+00A0 and `\|` in ids, and cases that MUST be refused |
 | `anchor_v7_canonical_vectors.json` | anchor v7 canonical bytes (§9.2), chain hash (§9.4) and signatures with the v7 context (§9.5), and anchors that MUST be refused |
 | `chain_v3_vectors.json` | chain hash v3 (§2.1): first, linked, `global_seq` above 2⁵³ and at 2⁶³−1, tombstone, sub-microsecond truncation, and cases that MUST be refused |
 | `chain_vectors.json` | chain hash v2 (§2.3): genesis, linked, tombstone |
@@ -944,8 +985,8 @@ script that computes the values from this document:
 | `scripts/independent-vectors.py` | `chain_v3_vectors.json`, `anchor_v6_canonical_vectors.json`, `keyid_vectors.json`, `record_v1_vectors.json` |
 | `scripts/spec-vectors.py` | `chain_vectors.json`, `v3_golden_capture_request.json`, `merkle_golden.json`, `commitment_vectors.json`, `anchor_chain_hash_vectors.json` |
 | `scripts/v4-vectors.py` | `chain_v4_vectors.json`, `anchor_v7_canonical_vectors.json` (needs `dilithium-py` for the anchor signatures) |
-| `scripts/verdict-vectors.py` | `verify_verdict_vectors.json` |
-| `scripts/bundle-vectors.py` | `bundle_v1_vectors.json` (needs `dilithium-py` for its signatures; the others use the standard library only) |
+| `scripts/verdict-vectors.py` | `verify_verdict_vectors.json`, `verify_verdict_v4_vectors.json` |
+| `scripts/bundle-vectors.py` | `bundle_v1_vectors.json`, `bundle_v2_vectors.json` (needs `dilithium-py` for its signatures; the others use the standard library only) |
 
 Three things that sentence does not cover:
 
@@ -996,6 +1037,8 @@ other implementation.
 - [ ] Anchors parsed strictly; counts, key id, predecessor and segment rules enforced (§9.8)
 - [ ] An anchor series checked as a series (§9.8)
 - [ ] An entries file that is not entries is an error, never a broken chain
+- [ ] Text is never repaired: an entries file or anchor that is not UTF-8, or escapes a lone surrogate, is refused; no member is `null`, no number `-0` (§2.0, §5.5, §9.8)
+- [ ] At most one break per entry from steps 2 to 8, and the walk continues as §5.5 says, so the number of breaks matches `verify_verdict_v4_vectors.json` (§5.0, §5.5)
 - [ ] Tombstones: format validated, hash **NOT** recomputed (§5.1)
 - [ ] A chain containing a tombstone verifies as **intact**
 - [ ] Erased entries' original ids do not resolve (§5.4)

@@ -1,5 +1,5 @@
 {
-  "_comment": "Verifier verdict vectors for chain format v4, continued chains and v7 anchors. Written by scripts/verdict-vectors.py from docs/format-spec.md (§2.0, §2.5, §5.0, §9.3, §9.7) and never by an implementation under test. chain_cases: as in verify_verdict_vectors.json, and expected.erased_found counts v4 erased entries. bind_cases: a keyless bind of a v7 anchor to entries (linked from previous_hash when given) with the caller's expect (subject, previous_anchor_hash; empty means not given); expected.error true means the anchor or the bind is refused; otherwise compare outcome, bound, tombstones, entries_not_bound and subject_checked. No case needs a key.",
+  "_comment": "Verifier verdict vectors for chain format v4, continued chains and v7 anchors. Written by scripts/verdict-vectors.py from docs/format-spec.md (§2.0, §2.5, §5.0, §9.3, §9.7) and never by an implementation under test. chain_cases: as in verify_verdict_vectors.json, and expected.erased_found counts v4 erased entries. bind_cases: a keyless bind of a v7 anchor to entries (linked from previous_hash when given) with the caller's expect (subject, previous_anchor_hash; empty means not given); expected.error true means the anchor or the bind is refused; otherwise compare outcome, bound, tombstones, entries_not_bound and subject_checked. expected.breaks in chain_cases is how many breaks a walk reports, every one collected. entries_text_cases: text (or, for bytes that are not UTF-8, text_base64) is an entries file; \"entries\" if it reads, \"not_entries\" if the reader refuses it (an error, never a broken chain). No case needs a key.",
   "seed_anchor_hash": "03443d96d3b369839f63f98b712463efba04c00551822743108d60c5f291627859ff0b7dc29f99e3c847b07b0b18bb385426c744847c1b070563f8dd07271f27",
   "seed_anchor_id": "anchor_00000000-0000-0000-0000-000000000000",
   "chain_cases": [
@@ -59,7 +59,8 @@
         "first_break_type": "",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 0
       }
     },
     {
@@ -126,7 +127,8 @@
         "first_break_type": "",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 1
+        "erased_found": 1,
+        "breaks": 0
       }
     },
     {
@@ -190,7 +192,8 @@
         "first_break_type": "",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 2
+        "erased_found": 2,
+        "breaks": 0
       }
     },
     {
@@ -257,7 +260,8 @@
         "first_break_type": "hash_mismatch",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 1
+        "erased_found": 1,
+        "breaks": 3
       }
     },
     {
@@ -324,7 +328,8 @@
         "first_break_type": "",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 1
+        "erased_found": 1,
+        "breaks": 0
       }
     },
     {
@@ -383,7 +388,8 @@
         "first_break_type": "hash_mismatch",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 3
       }
     },
     {
@@ -442,7 +448,8 @@
         "first_break_type": "hash_mismatch",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 3
       }
     },
     {
@@ -501,7 +508,8 @@
         "first_break_type": "hash_mismatch",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 3
       }
     },
     {
@@ -560,7 +568,8 @@
         "first_break_type": "hash_mismatch",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -616,7 +625,8 @@
         "first_break_type": "hash_mismatch",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 1
+        "erased_found": 1,
+        "breaks": 3
       }
     },
     {
@@ -672,7 +682,8 @@
         "first_break_type": "",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 1
+        "erased_found": 1,
+        "breaks": 0
       }
     },
     {
@@ -731,7 +742,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -790,7 +802,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -848,7 +861,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -906,7 +920,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -965,7 +980,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1024,7 +1040,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1083,7 +1100,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1140,7 +1158,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 1
+        "erased_found": 1,
+        "breaks": 1
       }
     },
     {
@@ -1197,7 +1216,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 1
+        "erased_found": 1,
+        "breaks": 1
       }
     },
     {
@@ -1257,7 +1277,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1316,7 +1337,8 @@
         "first_break_type": "format_field_misuse",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1375,7 +1397,8 @@
         "first_break_type": "format_field_misuse",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1434,7 +1457,8 @@
         "first_break_type": "format_field_misuse",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1494,7 +1518,8 @@
         "first_break_type": "format_field_misuse",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1554,7 +1579,8 @@
         "first_break_type": "format_field_misuse",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1602,7 +1628,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -1683,7 +1710,8 @@
         "first_break_type": "",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 0
       }
     },
     {
@@ -1775,7 +1803,8 @@
         "first_break_type": "",
         "tombstones_found": 1,
         "last_tombstone": 1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 0
       }
     },
     {
@@ -1867,7 +1896,8 @@
         "first_break_type": "",
         "tombstones_found": 1,
         "last_tombstone": 1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 0
       }
     },
     {
@@ -1937,7 +1967,8 @@
         "first_break_type": "format_field_misuse",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -2007,7 +2038,8 @@
         "first_break_type": "format_field_misuse",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -2071,7 +2103,8 @@
         "first_break_type": "hash_mismatch",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 2
+        "erased_found": 2,
+        "breaks": 2
       }
     },
     {
@@ -2127,7 +2160,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -2186,7 +2220,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 2
       }
     },
     {
@@ -2246,7 +2281,8 @@
         "first_break_type": "format_field_misuse",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -2304,7 +2340,8 @@
         "first_break_type": "invalid_timestamp",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -2363,7 +2400,8 @@
         "first_break_type": "sequence_gap",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 3
       }
     },
     {
@@ -2400,7 +2438,8 @@
         "first_break_type": "",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 0
       }
     },
     {
@@ -2437,7 +2476,8 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
     },
     {
@@ -2496,8 +2536,810 @@
         "first_break_type": "invalid_field",
         "tombstones_found": 0,
         "last_tombstone": -1,
-        "erased_found": 0
+        "erased_found": 0,
+        "breaks": 1
       }
+    },
+    {
+      "name": "leaf_and_chain_hash_both_wrong",
+      "why": "§5.0: a leaf mismatch is the entry's one break, and its stored chain_hash is not compared; the walk goes on from the hash the recomputed leaf gives, so entry 2 links",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 4,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "salt": "4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911",
+          "leaf_hash": "ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d",
+          "chain_hash": "92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 4,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "salt": "bb7fb08e8bce9c1776a3e7368c5093b7eed6eaa0edfcbcfa3c1ec58029030330",
+          "leaf_hash": "764079113f0c8d73b0491e3dc0924a5eac67b023a78203f6e45c119ccfeac7bd423f3c87629eb82ed0706be9bf3438cbf215b1e28ae25e6dd2ba237216c6d424",
+          "chain_hash": "6a1f2f29464afaa1d3acf5ebc300ac19ec977e4e9f378b300212ff5c228bf0f71629b8e5834906b72b4944143ce774005105d208b1b8693393a3b8f7c709382a"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 4,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "salt": "6a95c99d2c442e5f90a66909abbb31f22fc317e996306d1fd3094fd1a3350618",
+          "leaf_hash": "48b6571bb9d41775140357789e5e1909d35a2fe275af78c45921abbd4471505fd57d998514ef2b7aec84353f49b3f5978f6ea07de74e5df1b54194639c114bbf",
+          "chain_hash": "d349cb34df5723fae76ee751ed2cb8528511197f6fe10a44028b44ad2e2bbabb170fb967848040a27483140854037795e1e3112274a2e5d1361710ceeff41b1e"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "salt": "84a357ed61904c6274f7560f103512e9b8b679a4d0dc07392a510e79064226f0",
+          "leaf_hash": "05a8ee1e6e6f42c8460511d688a829a3a1d808bec959d18a35e36cf6dfd7bbe7ceb439129b4e475f68edf9f98158c50a27598f341e8e8834581b5c89598090d6",
+          "chain_hash": "77ce5245ea0f5c974edfb00558bef45c0f0b66224c5497c1f50f723af099c94e157310ba21159b13bf6e04398f18dd4a1e52ceea72684ef40e5768afe12e329c"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "hash_mismatch",
+        "tombstones_found": 0,
+        "last_tombstone": -1,
+        "erased_found": 0,
+        "breaks": 1
+      }
+    },
+    {
+      "name": "timestamp_in_another_spelling",
+      "why": "§4, §5.5: the same instant spelled otherwise is invalid_timestamp, and the walk goes on from the stored chain hash: one break, not a mismatch here and after",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 4,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "salt": "4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911",
+          "leaf_hash": "ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d",
+          "chain_hash": "92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01Z",
+          "format_version": 4,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "salt": "bb7fb08e8bce9c1776a3e7368c5093b7eed6eaa0edfcbcfa3c1ec58029030330",
+          "leaf_hash": "34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b",
+          "chain_hash": "9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 4,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "salt": "6a95c99d2c442e5f90a66909abbb31f22fc317e996306d1fd3094fd1a3350618",
+          "leaf_hash": "48b6571bb9d41775140357789e5e1909d35a2fe275af78c45921abbd4471505fd57d998514ef2b7aec84353f49b3f5978f6ea07de74e5df1b54194639c114bbf",
+          "chain_hash": "d349cb34df5723fae76ee751ed2cb8528511197f6fe10a44028b44ad2e2bbabb170fb967848040a27483140854037795e1e3112274a2e5d1361710ceeff41b1e"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "salt": "84a357ed61904c6274f7560f103512e9b8b679a4d0dc07392a510e79064226f0",
+          "leaf_hash": "05a8ee1e6e6f42c8460511d688a829a3a1d808bec959d18a35e36cf6dfd7bbe7ceb439129b4e475f68edf9f98158c50a27598f341e8e8834581b5c89598090d6",
+          "chain_hash": "77ce5245ea0f5c974edfb00558bef45c0f0b66224c5497c1f50f723af099c94e157310ba21159b13bf6e04398f18dd4a1e52ceea72684ef40e5768afe12e329c"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1,
+        "erased_found": 0,
+        "breaks": 1
+      }
+    },
+    {
+      "name": "timestamp_in_another_spelling_and_chain_hash_wrong",
+      "why": "§5.5: step 5 ends the entry's checks; the next entries are judged from its stored (wrong) chain hash",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 4,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "salt": "4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911",
+          "leaf_hash": "ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d",
+          "chain_hash": "92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01Z",
+          "format_version": 4,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "salt": "bb7fb08e8bce9c1776a3e7368c5093b7eed6eaa0edfcbcfa3c1ec58029030330",
+          "leaf_hash": "34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b",
+          "chain_hash": "6a1f2f29464afaa1d3acf5ebc300ac19ec977e4e9f378b300212ff5c228bf0f71629b8e5834906b72b4944143ce774005105d208b1b8693393a3b8f7c709382a"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 4,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "salt": "6a95c99d2c442e5f90a66909abbb31f22fc317e996306d1fd3094fd1a3350618",
+          "leaf_hash": "48b6571bb9d41775140357789e5e1909d35a2fe275af78c45921abbd4471505fd57d998514ef2b7aec84353f49b3f5978f6ea07de74e5df1b54194639c114bbf",
+          "chain_hash": "d349cb34df5723fae76ee751ed2cb8528511197f6fe10a44028b44ad2e2bbabb170fb967848040a27483140854037795e1e3112274a2e5d1361710ceeff41b1e"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "salt": "84a357ed61904c6274f7560f103512e9b8b679a4d0dc07392a510e79064226f0",
+          "leaf_hash": "05a8ee1e6e6f42c8460511d688a829a3a1d808bec959d18a35e36cf6dfd7bbe7ceb439129b4e475f68edf9f98158c50a27598f341e8e8834581b5c89598090d6",
+          "chain_hash": "77ce5245ea0f5c974edfb00558bef45c0f0b66224c5497c1f50f723af099c94e157310ba21159b13bf6e04398f18dd4a1e52ceea72684ef40e5768afe12e329c"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1,
+        "erased_found": 0,
+        "breaks": 3
+      }
+    },
+    {
+      "name": "erased_entry_with_a_bad_timestamp",
+      "why": "§5.5: an erased entry's timestamp is checked like any other",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 4,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "salt": "4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911",
+          "leaf_hash": "ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d",
+          "chain_hash": "92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d"
+        },
+        {
+          "timestamp": "yesterday",
+          "format_version": 4,
+          "global_seq": 1,
+          "leaf_hash": "34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b",
+          "chain_hash": "9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1",
+          "erased": true
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 4,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "salt": "6a95c99d2c442e5f90a66909abbb31f22fc317e996306d1fd3094fd1a3350618",
+          "leaf_hash": "48b6571bb9d41775140357789e5e1909d35a2fe275af78c45921abbd4471505fd57d998514ef2b7aec84353f49b3f5978f6ea07de74e5df1b54194639c114bbf",
+          "chain_hash": "d349cb34df5723fae76ee751ed2cb8528511197f6fe10a44028b44ad2e2bbabb170fb967848040a27483140854037795e1e3112274a2e5d1361710ceeff41b1e"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "salt": "84a357ed61904c6274f7560f103512e9b8b679a4d0dc07392a510e79064226f0",
+          "leaf_hash": "05a8ee1e6e6f42c8460511d688a829a3a1d808bec959d18a35e36cf6dfd7bbe7ceb439129b4e475f68edf9f98158c50a27598f341e8e8834581b5c89598090d6",
+          "chain_hash": "77ce5245ea0f5c974edfb00558bef45c0f0b66224c5497c1f50f723af099c94e157310ba21159b13bf6e04398f18dd4a1e52ceea72684ef40e5768afe12e329c"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_timestamp",
+        "tombstones_found": 0,
+        "last_tombstone": -1,
+        "erased_found": 1,
+        "breaks": 1
+      }
+    },
+    {
+      "name": "erased_entry_with_a_tombstone_type",
+      "why": "§5.5: step 3 (a tombstone shape) comes before step 7 (an erased entry carries no type)",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 4,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "salt": "4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911",
+          "leaf_hash": "ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d",
+          "chain_hash": "92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d"
+        },
+        {
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 4,
+          "global_seq": 1,
+          "leaf_hash": "34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b",
+          "chain_hash": "9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1",
+          "erased": true,
+          "entry_type": "tombstone"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 4,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "salt": "6a95c99d2c442e5f90a66909abbb31f22fc317e996306d1fd3094fd1a3350618",
+          "leaf_hash": "48b6571bb9d41775140357789e5e1909d35a2fe275af78c45921abbd4471505fd57d998514ef2b7aec84353f49b3f5978f6ea07de74e5df1b54194639c114bbf",
+          "chain_hash": "d349cb34df5723fae76ee751ed2cb8528511197f6fe10a44028b44ad2e2bbabb170fb967848040a27483140854037795e1e3112274a2e5d1361710ceeff41b1e"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "salt": "84a357ed61904c6274f7560f103512e9b8b679a4d0dc07392a510e79064226f0",
+          "leaf_hash": "05a8ee1e6e6f42c8460511d688a829a3a1d808bec959d18a35e36cf6dfd7bbe7ceb439129b4e475f68edf9f98158c50a27598f341e8e8834581b5c89598090d6",
+          "chain_hash": "77ce5245ea0f5c974edfb00558bef45c0f0b66224c5497c1f50f723af099c94e157310ba21159b13bf6e04398f18dd4a1e52ceea72684ef40e5768afe12e329c"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "format_field_misuse",
+        "tombstones_found": 0,
+        "last_tombstone": -1,
+        "erased_found": 1,
+        "breaks": 1
+      }
+    },
+    {
+      "name": "v4_then_v3_then_v4",
+      "why": "§2.5: never back from v4; the v4 entry after it is judged on its own",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 4,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "salt": "4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911",
+          "leaf_hash": "ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d",
+          "chain_hash": "92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 4,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "salt": "bb7fb08e8bce9c1776a3e7368c5093b7eed6eaa0edfcbcfa3c1ec58029030330",
+          "leaf_hash": "34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b",
+          "chain_hash": "9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1"
+        },
+        {
+          "entry_id": "ent_09",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:09.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "44c380e214943db4c2a6e1662fb6bdefd92399fed89a9048222fd40f844b1eda72ba1c4b6ea52fb6b70bf5f3466fd86f653e470051149805e1a51199bc8edb2c",
+          "chain_hash": "c76c10d9f072655fc96852635f6ef22aefa24087f49bcf7a26fdbfc2b68be9c5b96bb583156bcd1c7e98cfe56a74376311cd5505fc90cb19509fcba36b00c928"
+        },
+        {
+          "entry_id": "ent_10",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:10.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "1f1ba4ac323ad6a2c43b6c770f13893f6dee65fb2bbbc5b9ebf1778676135f90bfb917bde2729a754ded1f5c51a48f72f2a5b400575676c8671bbdbf4c7bd9be",
+          "salt": "44b2c1fa75510c98f64dd211912f27ace89767ceceb8165f1ff9c702f73b2024",
+          "leaf_hash": "59db6401a0f2353f54505f8653376954cb9ebb28b795746c26d7fb19a05c06cb4281e0b7c2c7487a39e7c6f158a611fd31e4a602c80eb276c9ae8a2001d7f1fc",
+          "chain_hash": "e141a326e40ff5e07a42e0e9869df90f137e86f998164244bb5395db4300d9db2432e7ce10328db7555b5c854c5781174a60bfbc6d4ecbba50c73c2d6bbd1a1c"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 2,
+        "first_break_type": "format_field_misuse",
+        "tombstones_found": 0,
+        "last_tombstone": -1,
+        "erased_found": 0,
+        "breaks": 1
+      }
+    },
+    {
+      "name": "live_leaf_hash_uppercase",
+      "why": "§5.5: a shape break (step 7), before the leaf is compared",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 4,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "salt": "4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911",
+          "leaf_hash": "ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d",
+          "chain_hash": "92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d"
+        },
+        {
+          "entry_id": "ent_01",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 4,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "salt": "bb7fb08e8bce9c1776a3e7368c5093b7eed6eaa0edfcbcfa3c1ec58029030330",
+          "leaf_hash": "34C06AF90EDF80A9A0721FBCEA380280D80B8453D8AA21FCB35E1CDD00BFBA2C53DAE9A30240580433E90405C288B1C0B7F07F565BF6672719258D049FD2390B",
+          "chain_hash": "9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 4,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "salt": "6a95c99d2c442e5f90a66909abbb31f22fc317e996306d1fd3094fd1a3350618",
+          "leaf_hash": "48b6571bb9d41775140357789e5e1909d35a2fe275af78c45921abbd4471505fd57d998514ef2b7aec84353f49b3f5978f6ea07de74e5df1b54194639c114bbf",
+          "chain_hash": "d349cb34df5723fae76ee751ed2cb8528511197f6fe10a44028b44ad2e2bbabb170fb967848040a27483140854037795e1e3112274a2e5d1361710ceeff41b1e"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "salt": "84a357ed61904c6274f7560f103512e9b8b679a4d0dc07392a510e79064226f0",
+          "leaf_hash": "05a8ee1e6e6f42c8460511d688a829a3a1d808bec959d18a35e36cf6dfd7bbe7ceb439129b4e475f68edf9f98158c50a27598f341e8e8834581b5c89598090d6",
+          "chain_hash": "77ce5245ea0f5c974edfb00558bef45c0f0b66224c5497c1f50f723af099c94e157310ba21159b13bf6e04398f18dd4a1e52ceea72684ef40e5768afe12e329c"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1,
+        "erased_found": 0,
+        "breaks": 1
+      }
+    },
+    {
+      "name": "continued_v3_entry_after_its_tombstone_rewritten",
+      "why": "§2.5: v3 binds the entries after its last tombstone, and the first v4 entry links from the v3 head, so rewriting a v3 entry after the tombstone and relinking the v3 part breaks at the first v4 entry",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "TOMBSTONE:abababababababababababababababababababababababababababababababab",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "1fb9df74285b7cf36bd82f09a2fe39b06fdf17f2b1a83a26d599f280ac71e6c6a5acf77d4bce70695e69ff20a363233095c482b054d70e4ecf35ac2baeadea9b",
+          "chain_hash": "6a123ce3f5b592807913ed3a2a294b58d7162ec80e7af4cc18ee0baa3d558d843a073b5be7e9f98af060c0529c4fa355f99127aa4a4d09c193bf180902ed0c02"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "chain_hash": "97d06a76337659d901982a25975f11a60ba6bd99dfb613de8e894a3ab1e9fac6357b9ce954f0653c4ce35f4aa7c4b484d48711afdcacd1f160b4d982a29b4c2b"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 4,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "salt": "a132326cd2dd07fdbb101196a2322df90fef8d5c433b4d9202e1a12494056ce4",
+          "leaf_hash": "07c3dd6c95f524fec17fdd04a046d284f315f59f4ea576316fc4ed326f4b595bcae295a4b4e34e388c964f59b52be842b79cc563320b2f943a0dc5dc04819a33",
+          "chain_hash": "d012b789ae462d4729dd0aa2420959459faced5b73c61a9ee3414a6a81b22531dda42980053a4fb384f0438dcb442fb004879dedb542da9b6dbc24795f0dcc81"
+        },
+        {
+          "entry_id": "ent_05",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:05.000000Z",
+          "format_version": 4,
+          "global_seq": 5,
+          "content_hash": "fc5caecc9deaabb9278f2b917481745cd610a1e6a62fa1dde7bdd3a8a1e514147c473dac4420debbd45dfa6a1ff7092045a86ae4154687f5caca2fc1521ea06e",
+          "salt": "5562c353841e84bd2ab13ef1c8db4dd08981cb402040b4d88f1e3b9b4054aad3",
+          "leaf_hash": "624ebb096e8715bf3f80ee7a21ef3914c45d41fd7eb58f4593daf60a751366ee958b2cf49620be8e718297bc695eede444a67995ea2511c4ed5c01188546b9a1",
+          "chain_hash": "c96d6086f24ab750fc58dfb15ae7a8c0c12a320e79a8180de760ee3cdab8344aa4eef7c1e0598d0dafed87cf951d34ce6eeba154e9f733c11e788183fc50a34c"
+        },
+        {
+          "entry_id": "ent_06",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:06.000000Z",
+          "format_version": 4,
+          "global_seq": 6,
+          "content_hash": "2d0b7ef32127ddb7e8bf51f75cf693ab232f15b383167eadc263523a8f236251b776753ddc986f7d273f95e297ffbbd82bd2009f7cde553b000e24646e06a630",
+          "salt": "b8c64b42ad3631fc99dd2a304f0fb0d9b8ba7cbfe36eb9f8fe5046d3605901e5",
+          "leaf_hash": "999d36df251394c6447ec5e7a6dbd53133f8323fc4a274864d75d0f8aad4452306c4dc46b92a5c17bf265dd27833e319612a61a5762b1f2bffa3aac13b508a58",
+          "chain_hash": "0529cf2f3e3fae342462296bf746ab1d9722fd445db2d4177c8346427457ac471d7a3560bf7838467c435c3eb7202230994d727016202bd1b4a7e6d54692d9e7"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 4,
+        "first_break_type": "hash_mismatch",
+        "tombstones_found": 1,
+        "last_tombstone": 1,
+        "erased_found": 0,
+        "breaks": 3
+      }
+    },
+    {
+      "name": "v3_tombstone_with_two_defects",
+      "why": "§5.5 step 4: a tombstone's checks in order, the first its one break: the content hash before the run fields",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "chain_hash": "c98bf6a40bc98671db377efa9d94c61a6f5f1d2089c575d2110b0324974fcb12ecdc5dd3da9e0e2aa3b99ded1837bbb4de0dbdfaaa763a8bbef77e891714a4c1"
+        },
+        {
+          "entry_id": "tomb_00000000-0000-0000-0000-000000000000",
+          "entry_type": "tombstone",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 3,
+          "run_id": "run_x",
+          "sequence_num": 0,
+          "global_seq": 1,
+          "content_hash": "TOMBSTONE:ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+          "chain_hash": "53beaa01d44c3138f3e9683cf57cbba60d7427228cf50710f2a2b18643d0f05e54eaab3c2976bb59389d51e276bc516bbe8ed43f9a4efb2c7c36a3c32e3bd930"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 3,
+          "run_id": "",
+          "sequence_num": 0,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "chain_hash": "79358793b94d226157b2a2c3c0c0110ea72c333a64c2f479c7cbc0a5d72dff87a3574ad62fcf8c49157b19e14f704d6ad84ade646d4ec1c6d74d338597f96388"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "salt": "84a357ed61904c6274f7560f103512e9b8b679a4d0dc07392a510e79064226f0",
+          "leaf_hash": "05a8ee1e6e6f42c8460511d688a829a3a1d808bec959d18a35e36cf6dfd7bbe7ceb439129b4e475f68edf9f98158c50a27598f341e8e8834581b5c89598090d6",
+          "chain_hash": "9887c36934f4c962542e13cf93d3b5000a2f4f6ea67cc96ffb0c0ce787183c114b022a38d0180363653d2b9621a40d634029107b2be8a05d8c4f82989d9b4b62"
+        },
+        {
+          "entry_id": "ent_04",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:04.000000Z",
+          "format_version": 4,
+          "global_seq": 4,
+          "content_hash": "688eef52559718ca00dfac74ad35ae62b062f45895e930d19602ec211a7fb45274521c5ae6a7b927e1c39947dac5d1ae9fa3f7a896d24589d66f951262665adc",
+          "salt": "a132326cd2dd07fdbb101196a2322df90fef8d5c433b4d9202e1a12494056ce4",
+          "leaf_hash": "07c3dd6c95f524fec17fdd04a046d284f315f59f4ea576316fc4ed326f4b595bcae295a4b4e34e388c964f59b52be842b79cc563320b2f943a0dc5dc04819a33",
+          "chain_hash": "5c0129cfb40507dc3335b881b64c093d8d9a0b0297266003114280a801c10d8aaca87e15c3d98de6969dd33078d221add46d28c0398f7cad0ab01dcd721808c5"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 1,
+        "first_break_type": "invalid_tombstone",
+        "tombstones_found": 1,
+        "last_tombstone": 1,
+        "erased_found": 0,
+        "breaks": 1
+      }
+    },
+    {
+      "name": "malformed_supplied_previous_hash",
+      "why": "§5.5 step 7: the first entry's break; the next links from its stored hash",
+      "previous_hash": "ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab|x",
+      "entries": [
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 4,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "salt": "6a95c99d2c442e5f90a66909abbb31f22fc317e996306d1fd3094fd1a3350618",
+          "leaf_hash": "48b6571bb9d41775140357789e5e1909d35a2fe275af78c45921abbd4471505fd57d998514ef2b7aec84353f49b3f5978f6ea07de74e5df1b54194639c114bbf",
+          "chain_hash": "d349cb34df5723fae76ee751ed2cb8528511197f6fe10a44028b44ad2e2bbabb170fb967848040a27483140854037795e1e3112274a2e5d1361710ceeff41b1e"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "salt": "84a357ed61904c6274f7560f103512e9b8b679a4d0dc07392a510e79064226f0",
+          "leaf_hash": "05a8ee1e6e6f42c8460511d688a829a3a1d808bec959d18a35e36cf6dfd7bbe7ceb439129b4e475f68edf9f98158c50a27598f341e8e8834581b5c89598090d6",
+          "chain_hash": "77ce5245ea0f5c974edfb00558bef45c0f0b66224c5497c1f50f723af099c94e157310ba21159b13bf6e04398f18dd4a1e52ceea72684ef40e5768afe12e329c"
+        }
+      ],
+      "expected": {
+        "verdict": "BROKEN",
+        "first_break": 0,
+        "first_break_type": "invalid_field",
+        "tombstones_found": 0,
+        "last_tombstone": -1,
+        "erased_found": 0,
+        "breaks": 1
+      }
+    },
+    {
+      "name": "nel_and_nbsp_in_entry_id",
+      "why": "§2.0: U+0085 and U+00A0 are not control characters there",
+      "previous_hash": "",
+      "entries": [
+        {
+          "entry_id": "ent_00",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:00.000000Z",
+          "format_version": 4,
+          "global_seq": 0,
+          "content_hash": "9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f",
+          "salt": "4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911",
+          "leaf_hash": "ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d",
+          "chain_hash": "92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d"
+        },
+        {
+          "entry_id": "ab c",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:01.000000Z",
+          "format_version": 4,
+          "global_seq": 1,
+          "content_hash": "64e9bf610edb50f20d7d544cb1a26791423301df697a738e360009d2c26a38a27bd73d1431132fb5b458f508df20f4ded2828b5cf50c43cc73bc365ec08d2eb4",
+          "salt": "bb7fb08e8bce9c1776a3e7368c5093b7eed6eaa0edfcbcfa3c1ec58029030330",
+          "leaf_hash": "28dc728e906e430db11bee9543d8642979877ad436c15a1ef22cd4043987b72fb1edc2300a99dd48410ad056a2aa42636ac0a55ef909523ced022911ac6cfa4b",
+          "chain_hash": "f6534bb84ea4f61a64be477f88beae600ce21493a4d68673a1c06928b38274a61e88bde7f1fb447fc80d81b34704bccac5c46087e832443574460b20939ec27f"
+        },
+        {
+          "entry_id": "ent_02",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:02.000000Z",
+          "format_version": 4,
+          "global_seq": 2,
+          "content_hash": "d8baa163c373507c392b4b8e79d48a3433426a498fe29a4af0655482deed60a12abcb8dd4f79e226812afe1d76ae3415fbeb9e187398f1da12a954b1d449196b",
+          "salt": "6a95c99d2c442e5f90a66909abbb31f22fc317e996306d1fd3094fd1a3350618",
+          "leaf_hash": "48b6571bb9d41775140357789e5e1909d35a2fe275af78c45921abbd4471505fd57d998514ef2b7aec84353f49b3f5978f6ea07de74e5df1b54194639c114bbf",
+          "chain_hash": "31b6ecbbc3d38aadafe32646dc349fb41a4eb0eb045c2d359d68c19bf1a0e5bab43cdacd77a90005de857a6d047975ff8c546e120737bcba41ac4cda9ff9bfed"
+        },
+        {
+          "entry_id": "ent_03",
+          "entry_type": "event",
+          "timestamp": "2026-10-12T09:00:03.000000Z",
+          "format_version": 4,
+          "global_seq": 3,
+          "content_hash": "96a37fc183e442a32144056c62671e5d10bb42661af7b3f4d59177dd81377d31675bc956cf21eeb17180b61c0ffe73b5c86350f39a2022e39209701c4a04ec75",
+          "salt": "84a357ed61904c6274f7560f103512e9b8b679a4d0dc07392a510e79064226f0",
+          "leaf_hash": "05a8ee1e6e6f42c8460511d688a829a3a1d808bec959d18a35e36cf6dfd7bbe7ceb439129b4e475f68edf9f98158c50a27598f341e8e8834581b5c89598090d6",
+          "chain_hash": "b2580ae6f0b99a3e455c8cdc6f9471d1ff8c36f3ad05e1866cb7e4d5f59dcbecffa7dc1f2ce12427381c4025938bd0693ef47e8d97ca148c314d2f60f6734203"
+        }
+      ],
+      "expected": {
+        "verdict": "INTACT",
+        "first_break": -1,
+        "first_break_type": "",
+        "tombstones_found": 0,
+        "last_tombstone": -1,
+        "erased_found": 0,
+        "breaks": 0
+      }
+    }
+  ],
+  "entries_text_cases": [
+    {
+      "name": "live_entry",
+      "why": "§2.0",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "entries"
+    },
+    {
+      "name": "erased_entry",
+      "why": "§2.0",
+      "text": "[{\"timestamp\":\"2026-10-12T09:00:01.000000Z\",\"format_version\":4,\"global_seq\":1,\"leaf_hash\":\"34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b\",\"chain_hash\":\"9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1\",\"erased\":true}]",
+      "expected": "entries"
+    },
+    {
+      "name": "surrogate_pair_escape",
+      "why": "§2.0: a pair is one character, read as it",
+      "text": "[{\"entry_id\":\"\\ud83d\\ude00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "entries"
+    },
+    {
+      "name": "lone_high_surrogate_escape",
+      "why": "§2.0: a reader never repairs text",
+      "text": "[{\"entry_id\":\"a\\ud800\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "lone_low_surrogate_escape",
+      "why": "§2.0",
+      "text": "[{\"entry_id\":\"\\udfffa\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "high_surrogate_then_not_low",
+      "why": "§2.0",
+      "text": "[{\"entry_id\":\"\\ud800\\u0041\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "invalid_utf8_byte",
+      "why": "§2.0: a reader never repairs text",
+      "text": "",
+      "text_base64": "W3siZW50cnlfaWQiOiJh/2IiLCJlbnRyeV90eXBlIjoiZXZlbnQiLCJ0aW1lc3RhbXAiOiIyMDI2LTEwLTEyVDA5OjAwOjAwLjAwMDAwMFoiLCJmb3JtYXRfdmVyc2lvbiI6NCwiZ2xvYmFsX3NlcSI6MCwiY29udGVudF9oYXNoIjoiOWM2NDRiYjJkYTBjNTljYzA2N2MzMTY1ZjI4ZTg1NzVmODc4NzBiYmJlM2YxNWJjNzg5MmM4MWU0MGM0YjRmY2Q5MjU1OWU4YWM1NDQ2NjY4MmQ1NzY0OGMzNDA5Njc2MTY4OTE3YjIyMjQ0NDNlNGQ2MGJmNzIxMmRkNDMyN2YiLCJzYWx0IjoiNDA4NGNkYmY4MmM3ZGNhNDJhMjUzMGU3MTA4NmU1YTQ4NjA1ZmQ3YmFiMzM4NTY0MjY5MWM3OTVhMmEyNTkxMSIsImxlYWZfaGFzaCI6ImVjM2I1MDZlZTQ3YjY1MTZkYmMwMDRiYTQ4OWVjNTViOGQxNTkwN2EwZDExMTAzY2M0Njg5ZjM3NDNkMzI3ZDM5YmI3MjM4YWQ2YjBlN2VjZDI2M2M2MWU0NWNmOWZmYWQ3OWIwZGVkZWYwNjMwODQ1NmZkODY4MTQ5MDQwNjJkIiwiY2hhaW5faGFzaCI6IjkyYzcwNGFmODc2YjZjZjFhOGZkNzBiYzIyYWEyYWM0ZmRmMDI0YWJkNGU5NmRhNjZkNmMwYTlhNzE2MWQxMGYyZTc5NTJiMmQ0N2M3ODg1MDFjMzFiYmI0ZGZhMDQxZTI4ZWUxNzA2ZjBlYzE0YzU0NmRkNjcyYzFjZDA4ZTJkIn1d",
+      "expected": "not_entries"
+    },
+    {
+      "name": "surrogate_encoded_in_utf8",
+      "why": "§2.0: not UTF-8 (CESU-8)",
+      "text": "",
+      "text_base64": "W3siZW50cnlfaWQiOiJh7aCAYiIsImVudHJ5X3R5cGUiOiJldmVudCIsInRpbWVzdGFtcCI6IjIwMjYtMTAtMTJUMDk6MDA6MDAuMDAwMDAwWiIsImZvcm1hdF92ZXJzaW9uIjo0LCJnbG9iYWxfc2VxIjowLCJjb250ZW50X2hhc2giOiI5YzY0NGJiMmRhMGM1OWNjMDY3YzMxNjVmMjhlODU3NWY4Nzg3MGJiYmUzZjE1YmM3ODkyYzgxZTQwYzRiNGZjZDkyNTU5ZThhYzU0NDY2NjgyZDU3NjQ4YzM0MDk2NzYxNjg5MTdiMjIyNDQ0M2U0ZDYwYmY3MjEyZGQ0MzI3ZiIsInNhbHQiOiI0MDg0Y2RiZjgyYzdkY2E0MmEyNTMwZTcxMDg2ZTVhNDg2MDVmZDdiYWIzMzg1NjQyNjkxYzc5NWEyYTI1OTExIiwibGVhZl9oYXNoIjoiZWMzYjUwNmVlNDdiNjUxNmRiYzAwNGJhNDg5ZWM1NWI4ZDE1OTA3YTBkMTExMDNjYzQ2ODlmMzc0M2QzMjdkMzliYjcyMzhhZDZiMGU3ZWNkMjYzYzYxZTQ1Y2Y5ZmZhZDc5YjBkZWRlZjA2MzA4NDU2ZmQ4NjgxNDkwNDA2MmQiLCJjaGFpbl9oYXNoIjoiOTJjNzA0YWY4NzZiNmNmMWE4ZmQ3MGJjMjJhYTJhYzRmZGYwMjRhYmQ0ZTk2ZGE2NmQ2YzBhOWE3MTYxZDEwZjJlNzk1MmIyZDQ3Yzc4ODUwMWMzMWJiYjRkZmEwNDFlMjhlZTE3MDZmMGVjMTRjNTQ2ZGQ2NzJjMWNkMDhlMmQifV0=",
+      "expected": "not_entries"
+    },
+    {
+      "name": "salt_in_another_spelling",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"ſalt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "leaf_hash_in_another_spelling",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"timestamp\":\"2026-10-12T09:00:01.000000Z\",\"format_version\":4,\"global_seq\":1,\"leaf_haſh\":\"34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b\",\"chain_hash\":\"9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1\",\"erased\":true}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "erased_in_another_spelling",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"timestamp\":\"2026-10-12T09:00:01.000000Z\",\"format_version\":4,\"global_seq\":1,\"leaf_hash\":\"34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b\",\"chain_hash\":\"9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1\",\"eraſed\":true}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "erased_null",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"timestamp\":\"2026-10-12T09:00:01.000000Z\",\"format_version\":4,\"global_seq\":1,\"leaf_hash\":\"34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b\",\"chain_hash\":\"9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1\",\"erased\":null}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "erased_as_a_string",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"timestamp\":\"2026-10-12T09:00:01.000000Z\",\"format_version\":4,\"global_seq\":1,\"leaf_hash\":\"34c06af90edf80a9a0721fbcea380280d80b8453d8aa21fcb35e1cdd00bfba2c53dae9a30240580433e90405c288b1c0b7f07f565bf6672719258d049fd2390b\",\"chain_hash\":\"9db7b22988303d8998bb622f259c39cb1f2574b1747e1ddb0e5694ee64532ae74280dadd1a19761ebd41edc7737284b3cd83f2035285c2cd1bab2744bbd79bf1\",\"erased\":\"true\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "entry_id_null",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"entry_id\":null,\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "salt_null",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":null,\"x\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "timestamp_null",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":null,\"x\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "global_seq_minus_zero",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":-0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "global_seq_with_a_fraction",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0.0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "global_seq_with_an_exponent",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":4,\"global_seq\":0e0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
+    },
+    {
+      "name": "format_version_as_a_string",
+      "why": "§5.5: one spelling and one JSON type per member, null for none",
+      "text": "[{\"entry_id\":\"ent_00\",\"entry_type\":\"event\",\"timestamp\":\"2026-10-12T09:00:00.000000Z\",\"format_version\":\"4\",\"global_seq\":0,\"content_hash\":\"9c644bb2da0c59cc067c3165f28e8575f87870bbbe3f15bc7892c81e40c4b4fcd92559e8ac54466682d57648c3409676168917b2224443e4d60bf7212dd4327f\",\"salt\":\"4084cdbf82c7dca42a2530e71086e5a48605fd7bab3385642691c795a2a25911\",\"leaf_hash\":\"ec3b506ee47b6516dbc004ba489ec55b8d15907a0d11103cc4689f3743d327d39bb7238ad6b0e7ecd263c61e45cf9ffad79b0dedef06308456fd86814904062d\",\"chain_hash\":\"92c704af876b6cf1a8fd70bc22aa2ac4fdf024abd4e96da66d6c0a9a7161d10f2e7952b2d47c788501c31bbb4dfa041e28ee1706f0ec14c546dd672c1cd08e2d\"}]",
+      "expected": "not_entries"
     }
   ],
   "bind_cases": [

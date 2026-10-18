@@ -14,24 +14,24 @@
       "bytes": 9597
     },
     "anchor_v7_canonical_vectors.json": {
-      "sha256": "6527b19bbdcc3d0e029a96ce204a53140236fc9a66249516715bc86cec8a914c",
-      "bytes": 190076
+      "sha256": "c934287ab3001a62fa726579fd3aa47b5ca70695c198deff5c7e8756faab0552",
+      "bytes": 243797
     },
     "bundle_v1_vectors.json": {
       "sha256": "987965370263614dd67fc96e01cdb89b05c54dfe677397b79ec2064174dc47c3",
       "bytes": 4540440
     },
     "bundle_v2_vectors.json": {
-      "sha256": "9ce06108a0bb999525f6fc5a1265baa3c8d43a6733347e05c7d914f88c18e88d",
-      "bytes": 10150989
+      "sha256": "94c0c9b28062dc7e8d7c82c45d353b9ef3e60d53d0c3c78c6f4645bd71daa2d8",
+      "bytes": 10180930
     },
     "chain_v3_vectors.json": {
       "sha256": "4e8569c3dae7ef137b6fceb3164817a79af7eba72d83199423bc45efaaef0515",
       "bytes": 5887
     },
     "chain_v4_vectors.json": {
-      "sha256": "3941b257607f54dea5cff366d136f0b7ed712792142aeb15323e5fb423bfc2b2",
-      "bytes": 47850
+      "sha256": "80ceb41b45b3a15b1b69e2a620b2c65ea84d33e1dc6b20e415ed57f866acb5ad",
+      "bytes": 49365
     },
     "chain_vectors.json": {
       "sha256": "7be85a1331b25d243920c754fcad32a16bdc5c8aa0341b8c25a8b29c75c121d9",
@@ -62,8 +62,8 @@
       "bytes": 8554
     },
     "verify_verdict_v4_vectors.json": {
-      "sha256": "a100be9d9204341ac841351d6b525fb272f870ffc2dd9ad5db7cebf139ae7627",
-      "bytes": 255461
+      "sha256": "ea819c68b20aa1391bad9792c8b63e6ad4315c5409ba70c22a9793cdfb025375",
+      "bytes": 310076
     },
     "verify_verdict_vectors.json": {
       "sha256": "cb874fb13c26b40d56b40d9cff31f6e971f3455fabe5dd18b61594b587a4f4f2",

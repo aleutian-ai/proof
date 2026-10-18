@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aleutian-ai/proof/anchor"
+	"github.com/aleutian-ai/proof/anchor/build"
 	"github.com/aleutian-ai/proof/keyfile"
 	"github.com/aleutian-ai/proof/linker"
 	"github.com/aleutian-ai/proof/store"
@@ -272,4 +273,19 @@ func bindChain(t *testing.T, s *Sink, subject string) string {
 		t.Fatal(err)
 	}
 	return chain
+}
+
+// successorOver builds an unsigned v7 anchor over entries that names prev as
+// its predecessor, whether or not it covers more: build refuses a successor
+// that does not grow, and these tests need one to show the verifier refuses it.
+func successorOver(t *testing.T, subject string, entries []verify.Entry, prev anchor.Anchor) anchor.Anchor {
+	t.Helper()
+	next, err := build.Anchor(context.Background(), build.Input{Subject: subject, Entries: entries})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next.PreviousAnchorID, next.PreviousAnchorHash = prev.AnchorID, prev.ChainHash
+	next.ChainHash = anchor.ChainHashV7(next.PreviousAnchorHash, subject, next.Range.StartSeq,
+		next.Range.EndSeq, entries[len(entries)-1].ChainHash)
+	return next
 }

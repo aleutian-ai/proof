@@ -296,6 +296,12 @@ func (f *folder) readAnchors(chain string) ([]anchor.Anchor, string, error) {
 		if err := json.Unmarshal(raw, &a); err != nil {
 			return nil, fmt.Sprintf("checkpoint %s is not a checkpoint: %v", nf.name, err), nil
 		}
+		// A sink writes v7 checkpoints and nothing else (sink-format §5); an
+		// older anchor here was not written by it, whoever signed it.
+		if a.Version != anchor.SequenceRangeVersion {
+			return nil, fmt.Sprintf("checkpoint %s is a v%d anchor; a sink's checkpoints are v%d",
+				nf.name, a.Version, anchor.SequenceRangeVersion), nil
+		}
 		out = append(out, a)
 	}
 	return out, "", nil

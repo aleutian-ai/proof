@@ -240,7 +240,7 @@ func TestSigner_SeedIsCopied(t *testing.T) {
 // hand to code written for RSA or ECDSA, where passing a digest is correct.
 func TestSigner_RefusesPreHashedInput(t *testing.T) {
 	s := newTestSigner(t)
-	digest := sha256.Sum256([]byte(`{"canonical":1}`))
+	digest := sha256.Sum256(canonicalV6Bytes(t))
 
 	_, err := s.Sign(nil, digest[:], crypto.SHA256)
 	if !errors.Is(err, ErrPreHashed) {
@@ -427,7 +427,7 @@ func TestSignCanonical_RejectsPreHashingSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromCryptoSigner: %v", err)
 	}
-	canonical := []byte(`{"version":6}`)
+	canonical := canonicalV6Bytes(t)
 
 	// First confirm the hazard is real: the signature IS structurally perfect.
 	raw, err := foreign.SignContext(context.Background(), canonical)
@@ -463,7 +463,7 @@ func TestSignCanonical_RejectsMalformedSigners(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FromCryptoSigner: %v", err)
 			}
-			_, _, err = SignCanonical(context.Background(), cs, []byte(`{"canonical":1}`))
+			_, _, err = SignCanonical(context.Background(), cs, canonicalV6Bytes(t))
 			if err == nil {
 				t.Fatal("expected a refusal, got nil")
 			}
@@ -489,7 +489,7 @@ func TestSignCanonical_ValidatesItsOwnArguments(t *testing.T) {
 // declare one key and sign with another.
 func TestSignCanonical_KeyIDComesFromTheSigningKey(t *testing.T) {
 	s := newTestSigner(t)
-	_, keyID, err := SignCanonical(context.Background(), s, []byte(`{"canonical":1}`))
+	_, keyID, err := SignCanonical(context.Background(), s, canonicalV6Bytes(t))
 	if err != nil {
 		t.Fatalf("SignCanonical: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestSignCanonical_KeyIDComesFromTheSigningKey(t *testing.T) {
 		t.Fatalf("NewMLDSA65Signer: %v", err)
 	}
 	defer other.Close()
-	_, otherID, err := SignCanonical(context.Background(), other, []byte(`{"canonical":1}`))
+	_, otherID, err := SignCanonical(context.Background(), other, canonicalV6Bytes(t))
 	if err != nil {
 		t.Fatalf("SignCanonical: %v", err)
 	}
@@ -544,7 +544,7 @@ func TestSignCanonical_ThroughAForeignWellBehavedSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromCryptoSigner: %v", err)
 	}
-	sig, keyID, err := SignCanonical(context.Background(), cs, []byte(`{"canonical":1}`))
+	sig, keyID, err := SignCanonical(context.Background(), cs, canonicalV6Bytes(t))
 	if err != nil {
 		t.Fatalf("SignCanonical: %v", err)
 	}
@@ -694,4 +694,38 @@ func TestSigner_ConcurrentUse(t *testing.T) {
 		_ = s.Close()
 	}()
 	wg.Wait()
+}
+
+// canonicalV6Bytes is a real v6 anchor's canonical form: SignCanonical signs
+// nothing else.
+func canonicalV6Bytes(t *testing.T) []byte {
+	t.Helper()
+	b, err := Canonicalize(validV6())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestSignCanonical_SignsOnlyAnAnchorsCanonicalForm: the context is chosen by
+// the version the bytes declare, so the bytes must be exactly an anchor's
+// canonical form. A loose read let {"Version":7} choose the v7 context.
+func TestSignCanonical_SignsOnlyAnAnchorsCanonicalForm(t *testing.T) {
+	s := newTestSigner(t)
+	good := canonicalV6Bytes(t)
+	cases := map[string][]byte{
+		"folded version":   []byte(`{"Version":7}`),
+		"not an anchor":    []byte(`{"canonical":1}`),
+		"extra space":      append([]byte("{ "), good[1:]...),
+		"another key":      bytes.Replace(good, []byte(`"version":6`), []byte(`"version":6,"x":1`), 1),
+		"members reversed": bytes.Replace(good, []byte(`{"anchor_id"`), []byte(`{"zz":0,"anchor_id"`), 1),
+	}
+	for name, b := range cases {
+		if _, _, err := SignCanonical(context.Background(), s, b); err == nil || !strings.Contains(err.Error(), "canonical form") {
+			t.Errorf("%s: signed, or refused for another reason: %v", name, err)
+		}
+	}
+	if _, _, err := SignCanonical(context.Background(), s, good); err != nil {
+		t.Errorf("a v6 anchor's canonical form was refused: %v", err)
+	}
 }

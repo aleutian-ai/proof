@@ -223,6 +223,7 @@ func TestVerifyAnchor_FlagsMayFollowTheFilename(t *testing.T) {
 // that path is TestVerifyAnchor_PreviousHashAlternative's.)
 func TestVerifyAnchor_AChainedV7AnchorNeedsNoPredecessorFile(t *testing.T) {
 	f := newVerifyFixture(t, 3)
+	growFixture(t, f, 1) // a successor covers more than its predecessor
 
 	// A second anchor, chained from the first.
 	secondPath := filepath.Join(f.dir, "second.json")
@@ -257,6 +258,7 @@ func TestVerifyAnchor_AChainedV7AnchorNeedsNoPredecessorFile(t *testing.T) {
 // the anchor file must still be able to check.
 func TestVerifyAnchor_PreviousHashAlternative(t *testing.T) {
 	f := newVerifyFixture(t, 3)
+	growFixture(t, f, 1) // a successor covers more than its predecessor
 	secondPath := filepath.Join(f.dir, "second.json")
 	if code, _, stderr := runAnchor(t, "--db", f.db, "--chain", f.chainID,
 		"--subject", "acct-7f3a", "--key", f.key,
@@ -486,4 +488,36 @@ func TestVerifyAnchor_SubjectIsRequiredAndChecked(t *testing.T) {
 	if code != exitOK || !strings.Contains(out, "ANCHOR BOUND") {
 		t.Fatalf("its own subject: exit %d\n%s", code, out)
 	}
+}
+
+// TestVerifyAnchor_ChainGrownSinceTheAnchor: format-spec §9.7, a chain that
+// has grown since its anchor still binds. The CLI binds through a walker,
+// which once needed the walk to end at the anchor's end_seq and reported
+// height_mismatch for a longer export.
+func TestVerifyAnchor_ChainGrownSinceTheAnchor(t *testing.T) {
+	f := newVerifyFixture(t, 3)
+	if code, _, stderr := runWithStdin(t, commitLines(t, 2, 3), cmdCommit, "--db", f.db, "--chain", f.chainID); code != exitOK {
+		t.Fatalf("commit: %s", stderr)
+	}
+	grown := filepath.Join(f.dir, "grown.json")
+	entries := readFixtureEntries(t, f.anchorFixture)
+	if len(entries) != 5 {
+		t.Fatalf("fixture: %d entries", len(entries))
+	}
+	writeEntriesFile(t, grown, entries)
+	code, out, stderr := runVerify(t, grown, "--anchor", f.anchorPath, "--key", f.pubPath)
+	if code != exitOK || strings.Contains(out, string(verify.BindHeightMismatch)) {
+		t.Fatalf("exit %d\n%s\n%s", code, out, stderr)
+	}
+}
+
+// growFixture commits n more entries to the fixture's chain and rewrites its
+// entries file.
+func growFixture(t *testing.T, f verifyFixture, n int) {
+	t.Helper()
+	have := len(readFixtureEntries(t, f.anchorFixture))
+	if code, _, stderr := runWithStdin(t, commitLines(t, n, have), cmdCommit, "--db", f.db, "--chain", f.chainID); code != exitOK {
+		t.Fatalf("commit: %s", stderr)
+	}
+	writeEntriesFile(t, f.entriesPath, readFixtureEntries(t, f.anchorFixture))
 }

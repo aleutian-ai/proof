@@ -75,7 +75,8 @@ type Input struct {
 	// which signs records against it): such a writer mints the salt itself with
 	// chainformat.NewSaltV4 and pins the result with ExpectChainHash. A salt
 	// chosen by whoever produced the content would let them make a leaf hash
-	// guessable. Refused unless the linker writes v4.
+	// guessable. Refused unless the linker writes v4, unless ExpectChainHash is
+	// set, and when two entries of one batch carry the same salt.
 	Salt string
 
 	// IngestedAt is arrival time, and the ordering authority for this batch.
@@ -121,6 +122,10 @@ type Linker struct {
 	runID  func() (string, error)
 	salt   func() (string, error)
 	format int
+
+	// saltFor, set only by this package's tests, mints a salt from the entry,
+	// so that two linkers appending in different orders produce one chain.
+	saltFor func(Input) (string, error)
 }
 
 // Option configures a Linker.
@@ -396,6 +401,7 @@ func (l *Linker) Append(ctx context.Context, chainID string, inputs []Input) (Re
 func (l *Linker) link(chainID, previousHash string, nextGlobalSeq int64, runID string,
 	batch []Input) ([]store.Entry, error) {
 	entries := make([]store.Entry, len(batch))
+	salts := map[string]bool{}
 	for i := range batch {
 		seqNum := int64(i)
 		globalSeq := nextGlobalSeq + seqNum
@@ -405,6 +411,12 @@ func (l *Linker) link(chainID, previousHash string, nextGlobalSeq int64, runID s
 		switch {
 		case batch[i].Salt != "" && l.format != chainformat.FormatV4:
 			hashErr = errors.New("a salt is a v4 field, and this linker writes v" + strconv.Itoa(l.format))
+		case batch[i].Salt != "" && batch[i].ExpectChainHash == "":
+			// Only a writer that minted the salt and pinned the hash it gives
+			// may supply one (format-spec §2.0): anyone else would be choosing it.
+			hashErr = errors.New("a supplied salt needs ExpectChainHash: leave Salt empty and the linker mints one")
+		case batch[i].Salt != "" && salts[batch[i].Salt]:
+			hashErr = errors.New("two entries of the batch have the same salt; every entry's is fresh")
 		case l.format == chainformat.FormatV2:
 			chainHash, hashErr = chainformat.ComputeChainHash(
 				previousHash, runID, seqNum, batch[i].Timestamp, batch[i].ContentHash)
@@ -413,10 +425,16 @@ func (l *Linker) link(chainID, previousHash string, nextGlobalSeq int64, runID s
 				previousHash, globalSeq, batch[i].Timestamp, batch[i].ContentHash)
 		default:
 			if salt = batch[i].Salt; salt == "" {
-				if salt, hashErr = l.salt(); hashErr != nil {
+				if l.saltFor != nil {
+					salt, hashErr = l.saltFor(batch[i])
+				} else {
+					salt, hashErr = l.salt()
+				}
+				if hashErr != nil {
 					break
 				}
 			}
+			salts[salt] = true
 			if leaf, hashErr = chainformat.ComputeLeafHashV4(
 				batch[i].EntryID, batch[i].EntryType, batch[i].ContentHash, salt); hashErr != nil {
 				break

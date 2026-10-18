@@ -296,7 +296,9 @@ func (h *HeadsFile) load() error {
 	}
 	fi, err := os.Lstat(h.path)
 	switch {
-	case errors.Is(err, os.ErrNotExist) && (h.started || (h.start && !h.loaded)):
+	// A record this HeadsFile started is empty only until it is first written:
+	// gone after that, it was deleted, as for FileHeads.
+	case errors.Is(err, os.ErrNotExist) && h.stamp == nil && (h.started || (h.start && !h.loaded)):
 		h.started = true
 		h.loaded, h.stamp, h.heads = true, nil, map[string]headRecord{}
 		return nil

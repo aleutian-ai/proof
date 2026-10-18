@@ -226,10 +226,13 @@ func FromWalker(ctx context.Context, subject string, w *verify.Walker, previous 
 		if previous.Subject != subject {
 			return anchor.Anchor{}, errors.New("build: the previous anchor is for another subject")
 		}
-		if previous.EntryCount > int64(w.Count()) {
+		// verify.Series refuses both of these, so an anchor built against
+		// them would never verify as a successor.
+		if previous.EntryCount >= int64(w.Count()) {
 			return anchor.Anchor{}, fmt.Errorf("build: the previous anchor covers %d entries and the chain "+
-				"has %d: an anchor cannot follow one that covers more", previous.EntryCount, w.Count())
+				"has %d: a successor covers more than its predecessor", previous.EntryCount, w.Count())
 		}
+
 	}
 
 	res := w.Result()
@@ -265,6 +268,10 @@ func FromWalker(ctx context.Context, subject string, w *verify.Walker, previous 
 
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
+	}
+	if previous != nil && createdAt.UnixMilli() < previous.CreatedAtMs {
+		return anchor.Anchor{}, errors.New("build: createdAt is before the previous anchor's; " +
+			"a series does not go back in time")
 	}
 
 	out := anchor.Anchor{

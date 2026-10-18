@@ -265,14 +265,15 @@ func TestSignCanonical_BoundsItsInput(t *testing.T) {
 		t.Errorf("error %q does not report the size bound", err)
 	}
 
-	// The boundary itself must be accepted, or the bound is off by one.
+	// The boundary itself must pass the size bound, or the bound is off by
+	// one. (It is then refused as not an anchor's canonical form.)
 	atLimit := make([]byte, maxCanonicalSize)
 	for i := range atLimit {
 		atLimit[i] = 'x'
 	}
 	atLimit[0] = '{'
-	if _, _, err := SignCanonical(context.Background(), s, atLimit); err != nil {
-		t.Errorf("a canonical input exactly at the limit was refused: %v", err)
+	if _, _, err := SignCanonical(context.Background(), s, atLimit); err == nil || strings.Contains(err.Error(), "exceeding") {
+		t.Errorf("a canonical input exactly at the limit was refused for its size: %v", err)
 	}
 }
 

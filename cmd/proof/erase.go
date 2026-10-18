@@ -11,8 +11,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/aleutian-ai/proof/chainformat"
 	"github.com/aleutian-ai/proof/internal/noncestore"
-	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 )
 
@@ -44,7 +44,9 @@ func cmdErase(args []string, stdout, stderr *os.File) int {
 		return exitIOError
 	}
 
-	st, err := boltstore.Open(*dbPath)
+	// A symlink is refused: the nonce file and the compaction are found by
+	// --db's own name, and through a link they would be found beside the link.
+	st, err := boltstore.Open(*dbPath, boltstore.WithNoFollow())
 	if err != nil {
 		fmt.Fprintf(stderr, "proof erase: %v\n", err)
 		if errors.Is(err, boltstore.ErrLocked) {
@@ -52,40 +54,61 @@ func cmdErase(args []string, stdout, stderr *os.File) int {
 		}
 		return exitIOError
 	}
-	was, err := st.Erase(ctx.Background(), *chainID, *seq)
+
+	// The order makes every step retryable by running the same command: the
+	// nonce is forgotten while the entry still names it, then the entry is
+	// erased, then the database is rewritten whatever came before. An entry
+	// erased first would leave a nonce keyed under an id nothing holds any
+	// more, which `proof forget` could not be pointed at.
+	got, err := st.Range(ctx.Background(), *chainID, *seq, *seq, 1)
 	switch {
-	case errors.Is(err, store.ErrNotFound):
-		st.Close()
-		fmt.Fprintf(stderr, "proof erase: no entry at global_seq %d on chain %q; nothing was erased\n", *seq, *chainID)
-		return exitUsage
-	case errors.Is(err, boltstore.ErrNotV4):
-		st.Close()
-		fmt.Fprintf(stderr, "proof erase: the entry at global_seq %d is not v4. v2 and v3 entries are not "+
-			"erased in place (their formats are frozen); `proof forget` destroys a salted entry's nonce\n", *seq)
-		return exitUsage
 	case err != nil:
 		st.Close()
 		fmt.Fprintf(stderr, "proof erase: %v\n", err)
 		return exitIOError
-	}
-	if was.Erased {
+	case len(got) == 0:
 		st.Close()
-		fmt.Fprintf(stdout, "the entry at global_seq %d on %s was erased already. Nothing changed.\n", *seq, *chainID)
-		return exitOK
+		fmt.Fprintf(stderr, "proof erase: no entry at global_seq %d on chain %q; nothing was erased\n", *seq, *chainID)
+		return exitUsage
+	case got[0].FormatVersion != chainformat.FormatV4:
+		st.Close()
+		fmt.Fprintf(stderr, "proof erase: the entry at global_seq %d is not v4. v2 and v3 entries are not "+
+			"erased in place (their formats are frozen); `proof forget` destroys a salted entry's nonce\n", *seq)
+		return exitUsage
 	}
+	already := got[0].Erased
 
 	// The nonce file is serialised by the evidence database's lock, held here.
 	noncePath := noncestore.PathFor(*dbPath)
 	nonce := "it had no stored nonce (a content_hash entry)"
-	switch err := noncestore.Forget(noncePath, *chainID, was.EntryID, 5*time.Second); {
-	case errors.Is(err, noncestore.ErrNotFound), errors.Is(err, noncestore.ErrNoFile):
-	case err != nil:
-		st.Close()
-		fmt.Fprintf(stderr, "proof erase: the entry is erased, but forgetting its nonce failed: %v. "+
-			"Run `proof forget --db %s --chain %s --entry %s`\n", err, *dbPath, *chainID, was.EntryID)
-		return exitIOError
-	default:
-		nonce = "its nonce was forgotten and " + noncePath + " rewritten"
+	if already {
+		// Its id is gone, so its nonce can no longer be looked up; a nonce
+		// forgotten by an earlier run whose rewrite was interrupted is still
+		// cleared from the file's free pages here.
+		nonce = "its nonce file was rewritten"
+		if _, err := os.Lstat(noncePath); errors.Is(err, os.ErrNotExist) {
+			nonce = "there is no nonce file"
+		} else if err := noncestore.Compact(noncePath, 5*time.Second); err != nil {
+			st.Close()
+			fmt.Fprintf(stderr, "proof erase: rewriting %s failed: %v. Run `proof erase` again to retry\n", noncePath, err)
+			return exitIOError
+		}
+	} else {
+		switch err := noncestore.Forget(noncePath, *chainID, got[0].EntryID, 5*time.Second); {
+		case errors.Is(err, noncestore.ErrNotFound), errors.Is(err, noncestore.ErrNoFile):
+		case err != nil:
+			st.Close()
+			fmt.Fprintf(stderr, "proof erase: nothing was erased: forgetting the entry's nonce failed: %v. "+
+				"Run `proof erase` again to retry\n", err)
+			return exitIOError
+		default:
+			nonce = "its nonce was forgotten and " + noncePath + " rewritten"
+		}
+		if _, err := st.Erase(ctx.Background(), *chainID, *seq); err != nil {
+			st.Close()
+			fmt.Fprintf(stderr, "proof erase: %v. Run `proof erase` again to retry\n", err)
+			return exitIOError
+		}
 	}
 	if err := st.Close(); err != nil {
 		fmt.Fprintf(stderr, "proof erase: %v\n", err)
@@ -95,6 +118,11 @@ func cmdErase(args []string, stdout, stderr *os.File) int {
 		fmt.Fprintf(stderr, "proof erase: the entry is erased, but rewriting %s failed, so its old bytes "+
 			"may remain in the file's free pages: %v. Run `proof erase` again to retry\n", *dbPath, err)
 		return exitIOError
+	}
+	if already {
+		fmt.Fprintf(stdout, "the entry at global_seq %d on %s was erased already; %s, and %s was rewritten\n"+
+			"so no removed bytes are left in it.\n", *seq, *chainID, nonce, *dbPath)
+		return exitOK
 	}
 	fmt.Fprintf(stdout, "erased the entry at global_seq %d on %s: its id, type, content hash and salt are\n"+
 		"gone, %s, and %s was rewritten so the removed bytes are not left in it.\n"+

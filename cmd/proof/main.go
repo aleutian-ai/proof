@@ -43,6 +43,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 
+	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/store"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
 	"github.com/aleutian-ai/proof/verify"
@@ -226,7 +227,18 @@ func cmdVerify(args []string, stdout, stderr *os.File) int {
 	walkers := []*verify.Walker{w}
 	var bindWalker *verify.Walker
 	if opts.anchorPath != "" {
+		// Read first, so the walker can record a v7 anchor's tip as it passes
+		// it: a chain that has grown since the anchor still binds (§9.7).
+		a, err := loadAnchorFile(opts.anchorPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "proof verify: %v\n", err)
+			return exitIOError
+		}
+		opts.anchor = a
 		bindWalker = verify.NewWalker(verify.Options{MaxBreaks: 1})
+		if a.Version == anchor.SequenceRangeVersion {
+			bindWalker.WatchTip(a.Range.EndSeq)
+		}
 		walkers = append(walkers, bindWalker)
 	}
 	if err := walkEntriesFile(positional[0], walkers...); err != nil {

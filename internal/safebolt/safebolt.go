@@ -437,19 +437,26 @@ func (d *DB) Close() error {
 //
 // # Limitations
 //
-//   - One transaction: the copy is held in memory until it commits.
+//   - None.
 //
 // # Assumptions
 //
-//   - Nothing else uses either handle meanwhile.
+//   - Nothing else uses either handle meanwhile. dst is a private copy, so it
+//     may be written in several transactions: a crash part way leaves a copy
+//     that is never renamed over the original.
 func Compact(dst, src *DB) error {
-	err := src.guard.Run(func() error { return bolt.Compact(dst.db, src.db, 0) })
+	err := src.guard.Run(func() error { return bolt.Compact(dst.db, src.db, compactTxBytes) })
 	if src.guard.Poisoned() {
 		// The panic unwound through dst's write transaction too.
 		dst.guard.Poison()
 	}
 	return err
 }
+
+// compactTxBytes is how much a compaction writes per transaction. In one
+// transaction a copy is held in memory until it commits: 4.7 GB to rewrite a
+// million-entry chain, against 1.2 GB in 64 MiB transactions.
+const compactTxBytes = 64 << 20
 
 // Check reads a whole bbolt file and reports whether it is well formed.
 //
@@ -574,32 +581,47 @@ func walk(c *bolt.Cursor, child func(name []byte) *bolt.Bucket, root bool, depth
 type Checker struct {
 	mu     sync.Mutex
 	done   map[fileID]bool
-	failed fileSet // files that failed: refused without being read again
+	failed fileSet // files that failed, as they were: refused without being read again
 }
 
 // fileID identifies a file by device and inode: a file replaced under the same
 // name is a different file.
 type fileID struct{ dev, ino uint64 }
 
-// fileSet is a set of files, safe for concurrent use.
-type fileSet struct {
-	mu  sync.Mutex
-	ids map[fileID]bool
+// fileStamp is what changes when a file is written in place: its size, its
+// modification time, and (where it is read) its status change time, which no
+// caller can set back.
+type fileStamp struct {
+	size, mtime, ctime int64
 }
 
-func (s *fileSet) add(id fileID) {
+func stampOf(fi os.FileInfo) fileStamp {
+	ctime, _ := osfile.ChangeTime(fi)
+	return fileStamp{size: fi.Size(), mtime: fi.ModTime().UnixNano(), ctime: ctime}
+}
+
+// fileSet is a set of files, each as it was when added, safe for concurrent
+// use.
+type fileSet struct {
+	mu  sync.Mutex
+	ids map[fileID]fileStamp
+}
+
+func (s *fileSet) add(id fileID, st fileStamp) {
 	s.mu.Lock()
 	if s.ids == nil {
-		s.ids = map[fileID]bool{}
+		s.ids = map[fileID]fileStamp{}
 	}
-	s.ids[id] = true
+	s.ids[id] = st
 	s.mu.Unlock()
 }
 
-func (s *fileSet) has(id fileID) bool {
+// has reports whether the file was added and has not changed since.
+func (s *fileSet) has(id fileID, st fileStamp) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ids[id]
+	was, ok := s.ids[id]
+	return ok && was == st
 }
 
 func idOf(fi os.FileInfo) (fileID, bool) {
@@ -613,10 +635,14 @@ func idOf(fi os.FileInfo) (fileID, bool) {
 //
 // A file that does not exist, or is empty (bbolt initialises it), has nothing
 // to check. A file that fails is refused on every later call without being
-// read again, until it is replaced (another device and inode): a check that
+// read again, until it is replaced (another device and inode) or changed
+// (another size, modification time or status change time): a check that
 // faults inside the storage layer abandons a handle, which keeps its memory
 // map until the process exits, so re-reading a damaged file on every call, as
-// a long-lived server would, would exhaust the address space.
+// a long-lived server would, would exhaust the address space. A file restored
+// from a backup is read again, whether it was copied over the damaged one or
+// given the damaged one's freed inode; what is leaked is then at most one
+// mapping per change to the file, and changing it needs write access.
 //
 // # Inputs
 //
@@ -642,13 +668,15 @@ func idOf(fi os.FileInfo) (fileID, bool) {
 //
 // # Assumptions
 //
-//   - Device and inode identify a file for the life of the process.
+//   - Device and inode identify a file for the life of the process, and a
+//     file written in place changes size, mtime or ctime.
 func (c *Checker) Once(path string, opts *bolt.Options) error {
 	fi, err := os.Stat(path)
 	if err != nil || fi.Size() == 0 || !fi.Mode().IsRegular() {
 		return nil // absent, new, or not a file bbolt will open: the open reports it
 	}
 	id, known := idOf(fi)
+	stamp := stampOf(fi)
 	if known {
 		c.mu.Lock()
 		passed := c.done[id]
@@ -656,14 +684,14 @@ func (c *Checker) Once(path string, opts *bolt.Options) error {
 		if passed {
 			return nil
 		}
-		if c.failed.has(id) {
+		if c.failed.has(id, stamp) {
 			return fmt.Errorf("%w (this file already failed its check in this process; it is not read "+
-				"again until it is replaced)", ErrCorrupt)
+				"again until it is replaced or changed)", ErrCorrupt)
 		}
 	}
 	if err := Check(path, opts); err != nil {
 		if known && errors.Is(err, ErrCorrupt) {
-			c.failed.add(id)
+			c.failed.add(id, stamp)
 		}
 		return err
 	}
@@ -859,15 +887,37 @@ var ErrLockHeld = errors.New("held by another process")
 // # Limitations
 //
 //   - flock is advisory: only code that takes this lock is held off by it.
-//   - A symlink at the lock file's name is refused, never followed.
+//   - A symlink at the lock file's name is refused, never followed, and so is
+//     anything there that is not a regular file (a FIFO would block the open).
+//   - A shared lock on a read-only file system with no lock file is no lock:
+//     nothing there can be written, so there is no writer to hold off, and
+//     the returned file is nil ([UnlockFile] accepts it).
 //
 // # Assumptions
 //
-//   - The folder is writable, or the lock file already exists.
+//   - The folder is writable, the lock file already exists, or (for a shared
+//     lock) the file system is read-only.
 func LockFile(path string, exclusive bool, timeout time.Duration) (*os.File, error) {
-	f, err := osfile.OpenNoFollow(path+LockSuffix, os.O_RDWR|os.O_CREATE, 0o600)
+	name := path + LockSuffix
+	// A reader opens the lock file read-only and creates it only if it is
+	// missing, so a nonce file on read-only media can still be read.
+	flag := os.O_RDWR | os.O_CREATE
+	if !exclusive {
+		flag = os.O_RDONLY
+	}
+	f, err := osfile.OpenNoFollow(name, flag|osfile.NonBlock, 0o600)
+	if !exclusive && errors.Is(err, os.ErrNotExist) {
+		f, err = osfile.OpenNoFollow(name, os.O_RDWR|os.O_CREATE|osfile.NonBlock, 0o600)
+		if err != nil && osfile.IsReadOnlyFS(err) {
+			return nil, nil
+		}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open the lock file: %w", err)
+	}
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf("open the lock file: %s is not a regular file", filepath.Base(name))
 	}
 	deadline := time.Now().Add(timeout)
 	for {

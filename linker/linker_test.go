@@ -827,3 +827,39 @@ func TestAppendRefusesWhatNothingElseCanCarry(t *testing.T) {
 		}
 	}
 }
+
+// TestAppend_ASuppliedSaltIsPinnedAndFresh: format-spec §2.0, the salt is the
+// writer's and never shared. A caller may supply one only with the chain hash
+// it computed from it (as the sink does), and never the same one twice in a
+// batch; three entries once linked with one all-zero salt and verified.
+func TestAppend_ASuppliedSaltIsPinnedAndFresh(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
+	in := func(id, salt, expect string) linker.Input {
+		return linker.Input{EntryID: id, EntryType: "event", Timestamp: now, IngestedAt: now,
+			ContentHash: strings.Repeat("ab", 64), Salt: salt, ExpectChainHash: expect}
+	}
+	zero := strings.Repeat("0", 64)
+
+	l, err := linker.New(memory.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(ctx, chainID, []linker.Input{in("e1", zero, "")}); err == nil ||
+		!strings.Contains(err.Error(), "ExpectChainHash") {
+		t.Errorf("a salt without ExpectChainHash: %v", err)
+	}
+
+	// Pinned, as a writer layered on the linker pins it: accepted once.
+	leaf := chainformat.ComputeLeafHashV4Unchecked("e1", "event", strings.Repeat("ab", 64), zero)
+	h := chainformat.ComputeChainHashV4Unchecked("", 0, now, leaf)
+	h2 := chainformat.ComputeChainHashV4Unchecked(h, 1,
+		now, chainformat.ComputeLeafHashV4Unchecked("e2", "event", strings.Repeat("ab", 64), zero))
+	if _, err := l.Append(ctx, chainID, []linker.Input{in("e1", zero, h), in("e2", zero, h2)}); err == nil ||
+		!strings.Contains(err.Error(), "same salt") {
+		t.Errorf("one salt twice in a batch: %v", err)
+	}
+	if _, err := l.Append(ctx, chainID, []linker.Input{in("e1", zero, h)}); err != nil {
+		t.Errorf("a pinned salt: %v", err)
+	}
+}

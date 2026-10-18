@@ -1233,6 +1233,12 @@ def cases_v2() -> list:
                disclose={0, 1},
                note="a non-ASCII label, hashed as its UTF-8 bytes as given: a verifier that normalises gets "
                     "chain-hash as well")
+    consistent("entry_type_long", A, ["event"] * 3, {2: "sink.event.with.a.label.of.forty.bytes"},
+               ac(events=2, committed=0, record_authenticated=2), [("entry-type", 1, 2), ("bad-signature", 1, 2)],
+               disclose={0, 1},
+               note="a label longer than either sink type, hashed as stored: entry-type and no chain-hash. A "
+                    "reader that stops holding a value once it is too long for any type it knows, and hashes "
+                    "something else in its place, reports chain-hash as well")
     consistent("erasure_invalid_label_without_hash", A, ["event"] * 3, {2: "sink.erasure"},
                ac(events=2, committed=0), [("erasure-invalid", 1, 2)], disclose={0, 1},
                note="an event labelled sink.erasure, hashed and signed as such by the writer: the label is "

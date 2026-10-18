@@ -986,7 +986,11 @@ var ErrNotV4 = errors.New("bolt: only a v4 entry is erased in place")
 // # Outputs
 //
 //   - store.Entry: the entry as it was BEFORE erasure, so the caller can
-//     remove what it holds elsewhere under the old id (a nonce, the content)
+//     remove what it holds elsewhere under the old id (a nonce, the content).
+//     Remove those first, while the store still names the id: a crash after
+//     the erase would otherwise leave them keyed under an id nothing holds,
+//     where they cannot be found to remove. `proof erase` reads the entry,
+//     forgets its nonce, then erases it.
 //   - error: store.ErrNotFound, ErrNotV4, or a wrapped store error
 //
 // # Example

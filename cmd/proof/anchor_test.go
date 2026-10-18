@@ -204,6 +204,10 @@ func TestAnchorVerb_ChainsFromAPreviousAnchor(t *testing.T) {
 		"--subject", "s", "--key", f.key, "--out", firstPath); code != exitOK {
 		t.Fatalf("first anchor: %s", stderr)
 	}
+	// A successor covers more than its predecessor.
+	if code, _, stderr := runWithStdin(t, commitLines(t, 1, 4), cmdCommit, "--db", f.db, "--chain", f.chainID); code != exitOK {
+		t.Fatalf("commit: %s", stderr)
+	}
 
 	secondPath := filepath.Join(f.dir, "second.json")
 	code, stdout, stderr := runAnchor(t, "--db", f.db, "--chain", f.chainID,

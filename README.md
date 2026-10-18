@@ -960,13 +960,21 @@ position, timestamp, **leaf hash** and chain hash:
           └─ chain_hash = H(previous_hash | seq | ts | leaf_hash)  ← recomputed
 ```
 
-The leaf hash is a salted commitment to the erased fields, so it reveals
-nothing about them once the salt is gone, and the chain hash is recomputed from
-it like any other entry's: **every link is still checked**, and anchors over
-the range still bind. `proof erase --db … --chain … --seq N` does it, forgets
-the entry's nonce if it had one, and rewrites the files so the removed bytes
-are not left in free pages. What it cannot reach: backups, snapshots, earlier
-exports, and anyone the entry was disclosed to.
+The leaf hash is a salted commitment to the erased fields, so someone who has
+the chain after the erasure and the original entry cannot match the two, and
+the chain hash is recomputed from it like any other entry's: **every link is
+still checked**, and anchors over the range still bind. `proof erase --db …
+--chain … --seq N` does it: it forgets the entry's nonce if it had one, erases
+the entry, and rewrites the files so the removed bytes are not left in free
+pages, in that order, so that if it is interrupted, running it again finishes
+the job. What it cannot reach: backups, snapshots, earlier exports and
+bundles, a process that had the file open before the rewrite, and anyone the
+entry was disclosed to. Any of those still holds the entry's `content_hash`
+at its position, and needs no salt to match it.
+
+`erased: true` in an export says the export withholds the entry's fields. An
+exporter can write a live entry that way and it verifies the same, so the flag
+is a statement about the file, not about the store.
 
 An erased entry proves an entry existed at that position, not who erased it
 (see the limitations above).

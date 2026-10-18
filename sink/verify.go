@@ -1019,6 +1019,7 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 	// keyless chain hashes recomputed. The first break only.
 	prevChainHash, linkProblem, formatProblem := "", "", ""
 	lastSigned := false // the last entry walked has a signature row
+	lastID := ""
 	err = forEachEntry(ctx, st, chain, func(e store.Entry) {
 		if linkProblem == "" {
 			switch {
@@ -1043,7 +1044,7 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 		if contentErr == nil {
 			contentErr = s.checkEntry(&cr, sec, ve, i, lastErasure, prevSeq, unmatched)
 		}
-		lastSigned = sigUnmatched[e.EntryID]
+		lastSigned, lastID = sigUnmatched[e.EntryID], e.EntryID
 		delete(sigUnmatched, e.EntryID)
 		if rc != nil && contentErr == nil {
 			contentErr = rc.check(&tally, sig, chain, e)
@@ -1084,8 +1085,26 @@ func (s *Sink) verifyChain(ctx context.Context, st *boltstore.Store, sec *secret
 	// An erasure no checkpoint covers, without a signature, in a sink that
 	// signs every erasure it makes: written by something else (sink-format
 	// §9.4). The forged tail erasure of review round 2.
-	if cr.Index == IndexErasedUnanchored && x.signing && !lastSigned {
-		cr.Problems = append(cr.Problems, erasureUnsigned)
+	if cr.Index == IndexErasedUnanchored && x.signing {
+		// A row that is not a signature by one of this sink's record keys
+		// signs nothing: junk, or a row under a key the folder never had,
+		// does not stand in for the erasure's own signature.
+		if lastSigned && sig != nil {
+			row, _, malformed, err := sig.get(chain, lastID)
+			if err != nil {
+				return cr, fmt.Errorf("sink: read the signatures file: %w", err)
+			}
+			known := false
+			if !malformed {
+				if known, err = sig.hasRecordKey(row.keyID); err != nil {
+					return cr, fmt.Errorf("sink: read the signatures file: %w", err)
+				}
+			}
+			lastSigned = known
+		}
+		if !lastSigned {
+			cr.Problems = append(cr.Problems, erasureUnsigned)
+		}
 	}
 
 	// A content or nonce row matching no entry was never committed: a commit

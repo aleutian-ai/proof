@@ -310,11 +310,14 @@ func SignCanonical(ctx context.Context, s ContextSigner, canonical []byte) ([]by
 	}
 
 	// The context string is the one the declared version names (format-spec
-	// §9.5), read from the bytes being signed, so it cannot disagree with them.
-	var declared struct {
-		Version int `json:"version"`
+	// §9.5), so the bytes must be an anchor's canonical form exactly: read
+	// strictly, canonicalized again, and compared. A loose read let
+	// {"Version":7} choose the v7 context, which made this a signing oracle for
+	// any bytes that start with '{'.
+	declared, err := parseCanonical(canonical)
+	if err != nil {
+		return nil, "", err
 	}
-	_ = json.Unmarshal(canonical, &declared)
 	mctx := SigningContext(declared.Version)
 	var sig []byte
 	if mctx == "" {
@@ -353,4 +356,28 @@ func SignCanonical(ctx context.Context, s ContextSigner, canonical []byte) ([]by
 // cannot drift apart.
 func verifyMLDSA65(pub, msg, sig []byte, mldsaContext string) error {
 	return mldsa.VerifyWithContext(mldsa.MLDSA65, pub, msg, sig, []byte(mldsaContext))
+}
+
+// parseCanonical reads bytes that must be an anchor's canonical form, and
+// returns the anchor they describe. The canonical form carries every member
+// but the signature, so one is added for the strict reader, and the anchor is
+// canonicalized again: anything but the identical bytes is refused.
+func parseCanonical(canonical []byte) (Anchor, error) {
+	notCanonical := errors.New("anchor: the bytes to sign are not an anchor's canonical form " +
+		"(format-spec §9.2); build them with Canonicalize")
+	if canonical[len(canonical)-1] != '}' {
+		return Anchor{}, notCanonical
+	}
+	withSig := make([]byte, 0, len(canonical)+16)
+	withSig = append(withSig, canonical[:len(canonical)-1]...)
+	withSig = append(withSig, `,"signature":""}`...)
+	var a Anchor
+	if err := json.Unmarshal(withSig, &a); err != nil {
+		return Anchor{}, notCanonical
+	}
+	again, err := Canonicalize(a)
+	if err != nil || !bytes.Equal(again, canonical) {
+		return Anchor{}, notCanonical
+	}
+	return a, nil
 }

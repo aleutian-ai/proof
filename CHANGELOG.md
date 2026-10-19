@@ -3,7 +3,28 @@
 All notable changes to `github.com/aleutian-ai/proof`. Versions follow
 [semantic versioning](https://semver.org); while the major version is 0, a
 minor or patch release may contain a source-incompatible change, and every such
-change is called out here.
+change is called out here. What is promised to stay stable, and what is not,
+is in [STABILITY.md](STABILITY.md).
+
+## Unreleased
+
+### Added
+
+- `STABILITY.md`: format versions and the Go API are versioned separately. Every
+  format version a release has written stays verifiable by every later
+  release. It also lists the v1.0 criteria.
+- `CONTRIBUTING.md`: contributions are signed off under the Developer
+  Certificate of Origin, with no CLA. A format change starts as a
+  specification change.
+- `docs/release.md`: the release order across the Go proxy, ghcr.io, PyPI and
+  npm, and which steps are one-way.
+- `scripts/tag-check.sh`: checks a release's tags rather than the working tree.
+  Both tags must exist, the proof-mcp tag must require the same library
+  version, and each tagged tree must build with `GOWORK=off
+  GOFLAGS=-mod=readonly`. With `--proxy`, it also installs both binaries by
+  exact version in a clean container and verifies the demo chain.
+- decisions D24: images are published to `ghcr.io/aleutian-ai/proof` and
+  `/proof-mcp`, with version tags and `:latest`.
 
 ## v0.5.0 — 2026-10-18
 

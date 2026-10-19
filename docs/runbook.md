@@ -148,6 +148,9 @@ go get <dep> && cat go.mod          # did the `go` line move?
 
 ## Release checklist
 
+The tree, before it is tagged. The tags, the channels and their order are in
+[release.md](release.md).
+
 - [ ] `go build ./... && go vet ./... && gofmt -l .` clean
 - [ ] `go test ./...` and `go test ./... -race` green
 - [ ] `go test . -run 'Dependency|NoCloud'` green

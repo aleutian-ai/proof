@@ -601,3 +601,47 @@ The sink's erasure records are signed in a signing sink, and in an unsigned
 sink a checkpoint refuses an erasure that was not confirmed or explicitly
 vouched for. Both close the same hole from round 2: an erasure record anyone
 with write access could forge.
+
+## D24 · Images are published to ghcr.io, with `:latest` (2026-10-18)
+
+The `proof` and `proof-mcp` images are published to two public repositories,
+`ghcr.io/aleutian-ai/proof` and `ghcr.io/aleutian-ai/proof-mcp`, which anyone
+can pull without logging in. Every release writes an immutable version tag
+(`:v0.5.0`). A release that is not a prerelease also moves `:latest`
+(`scripts/publish-image.sh`).
+
+- **ghcr.io, because the image should sit beside its source.** The whole point
+  of proof is that an auditor need not trust the party that made the chain. An
+  image pulled from the platform's own Artifact Registry project asks them to
+  trust exactly that party's infrastructure. On ghcr.io the image and the
+  Apache-2.0 source sit under one GitHub identity, anonymous pulls cost
+  nothing, and each image's `org.opencontainers.image.revision` label points
+  at a commit in that same repository.
+- **Rejected: docker.io.** It reaches furthest by default, but anonymous pulls
+  are rate-limited and the name would first have to be claimed. A mirror can
+  be added later without changing this.
+- **Rejected: the platform's Artifact Registry.** It is already paid for, but
+  it is the infrastructure an auditor is checking up on.
+- **Two repositories, not one with two kinds of tag.** The two images do
+  different jobs: one is a verifier, the other a server an agent talks to.
+  `proof-mcp:v0.5.0` says which is which. A tag like `proof:mcp-v0.5.0` would
+  have to be decoded first.
+- **`:latest` is kept, as a convenience, and its cost is accepted.** A verifier
+  run from a moving tag can change under the person using it. Anything that
+  has to be reproducible (an audit procedure, a script, a published
+  instruction) names the version tag, or better the digest the
+  registry reports for the pushed image. `:latest` never moves to a
+  prerelease.
+- **Who can push.** Only a maintainer, by hand, from their own machine. The
+  ghcr.io credential used is a personal access token with `write:packages`
+  scope on the `aleutian-ai` organization's packages and nothing else, created
+  for publishing and logged in with `podman login ghcr.io` only for the push.
+  A token that can push the verifier image can replace the verifier, so no
+  long-lived token is kept on a build machine.
+- **No GitHub Actions.** The repository has none by policy, so there is no
+  pipeline identity to grant push access to. Publishing is
+  `scripts/publish-image.sh`, which a reader can run to reproduce exactly what
+  was pushed (release.md, step 7). An automated publisher would need its own
+  decision first.
+- **Not decided here: image signing** (cosign or similar). The revision label
+  and the digest are the provenance a reader has today.

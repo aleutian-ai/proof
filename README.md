@@ -1079,6 +1079,9 @@ module cannot answer and does not pretend to.
 | [docs/decisions.md](docs/decisions.md) | Why the design is the way it is |
 | [docs/conformance.md](docs/conformance.md) | Which implementation passes which vector file |
 | [docs/runbook.md](docs/runbook.md) | Working on this repository, and where to keep checkpoint heads |
+| [docs/release.md](docs/release.md) | Releasing: the order of the four channels, and which steps are one-way |
+| [STABILITY.md](STABILITY.md) | What will not change under you: the format promise, and API versioning |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributing: the DCO sign-off, format changes, what a pull request needs |
 | [SECURITY.md](SECURITY.md) | Reporting a vulnerability |
 
 ---

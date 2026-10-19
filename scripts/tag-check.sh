@@ -21,7 +21,7 @@
 #       GOWORK=off GOFLAGS=-mod=readonly (the proof-mcp build fetches the
 #       library from the proxy, so the library tag must be pushed first)
 #   --proxy (after pushing), in a clean container with no credentials:
-#     - the proxy lists both versions
+#     - the proxy serves both versions
 #     - go install of each binary BY EXACT VERSION works, and reports it
 #     - the installed proof verifies the tagged demo chain and refuses the
 #       tampered one
@@ -117,7 +117,10 @@ if [[ $PROXY -eq 1 && $have_lib -eq 1 ]]; then
 set -e
 v="$1"; m="$2"
 for mod in "$m" "$m/cmd/proof-mcp"; do
-    go list -m -versions "$mod" | tr " " "\n" | grep -qx "$v" || { echo "the proxy does not list $mod $v" >&2; exit 1; }
+    # By exact version: the proxy refreshes its version list lazily, so a tag
+    # pushed minutes ago is missing from "go list -m -versions" but is fetched
+    # on a request for it.
+    go list -m "$mod@$v" >/dev/null || { echo "the proxy does not serve $mod $v" >&2; exit 1; }
 done
 go install "$m/cmd/proof@$v"
 go install "$m/cmd/proof-mcp@$v"
@@ -128,7 +131,7 @@ if proof verify /demo/entries-tampered.json >/dev/null 2>&1; then
     echo "THE TAMPERED DEMO CHAIN VERIFIED" >&2; exit 1
 fi
 ' sh "$VERSION" "$MODULE" >"$WORK/proxy.log" 2>&1; then
-        ok "the proxy lists proof and proof-mcp $VERSION"
+        ok "the proxy serves proof and proof-mcp $VERSION"
         ok "both install by exact version, and say so"
         ok "the installed proof verifies the demo chain and refuses the tampered one"
     else

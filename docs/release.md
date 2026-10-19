@@ -110,7 +110,7 @@ $ ./scripts/tag-check.sh vX.Y.Z --proxy
 ```
 
 This runs in a clean container, with no credentials, no workspace and the
-public proxy. It confirms that the proxy lists both versions. It installs
+public proxy. It confirms that the proxy serves both versions. It installs
 both binaries by exact version rather than `@latest`, so a bad tag fails
 instead of being skipped. It checks that each binary reports that version.
 It also verifies the demo chain from the tagged tree and refuses the tampered

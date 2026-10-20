@@ -1036,7 +1036,8 @@ implementation of them, not their definition.
 |---|---|
 | ✅ built | chain format v4 and anchor v7 · format core · `anchor` (verify, sign and build) · `verify` (chains, anchors, anchor series) · `linker` · `sink` (commit, checkpoint, verify, erase, export) · `exportbundle` and `proof sink verify-bundle` (bundle v1 and v2) · CLI · MCP server (7 read-only tools + `commit` with `--db`) |
 | ⚠️ known limitations | [listed above](#what-chain-format-v4-closed-and-what-is-left), and not softened: read them before relying on a verdict |
-| ⏳ not yet | the monorepo and SDKs consuming this instead of their own copies · the SDKs' v4/v7 releases (in the monorepo, not yet published) |
+| ✅ published | the Python SDK [`aleutian-verification` 0.6.0](https://pypi.org/project/aleutian-verification/) and the JavaScript SDK [`@aleutian/verification` 0.7.0](https://www.npmjs.com/package/@aleutian/verification), both verifying v4, v7 and bundle v2 |
+| ⏳ not yet | the monorepo consuming this instead of its own copies |
 
 `scripts/release-check.sh` is the gate a tree passes before it is tagged:
 formatting, `go vet` and the tests for both modules, the vectors regenerated

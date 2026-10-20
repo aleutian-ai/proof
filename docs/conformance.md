@@ -11,8 +11,10 @@ SHA-256. An implementation vendors the files with `scripts/sync-vectors.sh
 SHA-256 of the `MANIFEST.json` it last passed. `scripts/release-check.sh --sdk
 <dir>` fails a release when an SDK states another set.
 
-**Vector set of this release:** `MANIFEST.json` SHA-256
-`62b96a47373c1cf41b21af29ac23b9760eee205b00933d26769efcee09b5c662`.
+**Vector set of this tree:** `MANIFEST.json` SHA-256
+`304583d41eca4e74e2fb19cd799f499e663d60d0366bb70f4f712db903264d3c`. It is
+v0.5.0's set (`62b96a47373c1cf41b21af29ac23b9760eee205b00933d26769efcee09b5c662`)
+plus `xwing_spec_vectors.json`; no other file changed.
 
 ## What each file pins
 
@@ -35,6 +37,7 @@ SHA-256 of the `MANIFEST.json` it last passed. `scripts/release-check.sh --sdk
 | `commitment_vectors.json` | format-spec §8 | | reproduce every commitment; refuse every `reject` case |
 | `merkle_golden.json` | format-spec §7 | | reproduce roots, inclusion and consistency proofs |
 | `v3_golden_capture_request.json` | format-spec §6 | | reproduce the canonical bytes and content hash |
+| `xwing_spec_vectors.json` | draft-connolly-cfrg-xwing-kem | | not ours: the specification's own vectors. Recompute their published SHAKE128 checksum (`checksum_shake128`, over the vectors rendered in the spec's `test-vectors.txt` layout), derive `pk` from `sk`, and decapsulate `ct` to `ss` |
 
 Frozen files describe formats that are verified forever and never written
 (format-spec §2.6, bundle-format §16): their cases will never change.
@@ -51,8 +54,8 @@ Frozen files describe formats that are verified forever and never written
 | every frozen file, and the rest | ✓ | ✓ | ✓ |
 
 Each column is this release's vector set, in full: the Python SDK
-(`sdk/verification-python`, 1,835 tests) and the JavaScript SDK
-(`sdk/verification-js`, 1,643 tests) were written from the specifications,
+(`sdk/verification-python`, 1,844 tests) and the JavaScript SDK
+(`sdk/verification-js`, 1,652 tests) were written from the specifications,
 without reading this module's Go code, and state the set's digest in their
 READMEs. Writing them found five places where the specification's wording
 was looser than its vectors (how §5.5 counts an entry broken at step 2, and

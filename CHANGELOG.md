@@ -10,6 +10,13 @@ is in [STABILITY.md](STABILITY.md).
 
 ### Added
 
+- **The X-Wing specification's official test vectors are part of the conformance
+  set.** `xwing_spec_vectors.json` moved from `xwing/testdata/` to
+  `fixtures/testdata/` and `MANIFEST.json`, unchanged, so the SDKs vendor and
+  check it like every other vector. Before, the JS and Python X-Wing code was
+  checked only against vectors this project generated. The vector set's
+  digest is now `304583d4…`; v0.5.0's was `62b96a47…`.
+
 - `STABILITY.md`: format versions and the Go API are versioned separately. Every
   format version a release has written stays verifiable by every later
   release. It also lists the v1.0 criteria.

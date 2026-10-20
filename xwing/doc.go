@@ -20,9 +20,9 @@
 // # Conformance
 //
 // Checked against the specification's official test vectors
-// (testdata/xwing_spec_vectors.json, authenticated by the checksum published
-// for spec/test-vectors.txt) and differentially against an independent
-// implementation, circl's kem/xwing, in both directions.
+// (fixtures/testdata/xwing_spec_vectors.json, authenticated by the checksum
+// published for spec/test-vectors.txt) and differentially against an
+// independent implementation, circl's kem/xwing, in both directions.
 //
 // # Secret handling
 //

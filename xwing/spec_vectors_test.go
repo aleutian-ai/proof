@@ -19,7 +19,7 @@ import (
 // fails.
 const specChecksum = "1bcd0057d861d6b866239936cadcaeee1ec0164dedc181c386e9e54fe46156fe"
 
-// specVectorFile is testdata/xwing_spec_vectors.json.
+// specVectorFile is fixtures/testdata/xwing_spec_vectors.json.
 type specVectorFile struct {
 	ChecksumSHAKE128 string       `json:"checksum_shake128"`
 	Vectors          []specVector `json:"vectors"`
@@ -39,7 +39,9 @@ type specVector struct {
 // loadSpecVectors reads and decodes the fixture.
 func loadSpecVectors(t *testing.T) specVectorFile {
 	t.Helper()
-	data, err := os.ReadFile("testdata/xwing_spec_vectors.json")
+	// It lives with the conformance vectors, so the SDKs vendor the same file
+	// (fixtures/MANIFEST.json, scripts/sync-vectors.sh).
+	data, err := os.ReadFile("../fixtures/testdata/xwing_spec_vectors.json")
 	if err != nil {
 		t.Fatalf("read spec vectors: %v", err)
 	}

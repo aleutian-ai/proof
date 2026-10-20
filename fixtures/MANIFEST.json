@@ -68,6 +68,10 @@
     "verify_verdict_vectors.json": {
       "sha256": "cb874fb13c26b40d56b40d9cff31f6e971f3455fabe5dd18b61594b587a4f4f2",
       "bytes": 166514
+    },
+    "xwing_spec_vectors.json": {
+      "bytes": 16024,
+      "sha256": "68958f1be3270f409558da1cc9199d283156e591a136c49f46d8b35605c23587"
     }
   }
 }

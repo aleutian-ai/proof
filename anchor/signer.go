@@ -64,8 +64,13 @@ var (
 // The equivalence is real, and lives where it costs nothing:
 //
 //   - OUTBOUND — [MLDSA65Signer] IS a crypto.Signer, enforced by a compile-time
-//     assertion in this file, so it drops into anything expecting one: x509
-//     certificate signing, go-tuf, sigstore, your own code.
+//     assertion in this file, so code written against crypto.Signer accepts
+//     it. That is type compatibility, not permission to share the KEY: an
+//     anchor key signs anchors only. Sign without [SignerOpts] uses the empty
+//     context, which v6 anchors and record.v1 signatures also use and every
+//     release still verifies. A key that also signed for x509, go-tuf or
+//     sigstore would produce signatures an anchor verifier checks the same way
+//     (decisions D21).
 //   - INBOUND — [FromCryptoSigner] adapts any crypto.Signer. That wrapper
 //     CANNOT honour a context, so it is an explicit call rather than a silent
 //     assertion: a KMS call that hangs while the caller's timeout does nothing

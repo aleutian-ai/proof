@@ -574,6 +574,15 @@ bytes are stable, so a `COSE_Sign1` wrapper can be added later without
 changing them (anchor-model.md, "Signatures and COSE"). No COSE code ships
 before 1.0.
 
+**One key, one purpose, by rule.** A context separates only signatures made
+with a context. v6 anchors and `record.v1` use the empty context and are still
+verified, and so does any other system that signs with plain ML-DSA. So an
+anchor signing key signs anchors only, and a record key signs records only.
+This is documented (README, `anchor/signer.go`), not enforced: a key file does
+not record its purpose, and a KMS key could not be held to one if it did.
+`*MLDSA65Signer` is a `crypto.Signer` so that code can accept it, not so that
+the key can be shared.
+
 ## D22 · v2 and v3 are frozen, and continued rather than migrated
 
 v2 and v3 hashes are signed into anchors that already exist, so their

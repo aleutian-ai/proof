@@ -27,6 +27,14 @@ is in [STABILITY.md](STABILITY.md).
   to build one from a release tag, or put `proof` in an image of your own. When
   images are published, they go to `ghcr.io/aleutian-ai/proof` and `/proof-mcp`.
 
+### Changed
+
+- **Docs: one key, one purpose.** The README and `anchor/signer.go` no longer
+  suggest using the anchor signer for x509, go-tuf or sigstore. `*MLDSA65Signer`
+  is still a `crypto.Signer`, but an anchor key signs anchors only. Its `Sign`
+  uses the empty context, as v6 anchors and `record.v1` do, and both are still
+  verified (decisions D21).
+
 ## v0.5.0 — 2026-10-18
 
 Chain format v4, anchor v7 and bundle v2, which close

@@ -819,8 +819,15 @@ credentials and opens no connections.
 calls it, so requiring it would oblige every KMS implementer to write a `Sign`
 method whose `rand` and `opts` are meaningless for ML-DSA. The compatibility
 lives where it is free instead — `*anchor.MLDSA65Signer` **is** a `crypto.Signer`
-(enforced by a compile-time assertion), so it drops into x509 signing, go-tuf,
-sigstore or your own code unchanged.
+(enforced by a compile-time assertion), so code written against `crypto.Signer`
+accepts it.
+
+That is type compatibility, **not permission to share the key**. An anchor key
+signs anchors and nothing else. Called through `crypto.Signer` with no options,
+`Sign` uses the empty ML-DSA context. Every release still verifies v6 anchors
+and `record.v1` signatures, which use that same context. So the same key
+signing for x509, go-tuf or sigstore would produce signatures that an anchor
+verifier checks the same way (decisions D21).
 
 > **What a verified signature proves.** That it matches the key the signer
 > advertises — consistency, not authenticity. A substituted signer passes. Only

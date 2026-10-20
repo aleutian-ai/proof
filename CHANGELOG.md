@@ -23,8 +23,9 @@ is in [STABILITY.md](STABILITY.md).
   version, and each tagged tree must build with `GOWORK=off
   GOFLAGS=-mod=readonly`. With `--proxy`, it also installs both binaries by
   exact version in a clean container and verifies the demo chain.
-- decisions D24: images are published to `ghcr.io/aleutian-ai/proof` and
-  `/proof-mcp`, with version tags and `:latest`.
+- decisions D24: no container image is published for now. The README shows how
+  to build one from a release tag, or put `proof` in an image of your own. When
+  images are published, they go to `ghcr.io/aleutian-ai/proof` and `/proof-mcp`.
 
 ## v0.5.0 — 2026-10-18
 

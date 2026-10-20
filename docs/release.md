@@ -116,7 +116,10 @@ instead of being skipped. It checks that each binary reports that version.
 It also verifies the demo chain from the tagged tree and refuses the tampered
 one. If an outsider cannot do it, it did not ship.
 
-### 7. Images (one-way in practice)
+### 7. Images (one-way in practice; not done for now)
+
+No image is published for now (decisions D24): users build their own from the
+tag. Skip this step until that changes.
 
 Build from the library tag. A separate worktree leaves your checkout alone:
 

@@ -604,6 +604,11 @@ with write access could forge.
 
 ## D24 · Images are published to ghcr.io, with `:latest` (2026-10-18)
 
+**Deferred (2026-10-20): no image is published.** Nobody needs one yet, and a
+published image means keeping a push token. Users build their own from a tag
+(README, "Or without installing anything"). What follows is the decision for
+the day an image is published.
+
 The `proof` and `proof-mcp` images are published to two public repositories,
 `ghcr.io/aleutian-ai/proof` and `ghcr.io/aleutian-ai/proof-mcp`, which anyone
 can pull without logging in. Every release writes an immutable version tag

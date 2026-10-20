@@ -286,9 +286,31 @@ interpolated into a `LABEL` is not part of podman's cache key and would happily
 carry a previous build's commit. A plain `podman build` sets no revision label
 rather than an untrue one.
 
-Nothing has been pushed to a registry yet — `scripts/publish-image.sh` does
-that, by hand, and refuses to run against a dirty working tree so an image's
-revision label is never a lie.
+**There is no published image: build your own.** For a verifier, that is the
+better way anyway, because an image you built from a tagged source needs no
+trust in whoever would have pushed one. Build a release from its tag:
+
+```console
+$ git clone https://github.com/aleutian-ai/proof && cd proof
+$ git checkout v0.5.0
+$ podman build -t proof .
+$ podman build -t proof-mcp --target proof-mcp .
+```
+
+Or put `proof` in an image of your own. The binary is static, so any base
+will do:
+
+```dockerfile
+FROM docker.io/library/golang:1.25 AS proof
+RUN CGO_ENABLED=0 go install github.com/aleutian-ai/proof/cmd/proof@v0.5.0
+
+FROM your-base-image
+COPY --from=proof /go/bin/proof /usr/local/bin/proof
+```
+
+`scripts/publish-image.sh` pushes images to a registry if that is ever needed
+(decisions D24). It refuses a dirty working tree, so an image's revision label
+is never a lie.
 
 ### Anchoring a chain
 

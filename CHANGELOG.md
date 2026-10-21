@@ -6,17 +6,21 @@ minor or patch release may contain a source-incompatible change, and every such
 change is called out here. What is promised to stay stable, and what is not,
 is in [STABILITY.md](STABILITY.md).
 
+## proof-mcp v0.6.0 (2026-10-21)
+
+Tagged `cmd/proof-mcp/v0.6.0`. Requires proof v0.5.0; no library release.
+
+- **`verify_export_bundle`,** a read-only tool that checks a sink export
+  bundle (`bundle.json`) as `proof sink verify-bundle` does. The keys it
+  trusts are bound at launch with the new `--bundle-checkpoint-key` and
+  `--bundle-record-trust` flags, never named in a call; with none, a
+  consistent bundle is `unauthenticated`. The result names no chain id. The
+  pinned tool list (`testdata/tools_list.golden.json`) gains it.
+
 ## Unreleased
 
 ### Added
 
-- **proof-mcp: `verify_export_bundle`,** a read-only tool that checks a sink
-  export bundle (`bundle.json`) as `proof sink verify-bundle` does. The keys it
-  trusts are bound at launch with the new `--bundle-checkpoint-key` and
-  `--bundle-record-trust` flags, never named in a call; with none, a
-  consistent bundle is `unauthenticated`. The result names no chain id. The
-  pinned tool list (`testdata/tools_list.golden.json`) gains it. Builds
-  against proof v0.5.0, so proof-mcp can be tagged without a library release.
 - `docs/integration.md`: an integration guide. The ways records get into a
   sink, where every output lives and which are secret, the commit / checkpoint
   / verify / export / erase loop, and the verifier each party points at it.

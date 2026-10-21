@@ -201,7 +201,7 @@ claude mcp add proof-audit -- proof-mcp --root ./dispute \
 
 Then ask the agent whether `bundle.json` verifies. The result carries the
 verdict, the problem codes, and what is and is not proven; it names no chain id.
-Without keys bound, nothing is OK. (Unreleased: in `proof-mcp` after v0.5.0.)
+Without keys bound, nothing is OK. (`proof-mcp` v0.6.0 and later.)
 
 ## 6. What a passing verification does not tell you
 

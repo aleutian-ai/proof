@@ -125,7 +125,7 @@ OLD_END=()
 while read -r part end; do OLD_END[$part]=$end; done < <(awk -v t="$TOPIC" '$2==t {print $3, $5}' <<<"$out")
 
 say "checkpoint and verify: 3 chains, exactly 6 entries, every record signed"
-show proof sink checkpoint --dir sink-data --key "$K/ml-dsa-65-checkpoint-private.pem"
+show proof sink checkpoint --dir sink-data --key "$K/ml-dsa-65-checkpoint-private.pem" --heads checkpoint-heads.json --first
 verify
 grep -q "all 3 chains verify" <<<"$LAST" || fail "VERIFY FAILED"
 grep -q "Record signatures: checked" <<<"$LAST" || fail "RECORD SIGNATURES WERE NOT CHECKED"

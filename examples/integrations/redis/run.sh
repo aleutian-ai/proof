@@ -92,7 +92,7 @@ out="$(redis-sink pending -addr "$ADDR")"; printf '$ redis-sink pending\n%s\n' "
 echo "$out" | grep -q "^0 entries pending" || { echo "ENTRIES LEFT PENDING" >&2; exit 1; }
 
 say "checkpoint and verify: exactly 6 entries"
-show proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
+show proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem --heads checkpoint-heads.json --first
 out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem $RT)"
 printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem %s\n%s\n' "$RT" "$out"
 echo "$out" | grep -q "all 3 chains verify" || exit 1

@@ -90,7 +90,7 @@ echo "$out" | grep -q "committed 0 · already committed (redelivered) 6" \
     || { echo "REDELIVERY WAS NOT RECOGNISED" >&2; exit 1; }
 
 say "checkpoint and verify: exactly 6 entries"
-show proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
+show proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem --heads checkpoint-heads.json --first
 out="$(proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem $RT)"
 printf '$ proof sink verify --dir sink-data --key keys/ml-dsa-65-public.pem %s\n%s\n' "$RT" "$out"
 echo "$out" | grep -q "all 3 chains verify" || exit 1

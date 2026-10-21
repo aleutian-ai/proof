@@ -141,7 +141,7 @@ grep -E "retry in|succeeded at retry" <<<"$out" | head -2 | sed 's/^/fluent-bit:
 grep "cache miss" <<<"$out" | head -1 | sed 's/^/fluent-bit (stdout, not proof): /' || true
 
 say "checkpoint and verify: 4 chains, exactly 8 entries, every record signed"
-show proof sink checkpoint --dir sink-data --key "$K/ml-dsa-65-checkpoint-private.pem"
+show proof sink checkpoint --dir sink-data --key "$K/ml-dsa-65-checkpoint-private.pem" --heads checkpoint-heads.json --first
 verify
 grep -q "all 4 chains verify" <<<"$LAST" || fail "VERIFY FAILED"
 grep -q "Record signatures: checked" <<<"$LAST" || fail "RECORD SIGNATURES WERE NOT CHECKED"

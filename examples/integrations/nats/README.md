@@ -81,7 +81,7 @@ committed 0 · already committed (redelivered) 6 · refused 0
 user is named: the chain ids are random.
 
 ```
-$ proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
+$ proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem --heads checkpoint-heads.json --first
 checkpoint anchors/events.8590967393afd1b6327074b0be7ff0e0/0001.json signed over 3 entries
 checkpoint anchors/events.a3ece678b4460b4173deb233ffd887bb/0001.json signed over 1 entry
 checkpoint anchors/events.c9a51ae7f872a7403dff60bd2ad308c0/0001.json signed over 2 entries

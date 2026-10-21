@@ -130,7 +130,7 @@ proof           agent-actions   2          2               2               0
 signed.
 
 ```
-$ proof sink checkpoint --dir sink-data --key sink-data.keys/ml-dsa-65-checkpoint-private.pem
+$ proof sink checkpoint --dir sink-data --key sink-data.keys/ml-dsa-65-checkpoint-private.pem --heads checkpoint-heads.json --first
 checkpoint anchors/actions.242756e1f1c054c9df53ba2a37fa8a71/0001.json signed over 1 entry
 checkpoint anchors/actions.9f4b9f7f636957ec33a8d8478e2f702e/0001.json signed over 2 entries
 checkpoint anchors/actions.c60f8f0b25fc5630e414f1b637c0a088/0001.json signed over 3 entries

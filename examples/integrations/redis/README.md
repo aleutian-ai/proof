@@ -104,7 +104,7 @@ $ redis-sink pending
 user is named: the chain ids are random.
 
 ```
-$ proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem
+$ proof sink checkpoint --dir sink-data --key keys/ml-dsa-65-private.pem --heads checkpoint-heads.json --first
 checkpoint anchors/events.25f05f7829851ba1de69ee9738e22303/0001.json signed over 3 entries
 checkpoint anchors/events.8eae28e4cb04ba025f9e0f49f22017ba/0001.json signed over 2 entries
 checkpoint anchors/events.9f32e110cb31174c6422bcd6edea0850/0001.json signed over 1 entry

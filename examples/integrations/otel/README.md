@@ -157,7 +157,7 @@ warn  otlphttpexporter  Partial success response  {"message": "proof refused 1 l
 signed.
 
 ```
-$ proof sink checkpoint --dir sink-data --key sink-data.keys/ml-dsa-65-checkpoint-private.pem
+$ proof sink checkpoint --dir sink-data --key sink-data.keys/ml-dsa-65-checkpoint-private.pem --heads checkpoint-heads.json --first
 checkpoint anchors/app-logs.5707d4504f93a3d07abe3f0aa243bbf9/0001.json signed over 3 entries
 checkpoint anchors/app-logs.66c632c70cfab9ae0b22067178bc932f/0001.json signed over 1 entry
 checkpoint anchors/app-logs.afa1ccd56bcf112ee89421243618f2b4/0001.json signed over 2 entries

@@ -64,6 +64,7 @@ import (
 	"github.com/aleutian-ai/proof/anchor"
 	"github.com/aleutian-ai/proof/bundle"
 	"github.com/aleutian-ai/proof/chainformat"
+	"github.com/aleutian-ai/proof/exportbundle"
 	"github.com/aleutian-ai/proof/internal/noncestore"
 	"github.com/aleutian-ai/proof/merkle"
 	boltstore "github.com/aleutian-ai/proof/store/bolt"
@@ -80,6 +81,10 @@ type serverConfig struct {
 
 	// trusted holds the public keys bound to a trust level with --trusted-key.
 	trusted []trustedKey
+
+	// bundleTrust holds the keys verify_export_bundle trusts, from
+	// --bundle-checkpoint-key and --bundle-record-trust.
+	bundleTrust exportbundle.Trust
 
 	// db is the evidence database the commit tool writes. Empty means the commit
 	// tool is not registered at all.
@@ -128,6 +133,11 @@ func parseFlags(args []string) (serverConfig, error) {
 	var trusted trustedKeyFlag
 	fs.Var(&trusted, "trusted-key", "LEVEL=PATH: bind a PEM ML-DSA-65 public key to a trust level, platform or self; "+
 		"repeatable. A key named in a tool call is always 'provided'")
+	var bundleCheckpoint, bundleRecord bundleKeyFlag
+	fs.Var(&bundleCheckpoint, "bundle-checkpoint-key", "PATH: a PEM ML-DSA-65 public key verify_export_bundle "+
+		"trusts for checkpoints; repeatable")
+	fs.Var(&bundleRecord, "bundle-record-trust", "PATH: a PEM ML-DSA-65 public key verify_export_bundle "+
+		"trusts for record signatures; repeatable")
 	db := fs.String("db", "", "evidence database the commit tool writes to; omit for a read-only server")
 	chains := fs.String("chains", "", "chains commit may write, comma-separated; required with --db. '*' allows any valid chain id")
 	maxDBBytes := fs.Int64("max-db-bytes", defaultMaxDBBytes, "with --db: refuse commits once the database file "+
@@ -151,7 +161,16 @@ func parseFlags(args []string) (serverConfig, error) {
 		return serverConfig{}, fmt.Errorf("--root: %w", err)
 	}
 
-	cfg := serverConfig{root: root, trusted: trusted.keys, db: *db}
+	cfg := serverConfig{root: root, trusted: trusted.keys, db: *db,
+		bundleTrust: exportbundle.Trust{Checkpoint: bundleCheckpoint.keys, Record: bundleRecord.keys}}
+	for _, ck := range cfg.bundleTrust.Checkpoint {
+		for _, rk := range cfg.bundleTrust.Record {
+			if ck.ID() == rk.ID() {
+				fmt.Fprintf(os.Stderr, "proof-mcp: warning: key %s is trusted for checkpoints and for "+
+					"records: one compromise forges both\n", ck.ID())
+			}
+		}
+	}
 	if *chains != "" && *db == "" {
 		return serverConfig{}, fmt.Errorf("--chains only applies with --db")
 	}
@@ -274,6 +293,18 @@ func registerTools(s *mcp.Server, cfg serverConfig) error {
 			"the first. The directory must be inside the directory this server was " +
 			"started with.",
 	}, cfg.verifyBundle)
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "verify_export_bundle",
+		Annotations: readOnly,
+		Description: "Verify a sink export bundle (bundle.json, from `proof sink export`): that every " +
+			"chain links, every disclosed record matches what was committed, and every entry is " +
+			"authenticated by a key this server was started with. The keys are set at launch " +
+			"(--bundle-checkpoint-key, --bundle-record-trust) and cannot be named in a call: with none, " +
+			"a consistent bundle is 'unauthenticated', never 'ok'. Reports problem codes and indexes, " +
+			"never values from the bundle. The file must be inside the directory this server was " +
+			"started with.",
+	}, cfg.verifyExportBundle)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "explain_trust_model",
@@ -999,6 +1030,14 @@ func explainTrustModel(ctx context.Context, req *mcp.CallToolRequest, in explain
 				Check:     "verify_anchor with a key",
 				Proven:    "The chain matches the anchor AND the anchor was signed by the holder of that key.",
 				NotProven: "Anything about entries after the anchored range, or that the anchor reached you by a path its subject could not rewrite.",
+			},
+			{
+				Check: "verify_export_bundle",
+				Proven: "Every chain in the sink export links, every disclosed record matches what was committed, " +
+					"and every entry is authenticated by a key the person who launched this server trusts.",
+				NotProven: "That the bundle holds every chain or every entry, that erased content is gone anywhere, " +
+					"that a timestamp is true time, or that a record's content is true (a model's output can be " +
+					"recorded faithfully and still be wrong). Nothing against a writer holding every trusted key.",
 			},
 			{
 				Check:     "verify_bundle",

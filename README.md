@@ -656,15 +656,22 @@ $ go install github.com/aleutian-ai/proof/cmd/proof-mcp@latest
 $ claude mcp add aleutianchain -- proof-mcp                              # read-only
 $ claude mcp add aleutianchain -- proof-mcp --root ./exports \
       --trusted-key platform=./aleutian-public.pem                        # + a key you vouch for
+$ claude mcp add aleutianchain -- proof-mcp --root ./dispute \
+      --bundle-checkpoint-key ./checkpoint.pub --bundle-record-trust ./record.pub   # + export bundles
 $ claude mcp add aleutianchain -- proof-mcp --db ./evidence.db \
       --chains agent-actions,payments                                     # + commit
 ```
 
-Seven read-only tools: `verify_chain`, `verify_anchor`, `verify_bundle`,
-`compute_chain_hash`, `canonicalize_leaf`, `verify_inclusion`,
-`explain_trust_model`. (`verify_bundle` checks a directory against a
-`manifest.json`; it is not the export-bundle verifier, which is
-`proof sink verify-bundle` in the CLI.)
+Eight read-only tools: `verify_chain`, `verify_anchor`, `verify_bundle`,
+`verify_export_bundle`, `compute_chain_hash`, `canonicalize_leaf`,
+`verify_inclusion`, `explain_trust_model`. (`verify_bundle` checks a directory
+against a `manifest.json`. `verify_export_bundle` checks a sink export
+`bundle.json`, as `proof sink verify-bundle` does, against the keys bound at
+launch with `--bundle-checkpoint-key` and `--bundle-record-trust`: a call names
+only the file, and with no key bound a consistent bundle is `unauthenticated`,
+never `ok`. Its result names no chain id.
+[examples/integrations/document-parser](examples/integrations/document-parser)
+uses it.)
 
 Tools read files only inside `--root` (default: the directory the server was
 started in). What a key establishes is never a tool argument: a key an agent
@@ -673,7 +680,7 @@ supplies is reported as `provided`, and only a key you bind at launch with
 `--db`, `--max-db-bytes` (default 1 GiB) stops commits once the database reaches
 that size.
 
-With `--db`, an eighth: **`commit`, the only tool that writes.** `--chains` is
+With `--db`, a ninth: **`commit`, the only tool that writes.** `--chains` is
 required with it — name the chains agents may write, or `'*'` for any — so an
 injected prompt cannot append to chains you did not intend, including ones you
 write with the CLI. The agent sends text and picks one of those chains; the
@@ -724,7 +731,7 @@ operator never holds the customer's key.
 
 The guard is an exact allowlist: `TestToolsAreTheExpectedSet` (and its `--db`
 twin) fails the build if the registered tools are anything other than the
-eight listed above, so a tool that returns key material cannot be added without
+nine listed above, so a tool that returns key material cannot be added without
 editing that list and arguing for it, whatever the tool is called.
 `TestNoKeyMaterialTools` is a second, coarser check on names. Key operations
 belong in the human-driven CLI, where `proof keygen` lives and no result

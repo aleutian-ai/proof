@@ -630,6 +630,201 @@
     }
   },
   {
+    "name": "verify_export_bundle",
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "path to a sink export bundle (bundle.json), inside the directory this server was started with",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "output_schema": {
+      "additionalProperties": false,
+      "properties": {
+        "bundle_problems": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer"
+              },
+              "first": {
+                "type": [
+                  "null",
+                  "integer"
+                ]
+              }
+            },
+            "required": [
+              "code",
+              "count",
+              "first"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "chains": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "counts": {
+                "additionalProperties": false,
+                "properties": {
+                  "authenticated": {
+                    "type": "integer"
+                  },
+                  "checkpoint_authenticated": {
+                    "type": "integer"
+                  },
+                  "checkpoints": {
+                    "type": "integer"
+                  },
+                  "committed": {
+                    "type": "integer"
+                  },
+                  "entries": {
+                    "type": "integer"
+                  },
+                  "erased": {
+                    "type": "integer"
+                  },
+                  "erasures": {
+                    "type": "integer"
+                  },
+                  "events": {
+                    "type": "integer"
+                  },
+                  "opened": {
+                    "type": "integer"
+                  },
+                  "record_authenticated": {
+                    "type": "integer"
+                  },
+                  "record_signatures_present": {
+                    "type": "integer"
+                  },
+                  "unanchored": {
+                    "type": "integer"
+                  },
+                  "unauthenticated": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "entries",
+                  "events",
+                  "erasures",
+                  "opened",
+                  "committed",
+                  "erased",
+                  "checkpoints",
+                  "unanchored",
+                  "authenticated",
+                  "unauthenticated",
+                  "checkpoint_authenticated",
+                  "record_authenticated",
+                  "record_signatures_present"
+                ],
+                "type": "object"
+              },
+              "erasure": {
+                "type": "string"
+              },
+              "position": {
+                "type": "integer"
+              },
+              "problems": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "count": {
+                      "type": "integer"
+                    },
+                    "first": {
+                      "type": [
+                        "null",
+                        "integer"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "count",
+                    "first"
+                  ],
+                  "type": "object"
+                },
+                "type": [
+                  "null",
+                  "array"
+                ]
+              },
+              "verdict": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "position",
+              "verdict",
+              "erasure",
+              "counts",
+              "problems"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "checkpoint_trust": {
+          "type": "string"
+        },
+        "not_proven": {
+          "type": "string"
+        },
+        "proven": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "record_trust": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "verdict",
+        "checkpoint_trust",
+        "record_trust",
+        "bundle_problems",
+        "chains",
+        "proven",
+        "not_proven"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "verify_inclusion",
     "input_schema": {
       "additionalProperties": false,

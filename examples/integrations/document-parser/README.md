@@ -64,12 +64,19 @@ Chain loan-extractions.d207ed8b…: OK, erasure none; 1 entries, 1 authenticated
 
 what the record says, and the applicant's own copy of the PDF:
    model     ministral-3:3b (316262d960e2…), parser pypdf 6.15.0
-   extracted {"annual_income_usd": 51000, "applicant_name": "Luis Ferreira", "employer": "Bayside Dental Group", "loan_amount_usd": 15000, "loan_purpose": "debt consolidation", "years_employed": 2}
+   extracted
+     applicant_name     Luis Ferreira
+     employer           Bayside Dental Group
+     years_employed     2
+     annual_income_usd  51000
+     loan_amount_usd    15000
+     loan_purpose       debt consolidation
    document  144028f4a3f3aa12357a82fb342a373b… in the record
              144028f4a3f3aa12357a82fb342a373b… the PDF the applicant holds
+   same document
 
 ── the cover-up: someone 'corrects' the extracted income before handing the bundle over
-   annual_income_usd → 4250
+   annual_income_usd  51000 → 4250
 Verdict: FAILED
   problem: modified (count 1, first at index 0)
 ```
@@ -78,6 +85,76 @@ That application gives income per month ($4,250); the prompt asks for an annual
 figure. This model got it right. A smaller or different one may not, and that
 is the point: whatever it said is on the record, with the document, the model's
 digest and the prompt's hash beside it.
+
+## The same pipeline through OpenTelemetry and MCP
+
+Most AI stacks already emit OpenTelemetry, and an auditor may well work through
+an agent. [`run-otel-mcp.sh`](run-otel-mcp.sh) runs the same three
+applications that way. No containers; it needs what `run.sh` needs.
+
+```
+  parse.py --otlp ─OTLP/HTTP─► otel-sink ─► proof/sink ─► proof sink export ─► bundle.json
+  OpenTelemetry SDK            (../otel)                                           │
+  body: the record                                     auditor's agent ─MCP─► proof-mcp
+  enduser.pseudo.id: app-2c91                                         verify_export_bundle
+  log.record.uid: set by the app                          keys bound at launch, never in a call
+```
+
+- **The parser only logs.** With `--otlp`, `parse.py` emits each record as an
+  OpenTelemetry log record with the SDK's own OTLP/HTTP exporter
+  (`opentelemetry-sdk` 1.45.1), as it would to any backend. The record is the
+  body; `gen_ai.provider.name` and `gen_ai.request.model` are attributes.
+  [`otel-sink`](../otel) commits it, signed, to the applicant's chain. It could
+  as well sit behind a collector, as in that example.
+- **The app sets `log.record.uid`:** a UUID derived from the document id, the
+  model's digest and the prompt's hash. A re-run of the same pipeline sends
+  the same uid with other content (new timestamps), and `otel-sink` refuses
+  it: the first extraction stands, as with `--source-field doc_id` above. A new
+  model or prompt is a new uid, and so a new event on the applicant's chain.
+- **The auditor's agent verifies over MCP.** `proof-mcp` has a
+  `verify_export_bundle` tool. The keys it trusts are the ones the auditor
+  binds when starting the server; a tool call names only the file, so a
+  prompt-injected bundle cannot bring its own key. The result names no chain
+  id, and states what is not proven on every call.
+
+```
+── the parser: pypdf and ministral-3:3b read each PDF; the OpenTelemetry SDK exports each extraction
+otel-sink: committed 3 · already committed 0 · refused 0
+the pipeline runs again over the same documents (same log.record.uid, new timestamps):
+request 4: refused: log.record.uid is already committed with other content
+otel-sink: committed 0 · already committed 0 · refused 3
+
+── the dispute: applicant app-2c91 asks what the AI read from their application
+   claude mcp add proof-audit -- proof-mcp --root dispute --bundle-checkpoint-key dispute/checkpoint.pub --bundle-record-trust dispute/record.pub
+$ python3 -I mcp_verify.py bundle.json -- proof-mcp --root dispute …
+   MCP aleutianchain … · verify_export_bundle · bundle.json
+   verdict: OK   (checkpoint trust checked, record trust checked)
+   chain 0: ok, 1 entries, 1 opened, 1 authenticated
+   …
+── the cover-up: someone 'corrects' the extracted income before handing the bundle over
+   annual_income_usd  51000 → 4250
+   verdict: FAILED   (checkpoint trust checked, record trust checked)
+   chain 0: failed, 1 entries, 0 opened, 1 authenticated
+     problem: modified (count 1, first at index 0)
+```
+
+`mcp_verify.py` makes the MCP call an agent would (initialize, then
+`tools/call`), without a model, so the run is the same every time. To ask an
+agent instead, register the server with the `claude mcp add` line above, run
+from the folder holding `dispute/`, and ask it whether `bundle.json` verifies.
+[`demo-otel-mcp.tape`](demo-otel-mcp.tape) renders this run as a GIF and MP4
+(`vhs examples/integrations/document-parser/demo-otel-mcp.tape`, from the
+repository root).
+
+What differs from `run.sh`:
+
+- **`proof-mcp` is the bundle writer's own implementation,** like `proof sink
+  verify-bundle`. The independent check is still the Python verifier.
+- **`otel-sink` takes OTLP without TLS or authentication** on localhost (see
+  [its README](../otel)). Anyone who can reach the port can put records on a
+  chain.
+- **A refused re-run is answered in OTLP's `partial_success`,** which the
+  Python exporter does not retry; nothing tells the pipeline beyond that.
 
 ## What this proves, and what it does not
 

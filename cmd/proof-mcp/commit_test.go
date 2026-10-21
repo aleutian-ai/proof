@@ -452,7 +452,7 @@ func TestParseFlags(t *testing.T) {
 func TestToolsAreTheExpectedSet_WithDB(t *testing.T) {
 	got := toolNames(t, connectWith(t, serverConfig{db: newCommitDB(t)}))
 	want := []string{"verify_chain", "compute_chain_hash", "canonicalize_leaf", "verify_inclusion",
-		"verify_anchor", "verify_bundle", "explain_trust_model", "commit"}
+		"verify_anchor", "verify_bundle", "verify_export_bundle", "explain_trust_model", "commit"}
 	if len(got) != len(want) {
 		t.Fatalf("%d tools registered, want %d: %v", len(got), len(want), got)
 	}

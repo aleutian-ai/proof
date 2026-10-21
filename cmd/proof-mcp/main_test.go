@@ -231,7 +231,7 @@ func TestToolsAreTheExpectedSet(t *testing.T) {
 	want := map[string]bool{
 		"verify_chain": true, "compute_chain_hash": true,
 		"canonicalize_leaf": true, "verify_inclusion": true,
-		"verify_anchor": true, "verify_bundle": true,
+		"verify_anchor": true, "verify_bundle": true, "verify_export_bundle": true,
 		"explain_trust_model": true,
 	}
 

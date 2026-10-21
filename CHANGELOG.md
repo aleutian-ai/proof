@@ -10,6 +10,17 @@ is in [STABILITY.md](STABILITY.md).
 
 ### Added
 
+- **proof-mcp: `verify_export_bundle`,** a read-only tool that checks a sink
+  export bundle (`bundle.json`) as `proof sink verify-bundle` does. The keys it
+  trusts are bound at launch with the new `--bundle-checkpoint-key` and
+  `--bundle-record-trust` flags, never named in a call; with none, a
+  consistent bundle is `unauthenticated`. The result names no chain id. The
+  pinned tool list (`testdata/tools_list.golden.json`) gains it. Builds
+  against proof v0.5.0, so proof-mcp can be tagged without a library release.
+- `examples/integrations/document-parser/run-otel-mcp.sh`: the loan
+  applications through the OpenTelemetry SDK to `otel-sink`, and the auditor's
+  check through `proof-mcp`. `parse.py --otlp URL` emits OTel log records.
+
 - **The X-Wing specification's official test vectors are part of the conformance
   set.** `xwing_spec_vectors.json` moved from `xwing/testdata/` to
   `fixtures/testdata/` and `MANIFEST.json`, unchanged, so the SDKs vendor and

@@ -20,17 +20,24 @@
 #
 #   ./run.sh                          # ministral-3:3b
 #   MODEL=ornith-1.5:9b ./run.sh     # any Ollama model
+#   KEEP=/tmp/loan ./run.sh          # keep the folder (a new, empty one): demo.tape uses it
 #
 # Needs Go, Python 3.10+, network access to PyPI, and Ollama with the model
-# pulled. Builds proof from this working tree. Leaves nothing behind.
+# pulled. Builds proof from this working tree. Leaves nothing behind, unless
+# KEEP is set.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"
 export MODEL="${MODEL:-ministral-3:3b}"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+if [ -n "${KEEP:-}" ]; then
+    [ ! -e "$KEEP" ] || [ -z "$(ls -A "$KEEP")" ] || { echo "KEEP=$KEEP is not empty" >&2; exit 2; }
+    mkdir -p "$KEEP" && WORK="$(cd "$KEEP" && pwd)"
+else
+    WORK="$(mktemp -d)"
+    trap 'rm -rf "$WORK"' EXIT
+fi
 
 say() { printf '\n\033[0;34m── %s\033[0m\n' "$*"; }
 show() { printf '$ %s\n' "$*"; "$@"; }
@@ -89,30 +96,11 @@ AUDIT=(aleutian-verify verify-proof-bundle --checkpoint-key "$CKPT_PUB" --record
 show "${AUDIT[@]}" bundle.json
 echo
 echo "what the record says, and the applicant's own copy of the PDF:"
-python3 -I - bundle.json docs/LA-2026-0142.pdf <<'PY'
-import base64, hashlib, json, sys
-bundle = json.load(open(sys.argv[1]))
-record = json.loads(base64.b64decode(bundle["chains"][0]["entries"][0]["disclosed"]["content"]))
-held = hashlib.sha512(open(sys.argv[2], "rb").read()).hexdigest()
-print(f"   model     {record['model']} ({record['model_digest'][:12]}…), parser {record['parser']}")
-print(f"   extracted {json.dumps(record['extracted'])}")
-print(f"   document  {record['document_sha512'][:32]}… in the record")
-print(f"             {held[:32]}… the PDF the applicant holds")
-sys.exit(0 if held == record["document_sha512"] else "THE DOCUMENT HASH DOES NOT MATCH")
-PY
-echo "   same document: this is what the model read from it, and nobody has changed it since"
+python3 -I "$HERE/show_record.py" bundle.json docs/LA-2026-0142.pdf
+echo "   this is what the model read from it, and nobody has changed it since"
 
 say "the cover-up: someone 'corrects' the extracted income before handing the bundle over"
-python3 -I - bundle.json bundle-edited.json <<'PY'
-import base64, json, sys
-bundle = json.load(open(sys.argv[1]))
-d = bundle["chains"][0]["entries"][0]["disclosed"]
-record = json.loads(base64.b64decode(d["content"]))
-record["extracted"]["annual_income_usd"] = 4250
-d["content"] = base64.b64encode(json.dumps(record, sort_keys=True).encode()).decode()
-json.dump(bundle, open(sys.argv[2], "w"))
-print("   annual_income_usd → 4250")
-PY
+python3 -I "$HERE/edit_bundle.py" bundle.json bundle-edited.json
 rc=0; show "${AUDIT[@]}" bundle-edited.json || rc=$?
 [ "$rc" -ne 0 ] || fail "THE EDITED BUNDLE VERIFIED"
 echo "(exit $rc: the auditor's verifier refuses the edited record)"

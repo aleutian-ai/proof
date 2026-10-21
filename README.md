@@ -1109,6 +1109,7 @@ module cannot answer and does not pretend to.
 
 | Document | For |
 |---|---|
+| [docs/integration.md](docs/integration.md) | Putting a system's records on proof: the ways in, where the outputs live, and how each party verifies them |
 | [docs/format-spec.md](docs/format-spec.md) | Implementing a verifier in another language |
 | [docs/bundle-format.md](docs/bundle-format.md) | The export bundle a recipient verifies without the sink |
 | [docs/sink-format.md](docs/sink-format.md) | What a sink folder holds, and what its verification covers |

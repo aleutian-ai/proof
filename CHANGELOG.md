@@ -17,6 +17,9 @@ is in [STABILITY.md](STABILITY.md).
   consistent bundle is `unauthenticated`. The result names no chain id. The
   pinned tool list (`testdata/tools_list.golden.json`) gains it. Builds
   against proof v0.5.0, so proof-mcp can be tagged without a library release.
+- `docs/integration.md`: an integration guide. The ways records get into a
+  sink, where every output lives and which are secret, the commit / checkpoint
+  / verify / export / erase loop, and the verifier each party points at it.
 - `examples/integrations/document-parser/run-otel-mcp.sh`: the loan
   applications through the OpenTelemetry SDK to `otel-sink`, and the auditor's
   check through `proof-mcp`. `parse.py --otlp URL` emits OTel log records.

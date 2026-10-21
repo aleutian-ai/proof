@@ -96,16 +96,16 @@ start_shipper() { # start_shipper STATE_DIR: its offset DB and chunk buffer live
 
 say "the app logs: 8 audit lines for four users (u-91's carry the app's own uid), an email, no user, and debug noise"
 cat > logs/audit.log <<'EOF'
-{"msg":"tool call: search","enduser.pseudo.id":"u-81"}
-{"msg":"login","enduser.pseudo.id":"u-82"}
-{"msg":"tool call: export","enduser.pseudo.id":"u-81","rows":120}
-{"msg":"consent changed","enduser.pseudo.id":"u-90"}
-{"msg":"login","enduser.pseudo.id":"jo@example.com"}
-{"msg":"tool call: delete","enduser.pseudo.id":"u-81"}
-{"msg":"health check"}
-{"msg":"logout","enduser.pseudo.id":"u-82"}
-{"msg":"tool call: refund","enduser.pseudo.id":"u-91","log.record.uid":"01J9ZK3Q7V5S8N2M4P6R0T1W3X"}
-{"msg":"logout","enduser.pseudo.id":"u-91","log.record.uid":"01J9ZK3Q7V5S8N2M4P6R0T1W3Y"}
+{"time":"2026-10-21T09:00:00.000Z","msg":"tool call: search","enduser.pseudo.id":"u-81"}
+{"time":"2026-10-21T09:00:01.000Z","msg":"login","enduser.pseudo.id":"u-82"}
+{"time":"2026-10-21T09:00:02.000Z","msg":"tool call: export","enduser.pseudo.id":"u-81","rows":120}
+{"time":"2026-10-21T09:00:03.000Z","msg":"consent changed","enduser.pseudo.id":"u-90"}
+{"time":"2026-10-21T09:00:04.000Z","msg":"login","enduser.pseudo.id":"jo@example.com"}
+{"time":"2026-10-21T09:00:05.000Z","msg":"tool call: delete","enduser.pseudo.id":"u-81"}
+{"time":"2026-10-21T09:00:06.000Z","msg":"health check"}
+{"time":"2026-10-21T09:00:07.000Z","msg":"logout","enduser.pseudo.id":"u-82"}
+{"time":"2026-10-21T09:00:08.000Z","msg":"tool call: refund","enduser.pseudo.id":"u-91","log.record.uid":"01J9ZK3Q7V5S8N2M4P6R0T1W3X"}
+{"time":"2026-10-21T09:00:09.000Z","msg":"logout","enduser.pseudo.id":"u-91","log.record.uid":"01J9ZK3Q7V5S8N2M4P6R0T1W3Y"}
 EOF
 printf '%s\n' '{"msg":"cache miss"}' '{"msg":"gc pause 3ms"}' '{"msg":"retrying dns"}' > logs/debug.log
 echo "logs/audit.log: $(wc -l < logs/audit.log | tr -d ' ') lines · logs/debug.log: $(wc -l < logs/debug.log | tr -d ' ') lines"

@@ -8,7 +8,7 @@ go 1.25.0
 // Never a replace directive to a local path.
 
 require (
-	github.com/aleutian-ai/proof v0.3.1-0.20261006011007-a7e7eab11fbc
+	github.com/aleutian-ai/proof v0.5.0
 	github.com/redis/go-redis/v9 v9.22.0
 )
 
@@ -17,6 +17,6 @@ require (
 	github.com/cloudflare/circl v1.6.3 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
-	golang.org/x/text v0.21.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 )

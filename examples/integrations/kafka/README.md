@@ -56,7 +56,9 @@ including) the first record that is not handled**. A record is handled when:
 - it was **refused**: no key, a key that is not a valid subject (a name, an
   email), or an empty or oversized value. Refused records are logged by
   `topic/partition@offset`, never by key, and stay in the topic. Kafka has no
-  per-record ack, so leaving them would stall the partition forever.
+  per-record ack, so leaving them would stall the partition forever. A record
+  whose position is already committed with different content is refused the
+  same way, not retried.
 
 A record committed later in the same partition never moves the offset past an
 earlier one that failed. Nothing at all is committed when:

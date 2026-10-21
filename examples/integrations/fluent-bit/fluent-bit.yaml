@@ -19,6 +19,11 @@ service:
 parsers:
   - name: json
     format: json
+    # The record's time is the app's, from the line. Without this it is the
+    # moment Fluent Bit read the line, so a re-read changes the content and a
+    # line with the app's own uid is refused as a conflict, not recognised.
+    time_key: time
+    time_format: "%Y-%m-%dT%H:%M:%S.%LZ"
 
 pipeline:
   inputs:

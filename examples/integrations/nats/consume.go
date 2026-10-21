@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/aleutian-ai/proof/sink"
@@ -74,7 +75,9 @@ type stats struct {
 //     lose it without a trace. It is logged by stream position, NEVER by subject,
 //     since a refused key is often the personal data the rule keeps out.
 //  2. Commit the rest through sink, one atomic append per chain, each
-//     record carrying its stream position as its Source.
+//     record carrying its stream position as its Source. A record the sink
+//     refuses (*sink.RecordError: its position is already committed with
+//     other content) is terminated as in 1, and the rest committed.
 //  3. Only then acknowledge them. A crash before this point means redelivery,
 //     and redelivered positions are recognised as already committed.
 //
@@ -140,7 +143,28 @@ func processBatch(ctx context.Context, dst committer, r router, msgs []message,
 		return st, nil
 	}
 
-	out, err := dst.Commit(ctx, recs)
+	// A *sink.RecordError names one record that can never be committed (its
+	// source is already committed with other content): redelivering it would
+	// loop forever, so it is terminated like the refusals above and the rest
+	// committed without it. Each pass drops one record, so this ends.
+	var out []sink.Outcome
+	var err error
+	for {
+		out, err = dst.Commit(ctx, recs)
+		var re *sink.RecordError
+		if !errors.As(err, &re) || re.Index < 0 || re.Index >= len(recs) {
+			break
+		}
+		pos, _ := pending[re.Index].Position()
+		fmt.Fprintf(log, "refused %s: %v. Terminated.\n", pos, re.Err)
+		_ = pending[re.Index].Term()
+		st.refused++
+		recs = slices.Delete(recs, re.Index, re.Index+1)
+		pending = slices.Delete(pending, re.Index, re.Index+1)
+		if len(recs) == 0 {
+			return st, nil
+		}
+	}
 	if errors.Is(err, sink.ErrRecordSignerRequired) || errors.Is(err, sink.ErrSinkNotSigning) {
 		// A configuration error: every batch would fail alike. Stop without a
 		// NAK (an immediate redelivery would only loop); the messages stay

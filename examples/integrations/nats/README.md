@@ -167,7 +167,8 @@ Ack before you erase.
   duplicate check caught every one, and the chain still held exactly 6 entries.
   But it was wasted work, and it is now refused.
 - **A message that can never be committed is terminated**, never retried: an
-  empty payload, one over the sink's 64 KiB limit, or one with no stream
-  position. Retrying would redeliver it forever and stall every message
+  empty payload, one over the sink's 64 KiB limit, one with no stream
+  position, or one whose position is already committed with different
+  content. Retrying would redeliver it forever and stall every message
   behind it.
 - `-follow` keeps consuming instead of exiting once the stream is drained.

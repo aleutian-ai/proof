@@ -143,20 +143,23 @@ func TestReceive_RetryIsRecognised(t *testing.T) {
 	}
 }
 
-// Owner-pinned (2026-10-06): the Source is delivery identity, not content
-// equality. The same uid with a different payload is a duplicate, never new
-// evidence. Nobody may add payload comparison without changing this test.
-func TestReceive_SameUIDDifferentPayloadIsDuplicate(t *testing.T) {
+// Owner-pinned (2026-10-06; revised 2026-10-21): the Source is delivery
+// identity, and the same uid with a different payload is never new evidence.
+// Since v0.4.0 the sink refuses it (sink.ErrSourceConflict) rather than call it
+// a duplicate, which dropped payload B silently; otel-sink refuses it in
+// partial_success and does not answer 503, which would bring it back forever.
+func TestReceive_SameUIDDifferentPayloadIsRefused(t *testing.T) {
 	s := newSink(t)
 	rv := newReceiver(s, opts(), io.Discard)
 	if code, _, _ := post(t, rv, logsOf(lrec{uid: "abc", subject: "u-81", body: "payload A"}), false); code != 200 {
 		t.Fatal(code)
 	}
-	if code, _, _ := post(t, rv, logsOf(lrec{uid: "abc", subject: "u-81", body: "payload B"}), false); code != 200 {
-		t.Fatal(code)
+	code, resp, _ := post(t, rv, logsOf(lrec{uid: "abc", subject: "u-81", body: "payload B"}), false)
+	if code != 200 || resp.PartialSuccess().RejectedLogRecords() != 1 {
+		t.Fatalf("%d, rejected %d: want 200 with payload B rejected", code, resp.PartialSuccess().RejectedLogRecords())
 	}
-	if st := rv.totals(); st.committed != 1 || st.duplicates != 1 {
-		t.Fatalf("totals = %+v, want 1 committed and 1 already committed", st)
+	if st := rv.totals(); st.committed != 1 || st.duplicates != 0 || st.refused != 1 {
+		t.Fatalf("totals = %+v, want 1 committed and 1 refused", st)
 	}
 	if n := entries(t, s); n != 1 {
 		t.Fatalf("entries = %d, want 1: payload B must not become new evidence", n)
@@ -722,5 +725,35 @@ func TestReceive_Concurrent(t *testing.T) {
 	}
 	if e := entries(t, s); e != 2*n {
 		t.Fatalf("entries = %d", e)
+	}
+}
+
+// A uid already committed with other content is refused, not retried: the
+// sink will never take it, and a 503 would bring the request back forever.
+// The rest of the request is committed.
+func TestReceive_SourceConflictIsRefusedNotRetried(t *testing.T) {
+	s := newSink(t)
+	var log bytes.Buffer
+	rv := newReceiver(s, opts(), &log)
+	if code, _, _ := post(t, rv, logsOf(lrec{uid: "k1", subject: "u-81", body: "first"}), false); code != http.StatusOK {
+		t.Fatal(code)
+	}
+	ld := logsOf(lrec{uid: "k0", subject: "u-82", body: "a"}, lrec{uid: "k1", subject: "u-81", body: "changed"},
+		lrec{uid: "k2", subject: "u-81", body: "b"})
+	code, resp, _ := post(t, rv, ld, false)
+	if code != http.StatusOK || resp.PartialSuccess().RejectedLogRecords() != 1 {
+		t.Fatalf("%d, rejected %d: want 200 with the conflicting record rejected", code, resp.PartialSuccess().RejectedLogRecords())
+	}
+	if msg := resp.PartialSuccess().ErrorMessage(); !strings.Contains(msg, "already committed with other content") {
+		t.Fatalf("partial_success = %q", msg)
+	}
+	if st := rv.totals(); st.committed != 3 || st.refused != 1 {
+		t.Fatalf("totals = %+v, want k0, k1 and k2 committed once each and the changed k1 refused", st)
+	}
+	if strings.Contains(log.String(), "changed") || strings.Contains(log.String(), "u-81") {
+		t.Fatalf("the log names the content or the subject: %s", log.String())
+	}
+	if n := entries(t, s); n != 3 {
+		t.Fatalf("entries = %d", n)
 	}
 }

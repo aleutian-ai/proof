@@ -53,8 +53,10 @@ processors:
 | the collector (this config) | **not** recognised: each copy gets a new uid | recognised |
 
 A record without a uid is refused, never committed without one. The id is
-delivery identity, not content: a second record with the same uid is taken as
-the same record, whatever its payload. **An app that sets its own uid must use
+delivery identity: a second record with the same uid and the same content is
+recognised as already committed. One with the same uid and **other** content is
+refused in `partial_success` and never retried: the sink cannot show it is the
+record it holds, and it is never committed as new evidence. **An app that sets its own uid must use
 an opaque id** (a ULID or UUID): it is kept as the record's Source until the
 user is erased, so it must never be content or name a person. A uid with `@`
 or a space is refused.

@@ -48,7 +48,11 @@ offset DB is gone or behind) and reads a file again, the lines it gave ids to
 get NEW ids and are committed again. **Duplicates are possible on a re-read;
 silent loss from reused file positions is avoided.** Lines whose id the *app*
 wrote are recognised even then. That is the upgrade path: have the app write
-`log.record.uid` (a ULID or UUID, never content) into each line.
+`log.record.uid` (a ULID or UUID, never content) into each line, and its own
+`time`, which the parser reads (`time_key`). Without the app's time, the
+record's time is the moment Fluent Bit read the line, so a re-read changes the
+content, and the sink refuses a known uid with other content rather than
+recognise it.
 
 This says nothing about the rest of the shipper pipeline: Fluent Bit can still
 drop data through its own configuration, a full buffer, or a file rotated away

@@ -282,6 +282,30 @@ func TestRefused(t *testing.T) {
 	}
 }
 
+// TestSourceConflictIsRefused: an entry whose source is already committed
+// with other content is refused by the sink (*sink.RecordError). It is acked
+// as refused, logged by entry id only, and the rest are committed: left
+// pending, it would fail every recovery forever.
+func TestSourceConflictIsRefused(t *testing.T) {
+	dst := newSink(t)
+	if _, err := dst.Commit(context.Background(), []sink.Record{{Class: "events", Subject: "u-82",
+		Content: []byte("first"), Source: "evidence@t1:2-0"}}); err != nil {
+		t.Fatal(err)
+	}
+	g := newGroup(sixEvents()...) // 2-0 is u-82's, with other content
+	var log bytes.Buffer
+	st, err := consume(context.Background(), as{g, "sink-1"}, dst, opts(), &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.committed != 5 || st.refused != 1 || len(g.pending) != 0 {
+		t.Fatalf("stats %+v, pending %d", st, len(g.pending))
+	}
+	if !strings.Contains(log.String(), "refused evidence:2-0:") || strings.Contains(log.String(), "u-82") {
+		t.Fatalf("log: %q", log.String())
+	}
+}
+
 // TestCommitFailure: nothing of a failed chain is acked. It stays pending and
 // the next run commits it.
 func TestCommitFailure(t *testing.T) {

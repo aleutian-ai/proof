@@ -227,6 +227,40 @@ func TestConsume_RefusedAreHandled(t *testing.T) {
 	}
 }
 
+// A record whose source is already committed with other content is refused
+// by the sink (*sink.RecordError). It is refused and handled, by position
+// only, and the rest of the batch is committed: one such record must not stall
+// the partition.
+func TestConsume_SourceConflictIsRefused(t *testing.T) {
+	ctx := context.Background()
+	tp := newTopic(1)
+	s := newSink(t)
+	if _, err := s.Commit(ctx, []sink.Record{{Class: "actions", Subject: "u-82", Content: []byte("first"),
+		Source: source("agent-actions", message{topicID: tp.id, partition: 0, offset: 1})}}); err != nil {
+		t.Fatal(err)
+	}
+	tp.produce(0, "u-81", `{"e":1}`)
+	tp.produce(0, "u-82", `second`) // offset 1: the same source, other content
+	tp.produce(0, "u-83", `{"e":3}`)
+	var log bytes.Buffer
+	st, err := consume(ctx, tp.consumer(), s, opts(), &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.refused != 1 || st.committed != 2 || tp.committed[0] != 3 {
+		t.Fatalf("stats = %+v, offsets = %v", st, tp.committed)
+	}
+	if !strings.Contains(log.String(), "refused agent-actions/0@1:") {
+		t.Fatalf("no refusal logged for agent-actions/0@1: %s", log.String())
+	}
+	if strings.Contains(log.String(), "u-82") || strings.Contains(log.String(), "second") {
+		t.Fatalf("the log names a key or value: %s", log.String())
+	}
+	if n := entries(t, s); n != 3 {
+		t.Fatalf("entries = %d, want 3", n)
+	}
+}
+
 // failingSink fails every record of one subject, committing the rest.
 type failingSink struct {
 	inner *sink.Sink
@@ -351,8 +385,9 @@ func TestConsume_ConfigurationErrorIsReturned(t *testing.T) {
 
 // A deleted and recreated topic restarts its offsets at 0. Its topic id is
 // new, so a record at an old position is committed, not taken for the old one.
-// The control: the same position under the SAME id is a duplicate, so the id
-// is what tells them apart.
+// The control: the same record at the same position under the SAME id is a
+// duplicate, so the id is what tells them apart. (The same position with other
+// content is refused: TestConsume_SourceConflictIsRefused.)
 func TestConsume_RecreatedTopic(t *testing.T) {
 	ctx := context.Background()
 	s := newSink(t)
@@ -363,7 +398,7 @@ func TestConsume_RecreatedTopic(t *testing.T) {
 	}
 
 	again := newTopic(1) // the control: same id, same position
-	again.produce(0, "u-81", `{"e":"new"}`)
+	again.produce(0, "u-81", `{"e":"old"}`)
 	st, err := consume(ctx, again.consumer(), s, opts(), &bytes.Buffer{})
 	if err != nil || st.duplicates != 1 {
 		t.Fatalf("control: stats = %+v, err = %v; want the reused position taken as a duplicate", st, err)

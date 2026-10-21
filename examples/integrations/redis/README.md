@@ -74,7 +74,8 @@ added 8 entries to stream evidence
 **Consume, and crash between the commit and the ack.** The name and the email
 are refused and logged by entry id only, never by key. They are acknowledged so
 that they are not re-read forever. Acknowledging does not delete in Redis: they
-stay in the stream.
+stay in the stream. An entry whose id is already committed with different
+content is refused the same way, not retried.
 
 ```
 $ redis-sink consume -addr 127.0.0.1:6379 -dir sink-data -crash-after-commit

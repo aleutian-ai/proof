@@ -233,9 +233,10 @@ func (rv *receiver) process(ctx context.Context, reqNo int, ld plog.Logs) (stats
 			reqNo, st.refused-maxRefusalLines)
 	}
 	for chunk := range slices.Chunk(recs, sink.MaxBatch) {
-		cst, err := rv.commitChunk(ctx, chunk)
+		cst, err := rv.commitChunk(ctx, reqNo, chunk, reasons)
 		st.committed += cst.committed
 		st.duplicates += cst.duplicates
+		st.refused += cst.refused
 		if err != nil {
 			return st, nil, err
 		}
@@ -248,13 +249,18 @@ func (rv *receiver) process(ctx context.Context, reqNo int, ld plog.Logs) (stats
 
 // commitChunk commits up to sink.MaxBatch records.
 //
+// A *sink.RecordError names one record the sink will never take: its uid is
+// already committed with other content (or it is invalid). That record is
+// refused, counted in reasons for partial_success, and the rest committed.
+// Answering 503 for it instead would bring the same request back forever.
+//
 // A *sink.PairError means one subject's own stored state failed and nothing
 // was committed. Its records are set aside and the rest committed, so one
 // stuck subject does not hold every other record of the request back until
 // the collector gives up. The request is still answered 503: the collector
 // retries it, the rest come back as already committed, and the stuck subject
 // keeps failing (loudly) until the operator repairs it.
-func (rv *receiver) commitChunk(ctx context.Context, chunk []sink.Record) (stats, error) {
+func (rv *receiver) commitChunk(ctx context.Context, reqNo int, chunk []sink.Record, reasons map[string]int) (stats, error) {
 	var st stats
 	live := chunk
 	var asideErr error
@@ -272,6 +278,21 @@ func (rv *receiver) commitChunk(ctx context.Context, chunk []sink.Record) (stats
 			return st, fatalError{code: exitFailed,
 				err: errors.New("the sink left a record uncommitted without an error: contract error")}
 		}
+		var re *sink.RecordError
+		if errors.As(err, &re) && re.Index >= 0 && re.Index < len(live) {
+			reason := "the sink refused the record"
+			if errors.Is(err, sink.ErrSourceConflict) {
+				reason = uidAttr + " is already committed with other content"
+			}
+			fmt.Fprintf(rv.log, "request %d: refused: %s\n", reqNo, reason)
+			reasons[reason]++
+			st.refused++
+			live = without(live, []int{re.Index})
+			if len(live) == 0 {
+				return st, asideError(aside, asideErr)
+			}
+			continue
+		}
 		var pe *sink.PairError
 		if errors.As(err, &pe) && len(pe.Records) < len(live) {
 			asideErr = err
@@ -287,15 +308,20 @@ func (rv *receiver) commitChunk(ctx context.Context, chunk []sink.Record) (stats
 				st.committed++
 			}
 		}
-		switch {
-		case err != nil:
+		if err != nil {
 			return st, fmt.Errorf("commit: %w", err)
-		case asideErr != nil:
-			return st, fmt.Errorf("%d records could not be committed because of their subject's stored "+
-				"state (run proof sink verify); the rest were committed: %w", aside, asideErr)
 		}
-		return st, nil
+		return st, asideError(aside, asideErr)
 	}
+}
+
+// asideError reports the records a *sink.PairError set aside, or nil.
+func asideError(aside int, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%d records could not be committed because of their subject's stored "+
+		"state (run proof sink verify); the rest were committed: %w", aside, err)
 }
 
 // without returns recs minus the given indexes.

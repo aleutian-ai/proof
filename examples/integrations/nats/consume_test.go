@@ -269,6 +269,36 @@ func TestBadPayloadDoesNotStallTheStream(t *testing.T) {
 	}
 }
 
+// TestSourceConflictDoesNotStallTheStream: a message whose position is
+// already committed with other content is refused by the sink
+// (*sink.RecordError). It is terminated, logged by position only, and the rest
+// of the batch is committed and acked.
+func TestSourceConflictDoesNotStallTheStream(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.sink.Commit(context.Background(), []sink.Record{{Class: "events", Subject: "u-82",
+		Content: []byte("first"), Source: "EVIDENCE:2"}}); err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	bad := h.msg("evidence.u-82", 2) // EVIDENCE:2, other content
+	good := []*fakeMsg{h.msg("evidence.u-81", 1), h.msg("evidence.u-83", 3)}
+	st, err := processBatch(context.Background(), h.sink, r, asMessages(good[0], bad, good[1]), nil, &log)
+	if err != nil {
+		t.Fatalf("one conflicting message failed the batch: %v", err)
+	}
+	if st.committed != 2 || st.refused != 1 || bad.state != "term" {
+		t.Fatalf("stats %+v, bad %q", st, bad.state)
+	}
+	for _, m := range good {
+		if m.state != "ack" {
+			t.Fatalf("%s: %q, want ack", m.pos, m.state)
+		}
+	}
+	if !strings.Contains(log.String(), "refused EVIDENCE:2:") || strings.Contains(log.String(), "u-82") {
+		t.Fatalf("log: %q", log.String())
+	}
+}
+
 // TestRecreatedStreamIsNotADuplicate: a recreated stream restarts at sequence
 // 1. With its incarnation in the position, the new message 1 is committed, not
 // dropped as the old message 1.

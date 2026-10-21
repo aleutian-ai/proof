@@ -1,5 +1,5 @@
-github.com/aleutian-ai/proof v0.3.1-0.20261006011007-a7e7eab11fbc h1:atAHBAS2WU+Jmln+/SCTI5J/vN8UYyCvNDCgFjHOJoc=
-github.com/aleutian-ai/proof v0.3.1-0.20261006011007-a7e7eab11fbc/go.mod h1:BJYuAQWc+D3DBDCY/8akOZwLSQR4KqXVs9RjbvZfv60=
+github.com/aleutian-ai/proof v0.5.0 h1:hW3QG/j4MCIWV5Y+lG99O1QkDQ66PDpPhoD7fITAAns=
+github.com/aleutian-ai/proof v0.5.0/go.mod h1:bcKyvdd0YlA5T/7gqqvR4LnBlj/FiocHj2hUuVVZCKU=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
 github.com/cespare/xxhash/v2 v2.3.0/go.mod h1:VGX0DQ3Q6kWi7AoAeZDth3/j3BFtOZR5XLFGgcrjCOs=
 github.com/cloudflare/circl v1.6.3 h1:9GPOhQGF9MCYUeXyMYlqTR6a5gTrgR/fBLXvUgtVcg8=

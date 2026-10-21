@@ -170,7 +170,9 @@ func isConfiguration(err error) bool {
 //     logged by topic/partition@offset, never by key, and count as handled:
 //     Kafka has no per-record ack, so leaving them would stall the partition
 //     forever. They stay in the topic, just not on a chain.
-//  2. Commit the rest through the sink, each with its Source.
+//  2. Commit the rest through the sink, each with its Source. A record the
+//     sink refuses (*sink.RecordError: its source is already committed with
+//     other content) is refused and handled as in 1, and the rest committed.
 //  3. For each partition, walk its records in offset order and commit the
 //     offset after the last handled one before the first that is not. A
 //     record is handled when it was refused, or its outcome is Committed
@@ -219,7 +221,28 @@ func processBatch(ctx context.Context, c groupClient, dst committer, o options, 
 	var err error
 	if len(recs) > 0 {
 		var out []sink.Outcome
-		out, err = dst.Commit(wctx, recs)
+		// A *sink.RecordError names one record that can never be committed
+		// (its source is already committed with other content): refused and
+		// handled like the records above, and the rest committed without it.
+		// Each pass drops one record, so this ends.
+		for {
+			out, err = dst.Commit(wctx, recs)
+			var re *sink.RecordError
+			if !errors.As(err, &re) || re.Index < 0 || re.Index >= len(recs) {
+				break
+			}
+			m := ms[at[re.Index]]
+			fmt.Fprintf(log, "refused %s/%d@%d: %v. Handled: offsets move past it; it stays in the topic.\n",
+				o.topic, m.partition, m.offset, re.Err)
+			handled[at[re.Index]] = true
+			st.refused++
+			recs = slices.Delete(recs, re.Index, re.Index+1)
+			at = slices.Delete(at, re.Index, re.Index+1)
+			if len(recs) == 0 {
+				out, err = nil, nil
+				break
+			}
+		}
 		if isConfiguration(err) {
 			return stats{}, err
 		}

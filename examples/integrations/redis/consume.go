@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"time"
 
 	"github.com/aleutian-ai/proof/sink"
@@ -220,6 +221,9 @@ func stopped(ctx context.Context, err error) error {
 //     key. Acking does not delete: the entry stays in the stream, just not on
 //     a chain. Leaving it pending would re-read it on every recovery forever.
 //  2. Commit the rest through sink, each with Source "<stream>@<incarnation>:<id>".
+//     A record the sink refuses (*sink.RecordError: its source is already
+//     committed with other content) is refused and acked as in 1, and the
+//     rest committed.
 //  3. Then ack them. For a chain whose commit failed, nothing is acked: those
 //     entries stay pending and are recovered next run.
 //
@@ -264,7 +268,38 @@ func processBatch(ctx context.Context, c streamClient, dst committer, o options,
 		return st, nil
 	}
 
-	out, err := dst.Commit(ctx, recs)
+	// A *sink.RecordError names one record that can never be committed (its
+	// source is already committed with other content): left pending, it would
+	// fail every recovery forever, so it is refused and acked like the entries
+	// above and the rest committed without it. Each pass drops one record, so
+	// this ends.
+	var out []sink.Outcome
+	var err error
+	var conflicted []string
+	for {
+		out, err = dst.Commit(ctx, recs)
+		var re *sink.RecordError
+		if !errors.As(err, &re) || re.Index < 0 || re.Index >= len(recs) {
+			break
+		}
+		fmt.Fprintf(log, "refused %s:%s: %v. Acked; it stays in the stream.\n", o.stream, ids[re.Index], re.Err)
+		conflicted = append(conflicted, ids[re.Index])
+		recs = slices.Delete(recs, re.Index, re.Index+1)
+		ids = slices.Delete(ids, re.Index, re.Index+1)
+		if len(recs) == 0 {
+			out, err = nil, nil
+			break
+		}
+	}
+	if len(conflicted) > 0 {
+		if aerr := c.ack(ctx, conflicted...); aerr != nil {
+			return st, errors.Join(err, fmt.Errorf("ack refused entries: %w", aerr))
+		}
+		st.refused += len(conflicted)
+	}
+	if len(recs) == 0 {
+		return st, nil
+	}
 	if out != nil && len(out) != len(recs) {
 		// Not the one-per-record contract: nothing can be matched to an entry,
 		// so nothing is acked; the entries stay pending and are recovered.
